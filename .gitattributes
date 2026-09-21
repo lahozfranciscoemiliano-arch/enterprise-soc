@@ -1,0 +1,6 @@
+# Los scripts destinados a Linux deben mantener saltos de linea LF sin
+# importar el sistema operativo o la config de git de quien los edite;
+# con CRLF, bash falla con errores crípticos como "$'\r': command not found".
+*.sh text eol=lf
+*.service text eol=lf
+deploy/nginx.conf text eol=lf

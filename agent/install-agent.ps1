@@ -1,0 +1,146 @@
+#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Instala el agente Enterprise SOC como tarea programada persistente.
+
+.DESCRIPTION
+    1. Copia enterprise-soc-agent.exe (ya compilado con PyInstaller) a InstallDir.
+    2. Llama a POST /api/servers/enroll en el backend con el secreto compartido
+       (AGENT_ENROLLMENT_SECRET) para auto-registrar este servidor y obtener
+       credenciales unicas (SERVER_ID + API_KEY) sin tocar la base a mano.
+    3. Escribe el .env del agente en InstallDir con esas credenciales.
+    4. Registra una Tarea Programada que corre como SYSTEM (necesario para que
+       wbadmin/WMI puedan leer el estado real de backups) al iniciar Windows,
+       con reinicio automatico si el proceso se cae.
+
+    Requiere PowerShell como Administrador (por el registro de la tarea con
+    privilegios SYSTEM). Reinstalar en la misma maquina (mismo -ServerName)
+    rota la API key automaticamente en el backend.
+
+.EXAMPLE
+    .\install-agent.ps1 -BackendUrl "https://noc.midominio.com" -EnrollmentSecret "el-secreto-del-backend"
+
+.EXAMPLE
+    .\install-agent.ps1 -BackendUrl "http://192.168.1.10:3000" -EnrollmentSecret "abc123" -ServerName "DDBS01"
+#>
+
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$BackendUrl,
+
+    [Parameter(Mandatory = $true)]
+    [string]$EnrollmentSecret,
+
+    [string]$ServerName = $env:COMPUTERNAME,
+
+    [string]$IpAddress = "",
+
+    [string]$InstallDir = "C:\Program Files\EnterpriseSOC\Agent",
+
+    [string]$AgentExePath = (Join-Path $PSScriptRoot "enterprise-soc-agent.exe"),
+
+    [string]$TaskName = "EnterpriseSOCAgent"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Write-Step($message) {
+    Write-Host ""
+    Write-Host "==> $message" -ForegroundColor Cyan
+}
+
+Write-Step "Verificando requisitos"
+
+if (-not (Test-Path $AgentExePath)) {
+    throw "No se encontro el ejecutable del agente en '$AgentExePath'. Compilalo primero con PyInstaller " +
+          "(ver instrucciones al final de agent.py) o pasa la ruta correcta con -AgentExePath."
+}
+
+if (-not $IpAddress) {
+    $IpAddress = (
+        Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceAlias -notmatch "Loopback" -and $_.IPAddress -notlike "169.254.*" } |
+        Select-Object -First 1 -ExpandProperty IPAddress
+    )
+    if (-not $IpAddress) { $IpAddress = "0.0.0.0" }
+}
+
+Write-Host "  Servidor:    $ServerName"
+Write-Host "  IP detectada: $IpAddress"
+Write-Host "  Backend:     $BackendUrl"
+Write-Host "  Destino:     $InstallDir"
+
+Write-Step "Copiando el agente a $InstallDir"
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Copy-Item -Path $AgentExePath -Destination (Join-Path $InstallDir "enterprise-soc-agent.exe") -Force
+
+Write-Step "Registrando este servidor en el backend (auto-enrolamiento)"
+$enrollBody = @{
+    name      = $ServerName
+    hostname  = $ServerName
+    ipAddress = $IpAddress
+} | ConvertTo-Json
+
+try {
+    $enrolled = Invoke-RestMethod -Uri "$BackendUrl/api/servers/enroll" -Method Post `
+        -Headers @{ "X-Enrollment-Secret" = $EnrollmentSecret } `
+        -ContentType "application/json" -Body $enrollBody
+} catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    throw "Fallo el enrolamiento contra $BackendUrl (HTTP $statusCode). Verifica BackendUrl, " +
+          "EnrollmentSecret, y que AGENT_ENROLLMENT_SECRET este configurado en el backend. Detalle: $_"
+}
+
+Write-Host "  SERVER_ID: $($enrolled.serverId)" -ForegroundColor Green
+Write-Host "  Credenciales recibidas OK" -ForegroundColor Green
+
+Write-Step "Escribiendo configuracion (.env)"
+$envContent = @"
+BACKEND_URL=$BackendUrl
+SERVER_ID=$($enrolled.serverId)
+API_KEY=$($enrolled.apiKey)
+POLL_INTERVAL_SECONDS=60
+REQUEST_TIMEOUT_SECONDS=10
+EVENT_LOG_MAX_ERRORS=10
+BACKUP_CHECK_INTERVAL_SECONDS=1800
+"@
+Set-Content -Path (Join-Path $InstallDir ".env") -Value $envContent -Encoding UTF8
+
+Write-Step "Registrando la tarea programada ($TaskName)"
+
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Write-Host "  Ya existe una tarea '$TaskName', se reemplaza..." -ForegroundColor Yellow
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+}
+
+$action = New-ScheduledTaskAction -Execute (Join-Path $InstallDir "enterprise-soc-agent.exe") -WorkingDirectory $InstallDir
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit (New-TimeSpan -Days 0)
+
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+    -Principal $principal -Settings $settings `
+    -Description "Agente de monitoreo Enterprise SOC: envia CPU/RAM/disco, eventos y estado de backup." | Out-Null
+
+Write-Step "Iniciando el agente"
+Start-ScheduledTask -TaskName $TaskName
+Start-Sleep -Seconds 3
+$task = Get-ScheduledTask -TaskName $TaskName
+$taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName
+
+Write-Host ""
+Write-Host "=================================================" -ForegroundColor Green
+Write-Host " Agente instalado y corriendo" -ForegroundColor Green
+Write-Host "=================================================" -ForegroundColor Green
+Write-Host "  Tarea:       $TaskName (estado: $($task.State))"
+Write-Host "  Ultima corrida: $($taskInfo.LastRunTime)"
+Write-Host "  Logs:        $InstallDir\agent.log"
+Write-Host ""
+Write-Host "IMPORTANTE: la revision de backups (wbadmin/WMI) necesita privilegios" -ForegroundColor Yellow
+Write-Host "de Administrador. Como la tarea corre como SYSTEM, esto ya queda resuelto." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Para desinstalar: .\uninstall-agent.ps1"
