@@ -1,0 +1,110 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+enum ServerStatus {
+  ONLINE
+  OFFLINE
+  DEGRADED
+}
+
+enum EventType {
+  CPU_THRESHOLD
+  MEMORY_THRESHOLD
+  DISK_THRESHOLD
+  LOGIN_FAILURE
+  UNAUTHORIZED_ACCESS
+  MALWARE_DETECTED
+  PORT_SCAN
+  CUSTOM
+}
+
+enum EventSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum EventStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model User {
+  id                 String          @id @default(uuid())
+  email              String          @unique
+  passwordHash       String
+  name               String
+  role               Role            @default(VIEWER)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  acknowledgedEvents SecurityEvent[] @relation("AcknowledgedBy")
+
+  @@map("users")
+}
+
+model Server {
+  id         String          @id @default(uuid())
+  name       String          @unique
+  hostname   String
+  ipAddress  String
+  apiKeyHash String
+  status     ServerStatus    @default(OFFLINE)
+  lastSeenAt DateTime?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  telemetry  Telemetry[]
+  events     SecurityEvent[]
+
+  @@map("servers")
+}
+
+model Telemetry {
+  id           String   @id @default(uuid())
+  serverId     String
+  server       Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  cpuUsage     Float
+  memoryUsage  Float
+  diskUsage    Float
+  networkIn    Float?
+  networkOut   Float?
+  processCount Int?
+  metadata     Json?
+  recordedAt   DateTime @default(now())
+
+  @@index([serverId, recordedAt])
+  @@map("telemetry")
+}
+
+model SecurityEvent {
+  id               String        @id @default(uuid())
+  serverId         String
+  server           Server        @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  type             EventType
+  severity         EventSeverity
+  status           EventStatus   @default(OPEN)
+  description      String
+  sourceIp         String?
+  metadata         Json?
+  acknowledgedById String?
+  acknowledgedBy   User?         @relation("AcknowledgedBy", fields: [acknowledgedById], references: [id])
+  createdAt        DateTime      @default(now())
+  resolvedAt       DateTime?
+
+  @@index([serverId, createdAt])
+  @@index([severity, status])
+  @@map("security_events")
+}

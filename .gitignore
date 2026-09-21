@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Environment secrets (only *.example / *.local.example are tracked)
+.env
+.env.local
+!.env.example
+!.env.local.example
+
+# Build output
+.next/
+dist/
+build/
+
+# Logs
+*.log
+agent.log
+
+# Manual timestamped backups (not real history, may contain copied .env secrets)
+_backups/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
