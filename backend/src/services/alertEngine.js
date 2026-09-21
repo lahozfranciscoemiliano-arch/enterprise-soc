@@ -29,4 +29,20 @@ function evaluateTelemetry(server, telemetry) {
   return alerts;
 }
 
-module.exports = { evaluateTelemetry };
+function getHealthStatus(telemetry) {
+  if (!telemetry) return 'UNKNOWN';
+
+  let status = 'OK';
+
+  for (const [field, rule] of Object.entries(THRESHOLDS)) {
+    const value = telemetry[field];
+    if (value === undefined || value === null) continue;
+
+    if (value >= rule.high) return 'CRITICAL';
+    if (value >= rule.medium) status = 'WARNING';
+  }
+
+  return status;
+}
+
+module.exports = { evaluateTelemetry, getHealthStatus, THRESHOLDS };

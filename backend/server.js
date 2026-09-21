@@ -12,7 +12,7 @@ const prisma = require('./src/prismaClient');
 const authServer = require('./src/middleware/authServer');
 const authUser = require('./src/middleware/authUser');
 const { telemetrySchema, loginSchema } = require('./src/validators');
-const { evaluateTelemetry } = require('./src/services/alertEngine');
+const { evaluateTelemetry, getHealthStatus } = require('./src/services/alertEngine');
 const { createSocketServer, broadcastAlert, broadcastTelemetry } = require('./src/websocket/socketServer');
 
 const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET'];
@@ -169,6 +169,7 @@ app.get('/api/servers', authUser, async (req, res) => {
           name: s.name,
           status: s.status,
           lastSeenAt: s.lastSeenAt,
+          healthStatus: getHealthStatus(latest),
           cpuUsage: latest?.cpuUsage ?? null,
           memoryUsage: latest?.memoryUsage ?? null,
           diskUsage: latest?.diskUsage ?? null,
@@ -178,6 +179,49 @@ app.get('/api/servers', authUser, async (req, res) => {
     );
   } catch (err) {
     console.error('Error listando servidores', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/dashboard/summary', authUser, async (req, res) => {
+  try {
+    const servers = await prisma.server.findMany({
+      include: {
+        telemetry: {
+          orderBy: { recordedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const [telemetryToday, openAlerts, criticalAlerts] = await Promise.all([
+      prisma.telemetry.count({ where: { recordedAt: { gte: startOfDay } } }),
+      prisma.securityEvent.count({ where: { status: 'OPEN' } }),
+      prisma.securityEvent.count({ where: { status: 'OPEN', severity: 'CRITICAL' } }),
+    ]);
+
+    const breakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
+    for (const s of servers) {
+      breakdown[getHealthStatus(s.telemetry[0])] += 1;
+    }
+
+    const reportedServers = servers.length - breakdown.UNKNOWN;
+    const slaPercentage = reportedServers > 0 ? (breakdown.OK / reportedServers) * 100 : 0;
+
+    return res.json({
+      totalServers: servers.length,
+      healthyServers: breakdown.OK,
+      slaPercentage: Math.round(slaPercentage * 100) / 100,
+      telemetryToday,
+      openAlerts,
+      criticalAlerts,
+      healthBreakdown: breakdown,
+    });
+  } catch (err) {
+    console.error('Error calculando resumen del dashboard', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
