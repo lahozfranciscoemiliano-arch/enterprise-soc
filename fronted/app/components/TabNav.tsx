@@ -7,10 +7,22 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'logs', label: 'Logs Regex', icon: '⌥' },
 ];
 
-export default function TabNav({ active, onChange }: { active: TabId; onChange: (tab: TabId) => void }) {
+const ADMIN_TAB: { id: TabId; label: string; icon: string } = { id: 'admin', label: 'Admin', icon: '🛡️' };
+
+export default function TabNav({
+  active,
+  onChange,
+  showAdmin,
+}: {
+  active: TabId;
+  onChange: (tab: TabId) => void;
+  showAdmin: boolean;
+}) {
+  const tabs = showAdmin ? [...TABS, ADMIN_TAB] : TABS;
+
   return (
     <nav className="flex flex-wrap gap-1 border-b border-gray-800 bg-gray-900/40 px-6 py-2">
-      {TABS.map((tab) => (
+      {tabs.map((tab) => (
         <button
           key={tab.id}
           onClick={() => onChange(tab.id)}

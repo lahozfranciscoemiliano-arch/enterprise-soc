@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import Dashboard from './components/Dashboard';
+import type { Role } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 export default function DashboardPage() {
   const [token, setToken] = useState<string | null>(null);
+  const [role, setRole] = useState<Role | null>(null);
+  const [userEmail, setUserEmail] = useState<string>('');
   const [checkedStorage, setCheckedStorage] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -14,8 +17,12 @@ export default function DashboardPage() {
   const [loggingIn, setLoggingIn] = useState(false);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem('soc_token');
-    if (stored) setToken(stored);
+    const storedToken = window.localStorage.getItem('soc_token');
+    const storedRole = window.localStorage.getItem('soc_role') as Role | null;
+    const storedEmail = window.localStorage.getItem('soc_email');
+    if (storedToken) setToken(storedToken);
+    if (storedRole) setRole(storedRole);
+    if (storedEmail) setUserEmail(storedEmail);
     setCheckedStorage(true);
   }, []);
 
@@ -39,7 +46,11 @@ export default function DashboardPage() {
         }
 
         window.localStorage.setItem('soc_token', body.token);
+        window.localStorage.setItem('soc_role', body.user.role);
+        window.localStorage.setItem('soc_email', body.user.email);
         setToken(body.token);
+        setRole(body.user.role);
+        setUserEmail(body.user.email);
       } catch (err) {
         setLoginError(err instanceof Error ? err.message : 'Error desconocido');
       } finally {
@@ -51,7 +62,11 @@ export default function DashboardPage() {
 
   const handleLogout = useCallback(() => {
     window.localStorage.removeItem('soc_token');
+    window.localStorage.removeItem('soc_role');
+    window.localStorage.removeItem('soc_email');
     setToken(null);
+    setRole(null);
+    setUserEmail('');
   }, []);
 
   if (!checkedStorage) return null;
@@ -98,5 +113,5 @@ export default function DashboardPage() {
     );
   }
 
-  return <Dashboard token={token} onLogout={handleLogout} />;
+  return <Dashboard token={token} role={role ?? 'VIEWER'} userEmail={userEmail} onLogout={handleLogout} />;
 }

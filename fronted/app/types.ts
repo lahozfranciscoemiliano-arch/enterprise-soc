@@ -2,7 +2,16 @@ export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'topologia' | 'logs';
+export type TabId = 'general' | 'monitoreo' | 'topologia' | 'logs' | 'admin';
+export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  createdAt: string;
+};
 
 export type SecurityAlert = {
   id: string;

@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const crypto = require('crypto');
 const http = require('http');
 const express = require('express');
 const helmet = require('helmet');
@@ -10,8 +11,14 @@ const jwt = require('jsonwebtoken');
 
 const prisma = require('./src/prismaClient');
 const authServer = require('./src/middleware/authServer');
-const authUser = require('./src/middleware/authUser');
-const { telemetrySchema, loginSchema, backupStatusSchema } = require('./src/validators');
+const { authUser, requireRole } = require('./src/middleware/authUser');
+const {
+  telemetrySchema,
+  loginSchema,
+  backupStatusSchema,
+  createUserSchema,
+  createServerSchema,
+} = require('./src/validators');
 const { evaluateTelemetry, evaluateBackup, getHealthStatus } = require('./src/services/alertEngine');
 const {
   createSocketServer,
@@ -39,6 +46,21 @@ app.use(
   })
 );
 app.use(express.json({ limit: '100kb' }));
+
+// Limite general por IP sobre toda la API, como defensa en profundidad ante
+// un JWT filtrado o abuso, ademas de los limites especificos por endpoint.
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes, intenta más tarde' },
+});
+app.use('/api/', apiLimiter);
+
+function generateApiKey() {
+  return crypto.randomBytes(32).toString('hex');
+}
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
@@ -75,7 +97,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
     );
 
-    return res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+    return res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
   } catch (err) {
     console.error('Error en login', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -372,6 +394,202 @@ app.get('/api/events', authUser, async (req, res) => {
     );
   } catch (err) {
     console.error('Error listando alertas', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Administracion: usuarios y servidores (solo ADMIN)
+// ---------------------------------------------------------------------------
+
+const adminWriteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas operaciones administrativas, intenta más tarde' },
+});
+
+app.get('/api/admin/users', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, email: true, name: true, role: true, createdAt: true },
+    });
+    return res.json(users);
+  } catch (err) {
+    console.error('Error listando usuarios', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/admin/users', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const parsed = createUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos de usuario inválidos', details: parsed.error.flatten() });
+  }
+
+  const { email, password, name, role } = parsed.data;
+
+  try {
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      return res.status(409).json({ error: 'Ya existe un usuario con ese email' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const user = await prisma.user.create({
+      data: { email, passwordHash, name, role },
+      select: { id: true, email: true, name: true, role: true, createdAt: true },
+    });
+
+    return res.status(201).json(user);
+  } catch (err) {
+    console.error('Error creando usuario', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.delete('/api/admin/users/:id', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    if (req.params.id === req.user.sub) {
+      return res.status(400).json({ error: 'No podés eliminar tu propio usuario' });
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    if (target.role === 'ADMIN') {
+      const adminCount = await prisma.user.count({ where: { role: 'ADMIN' } });
+      if (adminCount <= 1) {
+        return res.status(400).json({ error: 'No podés eliminar al último administrador' });
+      }
+    }
+
+    await prisma.user.delete({ where: { id: req.params.id } });
+    return res.status(204).send();
+  } catch (err) {
+    console.error('Error eliminando usuario', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/admin/servers', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const parsed = createServerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos de servidor inválidos', details: parsed.error.flatten() });
+  }
+
+  const { name, hostname, ipAddress } = parsed.data;
+
+  try {
+    const existing = await prisma.server.findUnique({ where: { name } });
+    if (existing) {
+      return res.status(409).json({ error: 'Ya existe un servidor con ese nombre' });
+    }
+
+    const apiKey = generateApiKey();
+    const apiKeyHash = await bcrypt.hash(apiKey, 12);
+
+    const server = await prisma.server.create({
+      data: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE' },
+    });
+
+    // La API key en texto plano solo se devuelve esta vez; despues solo se
+    // guarda su hash y no se puede recuperar.
+    return res.status(201).json({ id: server.id, name: server.name, apiKey });
+  } catch (err) {
+    console.error('Error creando servidor', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post(
+  '/api/admin/servers/:id/rotate-key',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    try {
+      const apiKey = generateApiKey();
+      const apiKeyHash = await bcrypt.hash(apiKey, 12);
+
+      const server = await prisma.server.update({
+        where: { id: req.params.id },
+        data: { apiKeyHash },
+      });
+
+      return res.json({ id: server.id, name: server.name, apiKey });
+    } catch (err) {
+      if (err.code === 'P2025') {
+        return res.status(404).json({ error: 'Servidor no encontrado' });
+      }
+      console.error('Error rotando API key', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
+app.delete('/api/admin/servers/:id', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    await prisma.server.delete({ where: { id: req.params.id } });
+    return res.status(204).send();
+  } catch (err) {
+    if (err.code === 'P2025') {
+      return res.status(404).json({ error: 'Servidor no encontrado' });
+    }
+    console.error('Error eliminando servidor', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Auto-enrolamiento de agentes: el instalador llama este endpoint con un
+// secreto compartido (AGENT_ENROLLMENT_SECRET) en vez de credenciales por
+// servidor, que todavia no tiene la primera vez que se instala. Si el
+// nombre ya existe, rota la API key (reinstalacion en la misma maquina).
+// ---------------------------------------------------------------------------
+
+const enrollLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de enrolamiento, intenta más tarde' },
+});
+
+app.post('/api/servers/enroll', enrollLimiter, async (req, res) => {
+  if (!process.env.AGENT_ENROLLMENT_SECRET) {
+    return res.status(503).json({ error: 'El enrolamiento automático no está configurado en este backend' });
+  }
+
+  const secret = req.header('x-enrollment-secret');
+  if (!secret || secret !== process.env.AGENT_ENROLLMENT_SECRET) {
+    return res.status(401).json({ error: 'Secreto de enrolamiento inválido' });
+  }
+
+  const parsed = createServerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos de enrolamiento inválidos', details: parsed.error.flatten() });
+  }
+
+  const { name, hostname, ipAddress } = parsed.data;
+
+  try {
+    const apiKey = generateApiKey();
+    const apiKeyHash = await bcrypt.hash(apiKey, 12);
+
+    const server = await prisma.server.upsert({
+      where: { name },
+      update: { hostname, ipAddress, apiKeyHash },
+      create: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE' },
+    });
+
+    return res.status(201).json({ serverId: server.id, apiKey });
+  } catch (err) {
+    console.error('Error en enrolamiento de servidor', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

@@ -7,11 +7,13 @@ import GeneralTab from './tabs/GeneralTab';
 import MonitoreoTab from './tabs/MonitoreoTab';
 import TopologiaTab from './tabs/TopologiaTab';
 import LogsRegexTab from './tabs/LogsRegexTab';
+import AdminTab from './tabs/AdminTab';
 import { getHealthStatus } from '../lib/health';
 import type {
   BackupInfo,
   ConnectionStatus,
   DashboardSummary,
+  Role,
   SecurityAlert,
   ServerSummary,
   TabId,
@@ -54,7 +56,17 @@ function toPoint(t: TelemetryApiPoint): TelemetryPoint {
   };
 }
 
-export default function Dashboard({ token, onLogout }: { token: string; onLogout: () => void }) {
+export default function Dashboard({
+  token,
+  role,
+  userEmail,
+  onLogout,
+}: {
+  token: string;
+  role: Role;
+  userEmail: string;
+  onLogout: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [servers, setServers] = useState<Record<string, ServerSummary>>({});
@@ -309,7 +321,7 @@ export default function Dashboard({ token, onLogout }: { token: string; onLogout
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       <Header status={status} lastSync={lastSync} onLogout={onLogout} />
-      <TabNav active={activeTab} onChange={setActiveTab} />
+      <TabNav active={activeTab} onChange={setActiveTab} showAdmin={role === 'ADMIN'} />
 
       {activeTab === 'general' && <GeneralTab summary={summary} servers={serverList} />}
       {activeTab === 'monitoreo' && (
@@ -323,6 +335,9 @@ export default function Dashboard({ token, onLogout }: { token: string; onLogout
       )}
       {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
       {activeTab === 'logs' && <LogsRegexTab alerts={alerts} />}
+      {activeTab === 'admin' && role === 'ADMIN' && (
+        <AdminTab token={token} currentUserEmail={userEmail} servers={serverList} onServersChanged={fetchServers} />
+      )}
     </div>
   );
 }

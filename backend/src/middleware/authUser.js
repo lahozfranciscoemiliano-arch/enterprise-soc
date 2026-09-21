@@ -16,4 +16,13 @@ function authUser(req, res, next) {
   }
 }
 
-module.exports = authUser;
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'No autorizado para esta acción' });
+    }
+    return next();
+  };
+}
+
+module.exports = { authUser, requireRole };
