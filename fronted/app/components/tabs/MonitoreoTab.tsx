@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import ServerDetailModal from '../ServerDetailModal';
-import { HEALTH_STYLES } from '../../lib/health';
+import { BACKUP_STYLES, HEALTH_STYLES } from '../../lib/health';
 import type { SecurityAlert, ServerSummary, TelemetryPoint } from '../../types';
 
 export default function MonitoreoTab({
@@ -103,17 +103,19 @@ export default function MonitoreoTab({
           {filteredServers.length === 0 && <p className="py-6 text-center text-sm text-gray-500">Sin nodos que coincidan</p>}
           {filteredServers.map((s) => {
             const health = HEALTH_STYLES[s.healthStatus];
+            const backup = BACKUP_STYLES[s.backup?.result ?? 'UNKNOWN'];
             return (
               <button
                 key={s.id}
                 onClick={() => setModalServerId(s.id)}
-                className="flex w-full items-center justify-between rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-3 text-left text-xs transition-colors hover:border-gray-700 hover:bg-gray-900"
+                className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-3 text-left text-xs transition-colors hover:border-gray-700 hover:bg-gray-900"
               >
                 <span className="flex items-center gap-2 font-medium text-gray-200">
                   🖥️ {s.name}
                   <span className={`h-2 w-2 rounded-full ${health.dot}`} />
                 </span>
                 <span className={`rounded-full border px-2 py-0.5 ${health.badge}`}>{health.label}</span>
+                <span className={`rounded-full border px-2 py-0.5 ${backup.badge}`}>🗄️ {backup.label}</span>
                 <span className="text-gray-400">
                   {s.cpuUsage !== null ? `CPU ${s.cpuUsage.toFixed(0)}% · RAM ${s.memoryUsage!.toFixed(0)}% · Disco ${s.diskUsage!.toFixed(0)}%` : 'Sin telemetría'}
                 </span>

@@ -45,4 +45,26 @@ function getHealthStatus(telemetry) {
   return status;
 }
 
-module.exports = { evaluateTelemetry, getHealthStatus, THRESHOLDS };
+function evaluateBackup(server, backup) {
+  if (backup.result === 'FAILED') {
+    return {
+      type: 'BACKUP_FAILED',
+      severity: 'HIGH',
+      description: `${server.name}: el backup falló (${backup.method}). ${backup.detail ?? ''}`.trim(),
+      metadata: { method: backup.method, detail: backup.detail, serverId: server.id },
+    };
+  }
+
+  if (backup.result === 'WARNING' || (backup.result === 'SUCCESS' && !backup.vssServiceOk)) {
+    return {
+      type: 'BACKUP_WARNING',
+      severity: 'MEDIUM',
+      description: `${server.name}: backup con advertencias (${backup.method})${backup.vssServiceOk ? '' : ' — servicio VSS detenido'}.`,
+      metadata: { method: backup.method, detail: backup.detail, serverId: server.id },
+    };
+  }
+
+  return null;
+}
+
+module.exports = { evaluateTelemetry, evaluateBackup, getHealthStatus, THRESHOLDS };

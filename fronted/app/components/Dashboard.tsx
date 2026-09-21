@@ -8,7 +8,15 @@ import MonitoreoTab from './tabs/MonitoreoTab';
 import TopologiaTab from './tabs/TopologiaTab';
 import LogsRegexTab from './tabs/LogsRegexTab';
 import { getHealthStatus } from '../lib/health';
-import type { ConnectionStatus, DashboardSummary, SecurityAlert, ServerSummary, TabId, TelemetryPoint } from '../types';
+import type {
+  BackupInfo,
+  ConnectionStatus,
+  DashboardSummary,
+  SecurityAlert,
+  ServerSummary,
+  TabId,
+  TelemetryPoint,
+} from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3000/ws';
@@ -27,6 +35,7 @@ type ServerApiItem = {
   memoryUsage: number | null;
   diskUsage: number | null;
   recordedAt: string | null;
+  backup: BackupInfo | null;
 };
 
 type TelemetryApiPoint = {
@@ -88,6 +97,7 @@ export default function Dashboard({ token, onLogout }: { token: string; onLogout
             memoryUsage: s.memoryUsage,
             diskUsage: s.diskUsage,
             recordedAt: s.recordedAt,
+            backup: s.backup,
           },
         ])
       )
@@ -182,6 +192,8 @@ export default function Dashboard({ token, onLogout }: { token: string; onLogout
             setServers((prev) => ({
               ...prev,
               [d.serverId]: {
+                backup: null,
+                ...prev[d.serverId],
                 id: d.serverId,
                 name: d.serverName,
                 status: 'ONLINE',
@@ -204,6 +216,40 @@ export default function Dashboard({ token, onLogout }: { token: string; onLogout
               };
               return { ...prev, [d.serverId]: [...existing, point].slice(-MAX_POINTS) };
             });
+
+            setLastSync(recordedAt);
+            scheduleSummaryRefresh();
+          }
+
+          if (message.type === 'BACKUP_STATUS') {
+            const d = message.data;
+            const recordedAt = d.recordedAt ?? new Date().toISOString();
+
+            setServers((prev) => ({
+              ...prev,
+              [d.serverId]: {
+                status: 'OFFLINE',
+                lastSeenAt: null,
+                healthStatus: 'UNKNOWN',
+                cpuUsage: null,
+                memoryUsage: null,
+                diskUsage: null,
+                recordedAt: null,
+                ...prev[d.serverId],
+                id: d.serverId,
+                name: d.serverName,
+                backup: {
+                  result: d.result,
+                  method: d.method,
+                  lastBackupAt: d.lastBackupAt ?? null,
+                  targetPath: d.targetPath ?? null,
+                  sizeBytes: d.sizeBytes ?? null,
+                  vssServiceOk: d.vssServiceOk,
+                  detail: d.detail ?? null,
+                  recordedAt,
+                },
+              },
+            }));
 
             setLastSync(recordedAt);
             scheduleSummaryRefresh();

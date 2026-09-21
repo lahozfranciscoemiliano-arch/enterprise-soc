@@ -11,9 +11,14 @@ const jwt = require('jsonwebtoken');
 const prisma = require('./src/prismaClient');
 const authServer = require('./src/middleware/authServer');
 const authUser = require('./src/middleware/authUser');
-const { telemetrySchema, loginSchema } = require('./src/validators');
-const { evaluateTelemetry, getHealthStatus } = require('./src/services/alertEngine');
-const { createSocketServer, broadcastAlert, broadcastTelemetry } = require('./src/websocket/socketServer');
+const { telemetrySchema, loginSchema, backupStatusSchema } = require('./src/validators');
+const { evaluateTelemetry, evaluateBackup, getHealthStatus } = require('./src/services/alertEngine');
+const {
+  createSocketServer,
+  broadcastAlert,
+  broadcastTelemetry,
+  broadcastBackupStatus,
+} = require('./src/websocket/socketServer');
 
 const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET'];
 for (const key of REQUIRED_ENV) {
@@ -149,6 +154,67 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
   }
 });
 
+const backupLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Límite de reportes de backup excedido' },
+});
+
+app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
+  const parsed = backupStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Payload de estado de backup inválido', details: parsed.error.flatten() });
+  }
+
+  const data = parsed.data;
+  const server = req.server;
+
+  try {
+    const backup = await prisma.backupStatus.create({
+      data: {
+        serverId: server.id,
+        result: data.result,
+        method: data.method,
+        lastBackupAt: data.lastBackupAt ? new Date(data.lastBackupAt) : undefined,
+        targetPath: data.targetPath,
+        sizeBytes: data.sizeBytes,
+        vssServiceOk: data.vssServiceOk,
+        detail: data.detail,
+        metadata: data.metadata,
+        recordedAt: data.recordedAt ? new Date(data.recordedAt) : undefined,
+      },
+    });
+
+    broadcastBackupStatus(server, backup);
+
+    const alert = evaluateBackup(server, data);
+    let createdEvent = null;
+
+    if (alert) {
+      createdEvent = await prisma.securityEvent.create({
+        data: {
+          serverId: server.id,
+          type: alert.type,
+          severity: alert.severity,
+          description: alert.description,
+          metadata: alert.metadata,
+        },
+      });
+      broadcastAlert({ ...createdEvent, serverName: server.name });
+    }
+
+    return res.status(201).json({
+      backupStatusId: backup.id,
+      alertTriggered: Boolean(createdEvent),
+    });
+  } catch (err) {
+    console.error('Error procesando estado de backup', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 app.get('/api/servers', authUser, async (req, res) => {
   try {
     const servers = await prisma.server.findMany({
@@ -158,12 +224,17 @@ app.get('/api/servers', authUser, async (req, res) => {
           orderBy: { recordedAt: 'desc' },
           take: 1,
         },
+        backups: {
+          orderBy: { recordedAt: 'desc' },
+          take: 1,
+        },
       },
     });
 
     return res.json(
       servers.map((s) => {
         const latest = s.telemetry[0];
+        const backup = s.backups[0];
         return {
           id: s.id,
           name: s.name,
@@ -174,6 +245,18 @@ app.get('/api/servers', authUser, async (req, res) => {
           memoryUsage: latest?.memoryUsage ?? null,
           diskUsage: latest?.diskUsage ?? null,
           recordedAt: latest?.recordedAt ?? null,
+          backup: backup
+            ? {
+                result: backup.result,
+                method: backup.method,
+                lastBackupAt: backup.lastBackupAt,
+                targetPath: backup.targetPath,
+                sizeBytes: backup.sizeBytes,
+                vssServiceOk: backup.vssServiceOk,
+                detail: backup.detail,
+                recordedAt: backup.recordedAt,
+              }
+            : null,
         };
       })
     );
@@ -191,6 +274,10 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
           orderBy: { recordedAt: 'desc' },
           take: 1,
         },
+        backups: {
+          orderBy: { recordedAt: 'desc' },
+          take: 1,
+        },
       },
     });
 
@@ -204,8 +291,10 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
     ]);
 
     const breakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
+    const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
     for (const s of servers) {
       breakdown[getHealthStatus(s.telemetry[0])] += 1;
+      backupBreakdown[s.backups[0]?.result ?? 'UNKNOWN'] += 1;
     }
 
     const reportedServers = servers.length - breakdown.UNKNOWN;
@@ -219,6 +308,7 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
       openAlerts,
       criticalAlerts,
       healthBreakdown: breakdown,
+      backupBreakdown,
     });
   } catch (err) {
     console.error('Error calculando resumen del dashboard', err);
@@ -239,6 +329,23 @@ app.get('/api/servers/:id/telemetry', authUser, async (req, res) => {
     return res.json(telemetry.reverse());
   } catch (err) {
     console.error('Error obteniendo telemetría', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/servers/:id/backup-status', authUser, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 20, 100);
+
+  try {
+    const backups = await prisma.backupStatus.findMany({
+      where: { serverId: req.params.id },
+      orderBy: { recordedAt: 'desc' },
+      take: limit,
+    });
+
+    return res.json(backups);
+  } catch (err) {
+    console.error('Error obteniendo historial de backups', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

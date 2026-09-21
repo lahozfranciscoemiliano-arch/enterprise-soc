@@ -1,5 +1,6 @@
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
+export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 export type TabId = 'general' | 'monitoreo' | 'topologia' | 'logs';
 
@@ -13,6 +14,17 @@ export type SecurityAlert = {
   createdAt: string;
 };
 
+export type BackupInfo = {
+  result: BackupResult;
+  method: string;
+  lastBackupAt: string | null;
+  targetPath: string | null;
+  sizeBytes: number | null;
+  vssServiceOk: boolean;
+  detail: string | null;
+  recordedAt: string | null;
+};
+
 export type ServerSummary = {
   id: string;
   name: string;
@@ -23,6 +35,7 @@ export type ServerSummary = {
   memoryUsage: number | null;
   diskUsage: number | null;
   recordedAt: string | null;
+  backup: BackupInfo | null;
 };
 
 export type TelemetryPoint = {
@@ -40,4 +53,5 @@ export type DashboardSummary = {
   openAlerts: number;
   criticalAlerts: number;
   healthBreakdown: { OK: number; WARNING: number; CRITICAL: number; UNKNOWN: number };
+  backupBreakdown: { SUCCESS: number; WARNING: number; FAILED: number; NOT_CONFIGURED: number; UNKNOWN: number };
 };

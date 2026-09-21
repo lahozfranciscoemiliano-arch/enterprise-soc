@@ -3,6 +3,13 @@ import StatCard from '../StatCard';
 import type { DashboardSummary, ServerSummary } from '../../types';
 
 const HEALTH_COLORS = { OK: '#10b981', WARNING: '#f59e0b', CRITICAL: '#ef4444' };
+const BACKUP_COLORS = {
+  SUCCESS: '#10b981',
+  WARNING: '#f59e0b',
+  FAILED: '#ef4444',
+  NOT_CONFIGURED: '#475569',
+  UNKNOWN: '#94a3b8',
+};
 
 export default function GeneralTab({
   summary,
@@ -25,12 +32,29 @@ export default function GeneralTab({
 
   const hasHealthData = donutData.some((d) => d.value > 0);
 
+  const backupDonutData = summary
+    ? [
+        { name: 'Exitosos', value: summary.backupBreakdown.SUCCESS, color: BACKUP_COLORS.SUCCESS },
+        { name: 'Advertencias', value: summary.backupBreakdown.WARNING, color: BACKUP_COLORS.WARNING },
+        { name: 'Fallidos', value: summary.backupBreakdown.FAILED, color: BACKUP_COLORS.FAILED },
+        { name: 'No configurados', value: summary.backupBreakdown.NOT_CONFIGURED, color: BACKUP_COLORS.NOT_CONFIGURED },
+        { name: 'Sin datos', value: summary.backupBreakdown.UNKNOWN, color: BACKUP_COLORS.UNKNOWN },
+      ]
+    : [];
+  const hasBackupData = backupDonutData.some((d) => d.value > 0);
+
   return (
     <div className="animate-fade-in space-y-4 px-6 py-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard label="SLA Confiabilidad" value={summary ? `${summary.slaPercentage.toFixed(2)}%` : '—'} color="emerald" icon="📊" />
         <StatCard label="Total Nodos" value={summary ? summary.totalServers.toString() : '—'} color="blue" icon="🖧" />
         <StatCard label="Servidores Saludables" value={summary ? summary.healthyServers.toString() : '—'} color="emerald" icon="✅" />
+        <StatCard
+          label="Backups Exitosos"
+          value={summary ? `${summary.backupBreakdown.SUCCESS}/${summary.totalServers}` : '—'}
+          color={summary && summary.backupBreakdown.FAILED > 0 ? 'red' : 'emerald'}
+          icon="🗄️"
+        />
         <StatCard
           label="Alertas / Críticos"
           value={summary ? `${summary.openAlerts} / ${summary.criticalAlerts}` : '—'}
@@ -39,7 +63,7 @@ export default function GeneralTab({
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
           <h2 className="mb-2 text-sm font-semibold text-gray-200">Health Status</h2>
           <div className="h-64">
@@ -52,6 +76,27 @@ export default function GeneralTab({
                     ))}
                   </Pie>
                   <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                  <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-gray-500">Sin datos aún</div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+          <h2 className="mb-2 text-sm font-semibold text-gray-200">Estado de Backups</h2>
+          <div className="h-64">
+            {hasBackupData ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={backupDonutData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={90} paddingAngle={2}>
+                    {backupDonutData.map((d) => (
+                      <Cell key={d.name} fill={d.color} stroke="none" />
+                    ))}
+                  </Pie>
+                  <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 11 }} />
                   <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 12 }} />
                 </PieChart>
               </ResponsiveContainer>

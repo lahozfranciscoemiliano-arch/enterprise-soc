@@ -27,7 +27,17 @@ enum EventType {
   UNAUTHORIZED_ACCESS
   MALWARE_DETECTED
   PORT_SCAN
+  BACKUP_FAILED
+  BACKUP_WARNING
   CUSTOM
+}
+
+enum BackupResult {
+  SUCCESS
+  WARNING
+  FAILED
+  NOT_CONFIGURED
+  UNKNOWN
 }
 
 enum EventSeverity {
@@ -68,6 +78,7 @@ model Server {
   updatedAt  DateTime        @updatedAt
   telemetry  Telemetry[]
   events     SecurityEvent[]
+  backups    BackupStatus[]
 
   @@map("servers")
 }
@@ -87,6 +98,24 @@ model Telemetry {
 
   @@index([serverId, recordedAt])
   @@map("telemetry")
+}
+
+model BackupStatus {
+  id           String       @id @default(uuid())
+  serverId     String
+  server       Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  result       BackupResult
+  method       String
+  lastBackupAt DateTime?
+  targetPath   String?
+  sizeBytes    Float?
+  vssServiceOk Boolean      @default(false)
+  detail       String?
+  metadata     Json?
+  recordedAt   DateTime     @default(now())
+
+  @@index([serverId, recordedAt])
+  @@map("backup_status")
 }
 
 model SecurityEvent {

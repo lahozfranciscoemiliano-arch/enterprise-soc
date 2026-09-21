@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { HEALTH_STYLES, SEVERITY_STYLES } from '../lib/health';
+import { BACKUP_METHOD_LABELS, BACKUP_STYLES, HEALTH_STYLES, SEVERITY_STYLES } from '../lib/health';
 import type { SecurityAlert, ServerSummary } from '../types';
 
 function relativeTime(iso: string | null): string {
@@ -41,6 +41,8 @@ export default function ServerDetailModal({
 
   const health = HEALTH_STYLES[server.healthStatus];
   const isOnline = server.status === 'ONLINE';
+  const backup = server.backup;
+  const backupStyle = BACKUP_STYLES[backup?.result ?? 'UNKNOWN'];
 
   return (
     <div
@@ -81,6 +83,45 @@ export default function ServerDetailModal({
           <DetailTile label="RAM">{server.memoryUsage !== null ? `${server.memoryUsage.toFixed(1)}%` : '—'}</DetailTile>
           <DetailTile label="Disco">{server.diskUsage !== null ? `${server.diskUsage.toFixed(1)}%` : '—'}</DetailTile>
           <DetailTile label="Última Telemetría">{relativeTime(server.recordedAt)}</DetailTile>
+        </div>
+
+        <div className="border-t border-gray-800 p-6">
+          <p className="mb-3 flex items-center gap-2 text-xs uppercase tracking-wide text-gray-500">
+            🗄️ Estado de Backup
+          </p>
+
+          {backup ? (
+            <>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <DetailTile label="Resultado">
+                  <span className={`inline-block rounded-full border px-2 py-0.5 text-sm ${backupStyle.badge}`}>
+                    {backupStyle.label}
+                  </span>
+                </DetailTile>
+                <DetailTile label="Método detectado">
+                  <span className="text-base">{BACKUP_METHOD_LABELS[backup.method] ?? backup.method}</span>
+                </DetailTile>
+                <DetailTile label="Último backup">{relativeTime(backup.lastBackupAt)}</DetailTile>
+                <DetailTile label="Servicio VSS">
+                  <span className="flex items-center gap-2">
+                    <span className={`h-2.5 w-2.5 rounded-full ${backup.vssServiceOk ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                    {backup.vssServiceOk ? 'En ejecución' : 'Detenido'}
+                  </span>
+                </DetailTile>
+              </div>
+
+              {backup.detail && (
+                <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950/50 p-4">
+                  <p className="mb-2 text-xs uppercase tracking-wide text-gray-500">Detalle</p>
+                  <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap font-mono text-xs text-gray-300">
+                    {backup.detail}
+                  </pre>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">Este servidor todavía no reportó estado de backup.</p>
+          )}
         </div>
 
         <div className="border-t border-gray-800 p-6">

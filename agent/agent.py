@@ -1,9 +1,16 @@
 """
 agent.py - Agente de monitoreo Enterprise SOC (Windows)
 
-Recolecta metricas de CPU/RAM/disco/red con psutil y los errores mas
-recientes del Visor de Eventos de Windows (System y Application), y los
-envia cada POLL_INTERVAL_SECONDS al backend NOC/SOC via POST /api/telemetry.
+Recolecta metricas de CPU/RAM/disco/red con psutil, los errores mas
+recientes del Visor de Eventos de Windows (System y Application), y el
+estado del backup nativo de Windows (Windows Server Backup / Backup and
+Restore heredado en Windows 10 y 11), y los envia al backend NOC/SOC via
+POST /api/telemetry y POST /api/backup-status.
+
+IMPORTANTE: la revision de backups (wbadmin / WMI de Windows Server Backup)
+requiere que el proceso corra como Administrador. Sin privilegios elevados,
+el agente sigue reportando CPU/RAM/disco/eventos con normalidad, pero el
+estado de backup se reporta como UNKNOWN con el detalle del error.
 
 Instrucciones de compilacion a .exe con PyInstaller al final de este archivo.
 """
@@ -11,9 +18,12 @@ Instrucciones de compilacion a .exe con PyInstaller al final de este archivo.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import logging
 import os
+import re
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -32,6 +42,15 @@ try:
 except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
     win32evtlog = None
     win32evtlogutil = None
+
+try:
+    import win32com.client
+    import win32service
+    import win32serviceutil
+except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
+    win32com = None
+    win32service = None
+    win32serviceutil = None
 
 
 def get_base_dir() -> Path:
@@ -56,6 +75,7 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 EVENT_LOG_MAX_ERRORS = int(os.getenv("EVENT_LOG_MAX_ERRORS", "10"))
 EVENT_LOGS_TO_READ = ("System", "Application")
+BACKUP_CHECK_INTERVAL_SECONDS = int(os.getenv("BACKUP_CHECK_INTERVAL_SECONDS", "1800"))
 
 logger = logging.getLogger("enterprise-soc-agent")
 logger.setLevel(logging.INFO)
@@ -79,6 +99,9 @@ class NetSample:
 
 
 _last_net_sample: NetSample | None = None
+# -inf fuerza que la primera vuelta del loop siempre revise el backup,
+# sin importar el intervalo configurado.
+_last_backup_check: float = float("-inf")
 
 
 def collect_network_throughput() -> tuple[float, float]:
@@ -186,6 +209,247 @@ def collect_recent_errors() -> list[dict[str, Any]]:
     return all_errors[:EVENT_LOG_MAX_ERRORS]
 
 
+def check_vss_service() -> bool:
+    """True si el servicio de Volume Shadow Copy (VSS) esta corriendo.
+
+    Casi cualquier mecanismo de backup nativo de Windows (Server Backup,
+    Backup and Restore, VSS-aware de terceros) depende de este servicio.
+    """
+    if win32serviceutil is None or win32service is None:
+        return False
+
+    try:
+        status = win32serviceutil.QueryServiceStatus("VSS")
+        return status[1] == win32service.SERVICE_RUNNING
+    except Exception:
+        return False
+
+
+def _wmi_datetime_to_iso(value: Any) -> str | None:
+    """Convierte un CIM_DATETIME de WMI (yyyymmddhhmmss.mmmmmm+UUU) a ISO-8601 UTC.
+
+    Se ignora el offset de zona horaria del final (simplificacion aceptable
+    para esta metrica; lo relevante es tener una fecha aproximada de la
+    ultima copia, no precision de husos horarios).
+    """
+    if not value or not isinstance(value, str) or len(value) < 14:
+        return None
+    try:
+        dt = datetime.strptime(value[:14], "%Y%m%d%H%M%S")
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        return None
+
+
+def check_wmi_windows_backup() -> dict[str, Any] | None:
+    """Consulta Windows Server Backup via WMI (root\\Microsoft\\Windows\\WindowsBackup).
+
+    Solo existe si la caracteristica "Windows Server Backup" esta instalada
+    (tipicamente Windows Server). En Windows 10/11 esta namespace no existe
+    y esta funcion devuelve None para que se intente el siguiente metodo.
+    """
+    if win32com is None:
+        return None
+
+    try:
+        wmi = win32com.client.GetObject(r"winmgmts:\\.\root\Microsoft\Windows\WindowsBackup")
+        summaries = list(wmi.InstancesOf("MSFT_WBSummary"))
+    except Exception:
+        return None
+
+    if not summaries:
+        return None
+
+    summary = summaries[0]
+
+    def safe_get(prop: str) -> Any:
+        try:
+            return getattr(summary, prop)
+        except Exception:
+            return None
+
+    last_result_hr = safe_get("LastBackupResultHR")
+    last_backup_time = safe_get("LastBackupTime")
+    last_successful_time = safe_get("LastSuccessfulBackupTime")
+
+    if last_result_hr is None and last_backup_time is None and last_successful_time is None:
+        return None
+
+    result = "SUCCESS" if last_result_hr in (0, None) else "FAILED"
+
+    return {
+        "result": result,
+        "method": "WINDOWS_SERVER_BACKUP",
+        "lastBackupAt": _wmi_datetime_to_iso(last_backup_time) or _wmi_datetime_to_iso(last_successful_time),
+        "detail": f"LastBackupResultHR={last_result_hr}",
+    }
+
+
+def _decode_console_bytes(data: bytes) -> str:
+    """Decodifica la salida de una herramienta de consola de Windows probando,
+    en orden, UTF-8 estricto, el codepage OEM del sistema (el que usan
+    herramientas de consola clasicas como wbadmin.exe) y Windows-1252.
+
+    La codificacion real varia segun la configuracion regional y si el modo
+    "Beta: usar UTF-8 en todo el mundo" de Windows esta activo, por lo que
+    fijar un unico codec de antemano (p. ej. 'mbcs') produce texto corrupto
+    en algunos sistemas.
+    """
+    candidates = ["utf-8"]
+    try:
+        candidates.append(f"cp{ctypes.windll.kernel32.GetOEMCP()}")
+    except Exception:
+        pass
+    candidates.append("cp1252")
+
+    for encoding in candidates:
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    return data.decode("latin-1", errors="replace")
+
+
+def check_wbadmin() -> dict[str, Any]:
+    """Fallback via 'wbadmin get versions', disponible en Server y en 10/11
+    con Backup and Restore (Windows 7) configurado.
+
+    El texto de salida de wbadmin depende del idioma de Windows, asi que NO
+    se intenta parsear el detalle linea por linea: solo se usa el codigo de
+    salida y un heuristico simple para clasificar el resultado, y se
+    conserva el texto crudo (ya en el idioma del sistema) en 'detail' para
+    que un humano lo pueda leer.
+    """
+    try:
+        proc = subprocess.run(
+            ["wbadmin", "get", "versions"],
+            capture_output=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        return {
+            "result": "NOT_CONFIGURED",
+            "method": "WBADMIN",
+            "detail": "wbadmin no esta disponible en este sistema.",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "result": "UNKNOWN",
+            "method": "WBADMIN",
+            "detail": "wbadmin get versions supero el tiempo de espera (60s).",
+        }
+
+    output = (_decode_console_bytes(proc.stdout or b"") + _decode_console_bytes(proc.stderr or b"")).strip()
+
+    if proc.returncode != 0:
+        # Codigo distinto de 0: sin privilegios de administrador, servicio
+        # de backup no configurado, o algun otro error. El texto crudo de
+        # wbadmin (en el idioma del sistema) explica el motivo exacto.
+        return {
+            "result": "UNKNOWN",
+            "method": "WBADMIN",
+            "detail": output[-600:] or f"wbadmin devolvio el codigo {proc.returncode}",
+        }
+
+    # Heuristico agnostico al idioma: busca patrones de fecha+hora en la
+    # salida para detectar si hay al menos una version de backup listada.
+    date_matches = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}[^\n]{0,25}\d{1,2}:\d{2}", output)
+
+    if not date_matches and len(output) < 300:
+        return {
+            "result": "NOT_CONFIGURED",
+            "method": "WBADMIN",
+            "detail": output[-600:] or "No se encontraron versiones de backup.",
+        }
+
+    return {
+        "result": "SUCCESS",
+        "method": "WBADMIN",
+        "detail": output[-600:],
+    }
+
+
+def get_backup_status() -> dict[str, Any]:
+    """Determina el estado del backup nativo probando varios metodos en orden.
+
+    1. WMI de Windows Server Backup (el mas detallado; solo Server con la
+       caracteristica instalada).
+    2. wbadmin get versions (funciona tambien en Windows 10/11).
+    3. Si ninguno responde, UNKNOWN.
+
+    Siempre se agrega el estado del servicio VSS como señal complementaria.
+    """
+    vss_ok = check_vss_service()
+
+    status: dict[str, Any] | None = None
+    try:
+        status = check_wmi_windows_backup()
+    except Exception as exc:
+        logger.debug("Fallo la consulta WMI de Windows Server Backup: %s", exc)
+
+    if status is None:
+        try:
+            status = check_wbadmin()
+        except Exception as exc:
+            logger.debug("Fallo la consulta wbadmin: %s", exc)
+            status = {
+                "result": "UNKNOWN",
+                "method": "WBADMIN",
+                "detail": f"Error inesperado consultando wbadmin: {exc}",
+            }
+
+    status["vssServiceOk"] = vss_ok
+    return status
+
+
+def build_backup_payload() -> dict[str, Any]:
+    status = get_backup_status()
+
+    payload: dict[str, Any] = {
+        "result": status["result"],
+        "method": status["method"],
+        "vssServiceOk": bool(status.get("vssServiceOk", False)),
+        "recordedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+    }
+
+    if status.get("lastBackupAt"):
+        payload["lastBackupAt"] = status["lastBackupAt"]
+    if status.get("detail"):
+        payload["detail"] = status["detail"][:1000]
+    if status.get("targetPath"):
+        payload["targetPath"] = status["targetPath"]
+    if status.get("sizeBytes") is not None:
+        payload["sizeBytes"] = status["sizeBytes"]
+
+    return payload
+
+
+def send_backup_status(payload: dict[str, Any]) -> None:
+    url = f"{BACKEND_URL}/api/backup-status"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Server-Id": SERVER_ID,
+        "X-Api-Key": API_KEY,
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+        logger.debug("Respuesta cruda backup-status (HTTP %s): %s", response.status_code, response.text[:500])
+        response.raise_for_status()
+        body = response.json()
+        logger.info(
+            "Estado de backup enviado OK (HTTP %s, resultado=%s, metodo=%s, alerta=%s)",
+            response.status_code,
+            payload["result"],
+            payload["method"],
+            body.get("alertTriggered"),
+        )
+    except requests.exceptions.RequestException as exc:
+        status = getattr(exc.response, "status_code", "sin respuesta")
+        logger.error("Fallo al enviar estado de backup a %s (HTTP %s): %s", url, status, exc)
+
+
 def build_payload() -> dict[str, Any]:
     metrics = collect_system_metrics()
     recent_errors = collect_recent_errors()
@@ -279,6 +543,25 @@ def run_cycle(debug: bool) -> None:
         logger.debug("Payload completo a enviar:\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
 
     send_telemetry(payload)
+
+    global _last_backup_check
+    now = time.monotonic()
+    if now - _last_backup_check >= BACKUP_CHECK_INTERVAL_SECONDS:
+        _last_backup_check = now
+        backup_payload = build_backup_payload()
+
+        if debug:
+            logger.debug(
+                "Estado de backup -> resultado=%s | metodo=%s | VSS activo=%s | ultimo backup=%s",
+                backup_payload["result"],
+                backup_payload["method"],
+                backup_payload["vssServiceOk"],
+                backup_payload.get("lastBackupAt", "N/D"),
+            )
+            if backup_payload.get("detail"):
+                logger.debug("Detalle de backup:\n%s", backup_payload["detail"])
+
+        send_backup_status(backup_payload)
 
 
 def main() -> None:

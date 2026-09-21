@@ -84,4 +84,22 @@ function broadcastTelemetry(server, telemetry) {
   });
 }
 
-module.exports = { createSocketServer, broadcastAlert, broadcastTelemetry };
+function broadcastBackupStatus(server, backup) {
+  broadcast({
+    type: 'BACKUP_STATUS',
+    data: {
+      serverId: server.id,
+      serverName: server.name,
+      result: backup.result,
+      method: backup.method,
+      lastBackupAt: backup.lastBackupAt,
+      targetPath: backup.targetPath,
+      sizeBytes: backup.sizeBytes,
+      vssServiceOk: backup.vssServiceOk,
+      detail: backup.detail,
+      recordedAt: backup.recordedAt,
+    },
+  });
+}
+
+module.exports = { createSocketServer, broadcastAlert, broadcastTelemetry, broadcastBackupStatus };
