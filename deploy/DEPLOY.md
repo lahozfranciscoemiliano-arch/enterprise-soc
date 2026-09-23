@@ -124,7 +124,32 @@ En el `.env` de la raíz, completá cualquiera de estos antes de `docker compose
 Solo se notifican alertas con severidad `HIGH` o `CRITICAL` (ajustable con
 `NOTIFY_MIN_SEVERITY`).
 
-## 10. Publicar el agente para descarga automática
+## 10. Segundo factor (2FA) y control de sesiones
+
+Cada usuario activa su propio 2FA desde el dashboard (botón **Mi cuenta**, arriba a la
+derecha) — no requiere nada en el servidor más allá de tener el stack corriendo:
+
+1. **Mi cuenta → Activar 2FA**: muestra un código QR para escanear con Google Authenticator,
+   Authy, o cualquier app TOTP. También se puede cargar el secreto a mano.
+2. Confirmar con un código de 6 dígitos activa el 2FA y muestra 8 códigos de respaldo de un
+   solo uso — guardarlos ahora, no se vuelven a mostrar.
+3. A partir de ahí, cada login pide el código además de la contraseña.
+
+Recomendado activarlo en la cuenta ADMIN inicial antes de anunciar la URL al resto del
+equipo (ver el checklist más abajo).
+
+**Si alguien pierde el dispositivo con el 2FA:** un ADMIN puede restablecerlo desde
+Admin → Usuarios → **Restablecer 2FA** (lo desactiva y de paso cierra las sesiones activas de
+esa cuenta, por si el dispositivo perdido también tenía una sesión abierta).
+
+**Revocar sesiones:** las sesiones ya no son un JWT stateless que dura hasta que expira solo
+— quedan registradas en la base y se pueden cerrar en cualquier momento:
+
+- Cada usuario: **Mi cuenta → Cerrar sesión en todos los dispositivos**.
+- Un ADMIN sobre cualquier usuario: Admin → Usuarios → **Cerrar sesiones** (útil ante una
+  cuenta comprometida o la baja de un empleado).
+
+## 11. Publicar el agente para descarga automática
 
 Compilá el agente una vez (en cualquier Windows con Python) y subilo al VPS:
 
@@ -141,7 +166,7 @@ docker cp ~/enterprise-soc/backend/downloads/enterprise-soc-agent.exe enterprise
 
 A partir de acá, `install-agent.ps1` lo descarga solo si no lo encuentra local.
 
-## 11. Conectar servidores Windows al NOC
+## 12. Conectar servidores Windows al NOC
 
 En cada servidor Windows a monitorear, como Administrador:
 
@@ -161,5 +186,10 @@ corriendo como tarea programada — sin tocar la base de datos ni el dashboard a
       que `docker compose ps` muestra los puertos ligados a `127.0.0.1`, no a `0.0.0.0`)
 - [ ] TLS activo (`https://`, candado verde, `wss://` en la consola del navegador)
 - [ ] Contraseña del usuario ADMIN inicial guardada en un lugar seguro (no se puede recuperar)
-- [ ] Gaps de seguridad conocidos y aceptados: sin 2FA, sin revocación de JWT (queda válido
-      hasta que expira, 8h por defecto), sin cookie httpOnly (el token vive en localStorage)
+- [ ] `NODE_ENV=production` en el backend (ya viene fijo en `docker-compose.yml`) — sin esto,
+      la cookie de sesión no se marca `Secure` y el navegador la rechazaría igual bajo HTTPS
+- [ ] Activaste el 2FA en la cuenta ADMIN inicial (Mi cuenta → Activar 2FA) y guardaste los
+      códigos de respaldo en un lugar seguro
+- [ ] Verificaste el estado de backup real de al menos un servidor Windows con
+      `python agent.py --debug --once` antes de darlo por confiable (ver sección 5, limitación
+      de la detección de backups)

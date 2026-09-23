@@ -5,14 +5,12 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 export default function ServerConfigPanel({
   server,
-  token,
   onUpdated,
 }: {
   server: ServerSummary;
-  token: string;
   onUpdated: () => void;
 }) {
-  const authHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const jsonHeaders = { 'Content-Type': 'application/json' };
 
   const [thresholds, setThresholds] = useState({
     cpuThresholdMedium: server.thresholds.cpuThresholdMedium ?? '',
@@ -38,7 +36,8 @@ export default function ServerConfigPanel({
     try {
       const res = await fetch(`${API_URL}/api/admin/servers/${server.id}/thresholds`, {
         method: 'PATCH',
-        headers: authHeaders,
+        headers: jsonHeaders,
+        credentials: 'include',
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error((await res.json()).error || 'No se pudieron guardar los umbrales');
@@ -59,7 +58,8 @@ export default function ServerConfigPanel({
     try {
       const res = await fetch(`${API_URL}/api/admin/servers/${server.id}/maintenance`, {
         method: 'PATCH',
-        headers: authHeaders,
+        headers: jsonHeaders,
+        credentials: 'include',
         body: JSON.stringify({ maintenanceUntil }),
       });
       if (!res.ok) throw new Error((await res.json()).error || 'No se pudo actualizar el mantenimiento');

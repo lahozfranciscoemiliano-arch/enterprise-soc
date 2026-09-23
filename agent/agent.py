@@ -386,13 +386,18 @@ def get_backup_status() -> dict[str, Any]:
     try:
         status = check_wmi_windows_backup()
     except Exception as exc:
-        logger.debug("Fallo la consulta WMI de Windows Server Backup: %s", exc)
+        # Nivel WARNING (no DEBUG): esta es la unica ruta de deteccion de
+        # backups que no se probo contra un Windows Server real durante el
+        # desarrollo, asi que cualquier falla aca debe quedar visible en el
+        # log normal del servicio desde el primer despliegue, sin necesitar
+        # --debug.
+        logger.warning("Fallo la consulta WMI de Windows Server Backup: %s", exc)
 
     if status is None:
         try:
             status = check_wbadmin()
         except Exception as exc:
-            logger.debug("Fallo la consulta wbadmin: %s", exc)
+            logger.warning("Fallo la consulta wbadmin: %s", exc)
             status = {
                 "result": "UNKNOWN",
                 "method": "WBADMIN",
@@ -550,13 +555,20 @@ def run_cycle(debug: bool) -> None:
         _last_backup_check = now
         backup_payload = build_backup_payload()
 
+        # Siempre en INFO (no solo en --debug): al instalar en un servidor
+        # nuevo, esta linea es la forma de confirmar que metodo de deteccion
+        # de backup quedo activo (WMI de Windows Server Backup vs. el
+        # fallback wbadmin) sin tener que correr el agente en modo debug.
+        logger.info(
+            "Estado de backup -> resultado=%s | metodo=%s | VSS activo=%s | ultimo backup=%s",
+            backup_payload["result"],
+            backup_payload["method"],
+            backup_payload["vssServiceOk"],
+            backup_payload.get("lastBackupAt", "N/D"),
+        )
         if debug:
             logger.debug(
-                "Estado de backup -> resultado=%s | metodo=%s | VSS activo=%s | ultimo backup=%s",
-                backup_payload["result"],
-                backup_payload["method"],
-                backup_payload["vssServiceOk"],
-                backup_payload.get("lastBackupAt", "N/D"),
+                "Detalle completo del backup:\n%s", json.dumps(backup_payload, indent=2, ensure_ascii=False)
             )
             if backup_payload.get("detail"):
                 logger.debug("Detalle de backup:\n%s", backup_payload["detail"])

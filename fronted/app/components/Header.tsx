@@ -3,11 +3,15 @@ import type { ConnectionStatus } from '../types';
 export default function Header({
   status,
   lastSync,
+  userEmail,
   onLogout,
+  onOpenAccount,
 }: {
   status: ConnectionStatus;
   lastSync: string | null;
+  userEmail: string;
   onLogout: () => void;
+  onOpenAccount: () => void;
 }) {
   const statusLabel =
     status === 'connected' ? 'Conectado' : status === 'connecting' ? 'Conectando...' : 'Desconectado';
@@ -37,6 +41,13 @@ export default function Header({
             <span className={`h-2 w-2 rounded-full ${statusDot} ${status === 'connected' ? 'animate-pulse' : ''}`} />
             {statusLabel}
           </div>
+          <button
+            onClick={onOpenAccount}
+            className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-800"
+            title={userEmail}
+          >
+            👤 Mi cuenta
+          </button>
           <button
             onClick={onLogout}
             className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-800"

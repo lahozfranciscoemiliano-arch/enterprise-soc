@@ -8,17 +8,15 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 type RevealedCredential = { label: string; serverId: string; apiKey: string };
 
 export default function AdminTab({
-  token,
   currentUserEmail,
   servers,
   onServersChanged,
 }: {
-  token: string;
   currentUserEmail: string;
   servers: ServerSummary[];
   onServersChanged: () => void;
 }) {
-  const authHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const jsonHeaders = { 'Content-Type': 'application/json' };
 
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [usersError, setUsersError] = useState<string | null>(null);
@@ -36,15 +34,14 @@ export default function AdminTab({
 
   const fetchUsers = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/users`, { headers: authHeaders });
+      const res = await fetch(`${API_URL}/api/admin/users`, { credentials: 'include' });
       if (!res.ok) throw new Error((await res.json()).error || 'No se pudo cargar usuarios');
       setUsers(await res.json());
       setUsersError(null);
     } catch (err) {
       setUsersError(err instanceof Error ? err.message : 'Error desconocido');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     fetchUsers();
@@ -59,7 +56,8 @@ export default function AdminTab({
       try {
         const res = await fetch(`${API_URL}/api/admin/users`, {
           method: 'POST',
-          headers: authHeaders,
+          headers: jsonHeaders,
+          credentials: 'include',
           body: JSON.stringify(newUser),
         });
         const body = await res.json();
@@ -73,25 +71,66 @@ export default function AdminTab({
         setCreatingUser(false);
       }
     },
-    [newUser, authHeaders]
+    [newUser]
   );
 
-  const handleDeleteUser = useCallback(
+  const handleDeleteUser = useCallback(async (user: AdminUser) => {
+    if (!window.confirm(`¿Eliminar el usuario ${user.email}? Esta acción no se puede deshacer.`)) return;
+
+    try {
+      const res = await fetch(`${API_URL}/api/admin/users/${user.id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json();
+        throw new Error(body.error || 'No se pudo eliminar el usuario');
+      }
+      setUsers((prev) => prev.filter((u) => u.id !== user.id));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Error desconocido');
+    }
+  }, []);
+
+  const handleRevokeSessions = useCallback(async (user: AdminUser) => {
+    if (!window.confirm(`¿Cerrar todas las sesiones activas de ${user.email}?`)) return;
+
+    try {
+      const res = await fetch(`${API_URL}/api/admin/users/${user.id}/revoke-sessions`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok && res.status !== 204) {
+        throw new Error((await res.json()).error || 'No se pudieron revocar las sesiones');
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Error desconocido');
+    }
+  }, []);
+
+  const handleReset2fa = useCallback(
     async (user: AdminUser) => {
-      if (!window.confirm(`¿Eliminar el usuario ${user.email}? Esta acción no se puede deshacer.`)) return;
+      if (
+        !window.confirm(
+          `¿Restablecer el 2FA de ${user.email}? Se desactiva y se cierran sus sesiones activas (para cuando perdió el dispositivo).`
+        )
+      )
+        return;
 
       try {
-        const res = await fetch(`${API_URL}/api/admin/users/${user.id}`, { method: 'DELETE', headers: authHeaders });
+        const res = await fetch(`${API_URL}/api/admin/users/${user.id}/reset-2fa`, {
+          method: 'POST',
+          credentials: 'include',
+        });
         if (!res.ok && res.status !== 204) {
-          const body = await res.json();
-          throw new Error(body.error || 'No se pudo eliminar el usuario');
+          throw new Error((await res.json()).error || 'No se pudo restablecer el 2FA');
         }
-        setUsers((prev) => prev.filter((u) => u.id !== user.id));
+        setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, twoFactorEnabled: false } : u)));
       } catch (err) {
         alert(err instanceof Error ? err.message : 'Error desconocido');
       }
     },
-    [authHeaders]
+    []
   );
 
   const handleCreateServer = useCallback(
@@ -103,7 +142,8 @@ export default function AdminTab({
       try {
         const res = await fetch(`${API_URL}/api/admin/servers`, {
           method: 'POST',
-          headers: authHeaders,
+          headers: jsonHeaders,
+          credentials: 'include',
           body: JSON.stringify(newServer),
         });
         const body = await res.json();
@@ -118,28 +158,25 @@ export default function AdminTab({
         setCreatingServer(false);
       }
     },
-    [newServer, authHeaders, onServersChanged]
+    [newServer, onServersChanged]
   );
 
-  const handleRotateKey = useCallback(
-    async (server: ServerSummary) => {
-      if (!window.confirm(`¿Rotar la API key de ${server.name}? La clave actual dejará de funcionar de inmediato.`))
-        return;
+  const handleRotateKey = useCallback(async (server: ServerSummary) => {
+    if (!window.confirm(`¿Rotar la API key de ${server.name}? La clave actual dejará de funcionar de inmediato.`))
+      return;
 
-      try {
-        const res = await fetch(`${API_URL}/api/admin/servers/${server.id}/rotate-key`, {
-          method: 'POST',
-          headers: authHeaders,
-        });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.error || 'No se pudo rotar la API key');
-        setRevealed({ label: body.name, serverId: body.id, apiKey: body.apiKey });
-      } catch (err) {
-        alert(err instanceof Error ? err.message : 'Error desconocido');
-      }
-    },
-    [authHeaders]
-  );
+    try {
+      const res = await fetch(`${API_URL}/api/admin/servers/${server.id}/rotate-key`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo rotar la API key');
+      setRevealed({ label: body.name, serverId: body.id, apiKey: body.apiKey });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Error desconocido');
+    }
+  }, []);
 
   const handleDeleteServer = useCallback(
     async (server: ServerSummary) => {
@@ -153,7 +190,7 @@ export default function AdminTab({
       try {
         const res = await fetch(`${API_URL}/api/admin/servers/${server.id}`, {
           method: 'DELETE',
-          headers: authHeaders,
+          credentials: 'include',
         });
         if (!res.ok && res.status !== 204) {
           const body = await res.json();
@@ -164,7 +201,7 @@ export default function AdminTab({
         alert(err instanceof Error ? err.message : 'Error desconocido');
       }
     },
-    [authHeaders, onServersChanged]
+    [onServersChanged]
   );
 
   return (
@@ -203,13 +240,38 @@ export default function AdminTab({
               <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-blue-400">
                 {u.role}
               </span>
-              <button
-                onClick={() => handleDeleteUser(u)}
-                disabled={u.email === currentUserEmail}
-                className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
+              <span
+                className={`rounded-full px-2 py-0.5 ${
+                  u.twoFactorEnabled
+                    ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                    : 'border border-gray-700 bg-gray-800 text-gray-500'
+                }`}
               >
-                Eliminar
-              </button>
+                {u.twoFactorEnabled ? '2FA activo' : '2FA off'}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleRevokeSessions(u)}
+                  className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                >
+                  Cerrar sesiones
+                </button>
+                {u.twoFactorEnabled && (
+                  <button
+                    onClick={() => handleReset2fa(u)}
+                    className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                  >
+                    Restablecer 2FA
+                  </button>
+                )}
+                <button
+                  onClick={() => handleDeleteUser(u)}
+                  disabled={u.email === currentUserEmail}
+                  className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  Eliminar
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -296,9 +358,7 @@ export default function AdminTab({
                   </button>
                 </div>
               </div>
-              {expandedServerId === s.id && (
-                <ServerConfigPanel server={s} token={token} onUpdated={onServersChanged} />
-              )}
+              {expandedServerId === s.id && <ServerConfigPanel server={s} onUpdated={onServersChanged} />}
             </div>
           ))}
         </div>
@@ -343,7 +403,7 @@ export default function AdminTab({
         </p>
       </div>
 
-      <AuditLogPanel token={token} />
+      <AuditLogPanel />
     </div>
   );
 }

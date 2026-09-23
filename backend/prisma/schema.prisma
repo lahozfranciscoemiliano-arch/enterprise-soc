@@ -54,17 +54,40 @@ enum EventStatus {
 }
 
 model User {
-  id                 String          @id @default(uuid())
-  email              String          @unique
-  passwordHash       String
-  name               String
-  role               Role            @default(VIEWER)
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
-  acknowledgedEvents SecurityEvent[] @relation("AcknowledgedBy")
-  auditLogs          AuditLog[]
+  id                   String          @id @default(uuid())
+  email                String          @unique
+  passwordHash         String
+  name                 String
+  role                 Role            @default(VIEWER)
+  twoFactorEnabled     Boolean         @default(false)
+  twoFactorSecret      String?
+  twoFactorBackupCodes String[]        @default([])
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  acknowledgedEvents   SecurityEvent[] @relation("AcknowledgedBy")
+  auditLogs            AuditLog[]
+  sessions             Session[]
 
   @@map("users")
+}
+
+// Sesiones activas emitidas en el login. El JWT por si solo es stateless
+// (no se puede invalidar antes de que expire); esta tabla es lo que permite
+// una revocacion real: logout, "cerrar todas mis sesiones", o un admin
+// forzando el cierre de sesion de otro usuario (cuenta comprometida, baja).
+model Session {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jti       String    @unique
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  @@index([userId])
+  @@map("sessions")
 }
 
 model AuditLog {

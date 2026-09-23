@@ -7,13 +7,15 @@ const http = require('http');
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const prisma = require('./src/prismaClient');
 const authServer = require('./src/middleware/authServer');
-const { authUser, requireRole } = require('./src/middleware/authUser');
+const { authUser, requireRole, SESSION_COOKIE_NAME } = require('./src/middleware/authUser');
+const { csrfGuard } = require('./src/middleware/csrfGuard');
 const {
   telemetrySchema,
   loginSchema,
@@ -23,10 +25,22 @@ const {
   updateEventStatusSchema,
   updateThresholdsSchema,
   updateMaintenanceSchema,
+  login2faSchema,
+  twoFactorCodeSchema,
+  disable2faSchema,
 } = require('./src/validators');
 const { evaluateTelemetry, evaluateBackup, getHealthStatus, isInMaintenance } = require('./src/services/alertEngine');
 const { logAudit } = require('./src/services/auditLog');
 const { notifyAlert } = require('./src/services/notifications');
+const { createSession, revokeSession, revokeAllUserSessions } = require('./src/services/sessions');
+const {
+  generateSecret,
+  generateQrCodeDataUrl,
+  verifyToken: verifyTotpToken,
+  generateBackupCodes,
+  hashBackupCodes,
+  findBackupCodeIndex,
+} = require('./src/services/twoFactor');
 const {
   createSocketServer,
   broadcastAlert,
@@ -54,6 +68,7 @@ app.use(
   })
 );
 app.use(express.json({ limit: '100kb' }));
+app.use(cookieParser());
 
 // Limite general por IP sobre toda la API, como defensa en profundidad ante
 // un JWT filtrado o abuso, ademas de los limites especificos por endpoint.
@@ -65,6 +80,53 @@ const apiLimiter = rateLimit({
   message: { error: 'Demasiadas solicitudes, intenta más tarde' },
 });
 app.use('/api/', apiLimiter);
+// La sesion ahora vive en una cookie httpOnly (nunca visible para JS ni
+// robable por un XSS); esto la protege del otro lado: bloquea escrituras
+// disparadas desde un origen distinto al del propio dashboard.
+app.use('/api/', csrfGuard);
+
+function setSessionCookie(res, token, expiresAt) {
+  res.cookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/',
+    expires: expiresAt,
+  });
+}
+
+function clearSessionCookie(res) {
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/',
+  });
+}
+
+async function issueSession(req, res, user) {
+  const { jti, expiresAt } = await createSession({
+    userId: user.id,
+    userAgent: req.header('user-agent'),
+    ip: req.ip,
+  });
+
+  const token = jwt.sign(
+    { sub: user.id, role: user.role, jti },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
+  );
+
+  setSessionCookie(res, token, expiresAt);
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    twoFactorEnabled: user.twoFactorEnabled,
+  };
+}
 
 function generateApiKey() {
   return crypto.randomBytes(32).toString('hex');
@@ -99,17 +161,209 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Email o contraseña incorrectos' });
     }
 
-    const token = jwt.sign(
-      { sub: user.id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
-    );
+    if (user.twoFactorEnabled) {
+      // Token de un solo proposito: nunca lleva "jti", asi que authUser lo
+      // rechaza automaticamente para cualquier endpoint protegido. Solo
+      // sirve para probar el segundo factor en /api/auth/login/2fa.
+      const tempToken = jwt.sign({ sub: user.id, purpose: '2fa' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+      return res.json({ requires2FA: true, tempToken });
+    }
 
+    const safeUser = await issueSession(req, res, user);
     logAudit({ userId: user.id, action: 'LOGIN', targetType: 'User', targetId: user.id });
 
-    return res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+    return res.json({ user: safeUser });
   } catch (err) {
     console.error('Error en login', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+const twoFaLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos, intenta más tarde' },
+});
+
+app.post('/api/auth/login/2fa', twoFaLimiter, async (req, res) => {
+  const parsed = login2faSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos inválidos' });
+  }
+
+  const { tempToken, code } = parsed.data;
+
+  let payload;
+  try {
+    payload = jwt.verify(tempToken, process.env.JWT_SECRET);
+  } catch (err) {
+    return res.status(401).json({ error: 'La verificación expiró, iniciá sesión de nuevo' });
+  }
+
+  if (payload.purpose !== '2fa' || payload.jti) {
+    return res.status(401).json({ error: 'Token inválido' });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!user || !user.twoFactorEnabled) {
+      return res.status(401).json({ error: 'Token inválido' });
+    }
+
+    const validTotp = verifyTotpToken(user.twoFactorSecret, code);
+    let backupCodeIndex = -1;
+    if (!validTotp) {
+      backupCodeIndex = await findBackupCodeIndex(code, user.twoFactorBackupCodes);
+    }
+
+    if (!validTotp && backupCodeIndex === -1) {
+      logAudit({ userId: user.id, action: '2FA_LOGIN_FAILED', targetType: 'User', targetId: user.id });
+      return res.status(401).json({ error: 'Código de verificación incorrecto' });
+    }
+
+    if (backupCodeIndex !== -1) {
+      const remaining = user.twoFactorBackupCodes.filter((_, i) => i !== backupCodeIndex);
+      await prisma.user.update({ where: { id: user.id }, data: { twoFactorBackupCodes: remaining } });
+      logAudit({ userId: user.id, action: '2FA_BACKUP_CODE_USED', targetType: 'User', targetId: user.id });
+    }
+
+    const safeUser = await issueSession(req, res, user);
+    logAudit({ userId: user.id, action: 'LOGIN', targetType: 'User', targetId: user.id });
+
+    return res.json({ user: safeUser });
+  } catch (err) {
+    console.error('Error verificando 2FA', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/auth/logout', authUser, async (req, res) => {
+  await revokeSession(req.user.jti);
+  clearSessionCookie(res);
+  return res.status(204).send();
+});
+
+app.post('/api/auth/logout-all', authUser, async (req, res) => {
+  await revokeAllUserSessions(req.user.sub);
+  clearSessionCookie(res);
+  logAudit({ userId: req.user.sub, action: 'LOGOUT_ALL_DEVICES', targetType: 'User', targetId: req.user.sub });
+  return res.status(204).send();
+});
+
+app.get('/api/auth/me', authUser, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
+    if (!user) return res.status(401).json({ error: 'No autenticado' });
+    return res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      twoFactorEnabled: user.twoFactorEnabled,
+    });
+  } catch (err) {
+    console.error('Error obteniendo usuario actual', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2FA (TOTP): activacion, confirmacion y desactivacion. El login en si vive
+// arriba (/api/auth/login y /api/auth/login/2fa); esto es la configuracion
+// que hace cada usuario sobre su propia cuenta.
+// ---------------------------------------------------------------------------
+
+app.post('/api/auth/2fa/setup', authUser, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
+    if (user.twoFactorEnabled) {
+      return res.status(400).json({ error: 'El 2FA ya está activado en esta cuenta' });
+    }
+
+    const { secret, otpauthUrl } = generateSecret(user.email);
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorSecret: secret } });
+
+    const qrCodeDataUrl = await generateQrCodeDataUrl(otpauthUrl);
+
+    return res.json({ secret, qrCodeDataUrl });
+  } catch (err) {
+    console.error('Error iniciando configuración de 2FA', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/auth/2fa/verify-setup', twoFaLimiter, authUser, async (req, res) => {
+  const parsed = twoFactorCodeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Código inválido' });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
+    if (!user.twoFactorSecret) {
+      return res.status(400).json({ error: 'Primero generá el código QR' });
+    }
+
+    if (!verifyTotpToken(user.twoFactorSecret, parsed.data.code)) {
+      return res.status(401).json({ error: 'Código incorrecto' });
+    }
+
+    const backupCodes = generateBackupCodes();
+    const hashed = await hashBackupCodes(backupCodes);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { twoFactorEnabled: true, twoFactorBackupCodes: hashed },
+    });
+
+    logAudit({ userId: user.id, action: '2FA_ENABLED', targetType: 'User', targetId: user.id });
+
+    // Los codigos de respaldo en texto plano solo se muestran esta vez.
+    return res.json({ backupCodes });
+  } catch (err) {
+    console.error('Error confirmando 2FA', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/auth/2fa/disable', twoFaLimiter, authUser, async (req, res) => {
+  const parsed = disable2faSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos inválidos' });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
+    if (!user.twoFactorEnabled) {
+      return res.status(400).json({ error: 'El 2FA no está activado' });
+    }
+
+    const validPassword = await bcrypt.compare(parsed.data.password, user.passwordHash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Contraseña incorrecta' });
+    }
+
+    const validTotp = verifyTotpToken(user.twoFactorSecret, parsed.data.code);
+    let backupCodeIndex = -1;
+    if (!validTotp) {
+      backupCodeIndex = await findBackupCodeIndex(parsed.data.code, user.twoFactorBackupCodes);
+    }
+    if (!validTotp && backupCodeIndex === -1) {
+      return res.status(401).json({ error: 'Código de verificación incorrecto' });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { twoFactorEnabled: false, twoFactorSecret: null, twoFactorBackupCodes: [] },
+    });
+
+    logAudit({ userId: user.id, action: '2FA_DISABLED', targetType: 'User', targetId: user.id });
+
+    return res.status(204).send();
+  } catch (err) {
+    console.error('Error desactivando 2FA', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -515,7 +769,7 @@ app.get('/api/admin/users', authUser, requireRole('ADMIN'), async (req, res) => 
   try {
     const users = await prisma.user.findMany({
       orderBy: { createdAt: 'asc' },
-      select: { id: true, email: true, name: true, role: true, createdAt: true },
+      select: { id: true, email: true, name: true, role: true, twoFactorEnabled: true, createdAt: true },
     });
     return res.json(users);
   } catch (err) {
@@ -579,6 +833,69 @@ app.delete('/api/admin/users/:id', authUser, requireRole('ADMIN'), async (req, r
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
+
+app.post(
+  '/api/admin/users/:id/revoke-sessions',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    try {
+      const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+      if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+      await revokeAllUserSessions(target.id);
+      logAudit({
+        userId: req.user.sub,
+        action: 'USER_REVOKE_SESSIONS',
+        targetType: 'User',
+        targetId: target.id,
+        metadata: { email: target.email },
+      });
+
+      return res.status(204).send();
+    } catch (err) {
+      console.error('Error revocando sesiones', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
+// Para cuando alguien pierde el celular con el que tenia el 2FA: un ADMIN
+// puede desactivarlo a la fuerza (sin el codigo, a diferencia de
+// /api/auth/2fa/disable) y de paso cierra sus sesiones activas, por si el
+// pedido se origino porque el dispositivo se perdio o fue robado.
+app.post(
+  '/api/admin/users/:id/reset-2fa',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    try {
+      const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+      if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+      await prisma.user.update({
+        where: { id: target.id },
+        data: { twoFactorEnabled: false, twoFactorSecret: null, twoFactorBackupCodes: [] },
+      });
+      await revokeAllUserSessions(target.id);
+
+      logAudit({
+        userId: req.user.sub,
+        action: 'ADMIN_RESET_2FA',
+        targetType: 'User',
+        targetId: target.id,
+        metadata: { email: target.email },
+      });
+
+      return res.status(204).send();
+    } catch (err) {
+      console.error('Error reseteando 2FA', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
 
 app.post('/api/admin/servers', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
   const parsed = createServerSchema.safeParse(req.body);

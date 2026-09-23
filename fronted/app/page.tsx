@@ -2,29 +2,42 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import Dashboard from './components/Dashboard';
-import type { Role } from './types';
+import type { CurrentUser } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 export default function DashboardPage() {
-  const [token, setToken] = useState<string | null>(null);
-  const [role, setRole] = useState<Role | null>(null);
-  const [userEmail, setUserEmail] = useState<string>('');
-  const [checkedStorage, setCheckedStorage] = useState(false);
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [checkedSession, setCheckedSession] = useState(false);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
 
-  useEffect(() => {
-    const storedToken = window.localStorage.getItem('soc_token');
-    const storedRole = window.localStorage.getItem('soc_role') as Role | null;
-    const storedEmail = window.localStorage.getItem('soc_email');
-    if (storedToken) setToken(storedToken);
-    if (storedRole) setRole(storedRole);
-    if (storedEmail) setUserEmail(storedEmail);
-    setCheckedStorage(true);
+  // Paso 2FA: si el login devuelve requires2FA, guardamos el tempToken en
+  // memoria (nunca en localStorage) hasta que se confirme el codigo.
+  const [tempToken, setTempToken] = useState<string | null>(null);
+  const [twoFaCode, setTwoFaCode] = useState('');
+
+  const loadCurrentUser = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/auth/me`, { credentials: 'include' });
+      if (res.ok) {
+        setUser(await res.json());
+      } else {
+        setUser(null);
+      }
+    } catch {
+      setUser(null);
+    } finally {
+      setCheckedSession(true);
+    }
   }, []);
+
+  useEffect(() => {
+    loadCurrentUser();
+  }, [loadCurrentUser]);
 
   const handleLogin = useCallback(
     async (e: FormEvent) => {
@@ -36,6 +49,7 @@ export default function DashboardPage() {
         const res = await fetch(`${API_URL}/api/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ email, password }),
         });
 
@@ -45,12 +59,12 @@ export default function DashboardPage() {
           throw new Error(body.error || 'No se pudo iniciar sesión');
         }
 
-        window.localStorage.setItem('soc_token', body.token);
-        window.localStorage.setItem('soc_role', body.user.role);
-        window.localStorage.setItem('soc_email', body.user.email);
-        setToken(body.token);
-        setRole(body.user.role);
-        setUserEmail(body.user.email);
+        if (body.requires2FA) {
+          setTempToken(body.tempToken);
+          return;
+        }
+
+        setUser(body.user);
       } catch (err) {
         setLoginError(err instanceof Error ? err.message : 'Error desconocido');
       } finally {
@@ -60,18 +74,103 @@ export default function DashboardPage() {
     [email, password]
   );
 
-  const handleLogout = useCallback(() => {
-    window.localStorage.removeItem('soc_token');
-    window.localStorage.removeItem('soc_role');
-    window.localStorage.removeItem('soc_email');
-    setToken(null);
-    setRole(null);
-    setUserEmail('');
+  const handleVerify2fa = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      if (!tempToken) return;
+      setLoginError(null);
+      setLoggingIn(true);
+
+      try {
+        const res = await fetch(`${API_URL}/api/auth/login/2fa`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ tempToken, code: twoFaCode.trim() }),
+        });
+
+        const body = await res.json();
+
+        if (!res.ok) {
+          throw new Error(body.error || 'Código incorrecto');
+        }
+
+        setUser(body.user);
+        setTempToken(null);
+        setTwoFaCode('');
+      } catch (err) {
+        setLoginError(err instanceof Error ? err.message : 'Error desconocido');
+      } finally {
+        setLoggingIn(false);
+      }
+    },
+    [tempToken, twoFaCode]
+  );
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, { method: 'POST', credentials: 'include' });
+    } catch {
+      // si la request falla igual limpiamos el estado local
+    }
+    setUser(null);
+    setTempToken(null);
+    setEmail('');
+    setPassword('');
   }, []);
 
-  if (!checkedStorage) return null;
+  if (!checkedSession) return null;
 
-  if (!token) {
+  if (!user) {
+    if (tempToken) {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-gray-950 px-4">
+          <form
+            onSubmit={handleVerify2fa}
+            className="w-full max-w-sm animate-fade-in-scale rounded-xl border border-gray-800 bg-gray-900/60 p-8 shadow-xl"
+          >
+            <h1 className="mb-1 text-xl font-semibold text-gray-100">Verificación en dos pasos</h1>
+            <p className="mb-6 text-sm text-gray-400">
+              Ingresá el código de tu app de autenticación (o un código de respaldo)
+            </p>
+
+            <label className="mb-1 block text-xs font-medium text-gray-400">Código</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoFocus
+              required
+              value={twoFaCode}
+              onChange={(e) => setTwoFaCode(e.target.value)}
+              className="mb-4 w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-center text-lg tracking-widest text-gray-100 outline-none transition-colors focus:border-blue-500"
+              placeholder="123456"
+            />
+
+            {loginError && <p className="mb-4 text-sm text-red-400">{loginError}</p>}
+
+            <button
+              type="submit"
+              disabled={loggingIn}
+              className="w-full rounded-lg bg-blue-600 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+            >
+              {loggingIn ? 'Verificando...' : 'Verificar'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTempToken(null);
+                setTwoFaCode('');
+                setLoginError(null);
+              }}
+              className="mt-3 w-full text-xs text-gray-500 hover:text-gray-300"
+            >
+              Volver
+            </button>
+          </form>
+        </main>
+      );
+    }
+
     return (
       <main className="flex min-h-screen items-center justify-center bg-gray-950 px-4">
         <form
@@ -113,5 +212,5 @@ export default function DashboardPage() {
     );
   }
 
-  return <Dashboard token={token} role={role ?? 'VIEWER'} userEmail={userEmail} onLogout={handleLogout} />;
+  return <Dashboard user={user} onUserChanged={setUser} onLogout={handleLogout} />;
 }

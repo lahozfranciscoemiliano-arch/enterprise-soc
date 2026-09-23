@@ -11,7 +11,16 @@ export type AdminUser = {
   email: string;
   name: string;
   role: Role;
+  twoFactorEnabled: boolean;
   createdAt: string;
+};
+
+export type CurrentUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  twoFactorEnabled: boolean;
 };
 
 export type AuditLogEntry = {

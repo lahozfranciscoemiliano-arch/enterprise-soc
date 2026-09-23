@@ -5,8 +5,10 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 const ACTION_LABELS: Record<string, string> = {
   LOGIN: 'Inicio de sesión',
+  LOGOUT_ALL_DEVICES: 'Cierre de sesión en todos los dispositivos',
   USER_CREATE: 'Usuario creado',
   USER_DELETE: 'Usuario eliminado',
+  USER_REVOKE_SESSIONS: 'Sesiones revocadas',
   SERVER_CREATE: 'Servidor creado',
   SERVER_DELETE: 'Servidor eliminado',
   SERVER_ROTATE_KEY: 'API key rotada',
@@ -16,18 +18,21 @@ const ACTION_LABELS: Record<string, string> = {
   SERVER_MAINTENANCE_END: 'Mantenimiento finalizado',
   EVENT_ACKNOWLEDGED: 'Alerta reconocida',
   EVENT_RESOLVED: 'Alerta resuelta',
+  '2FA_ENABLED': '2FA activado',
+  '2FA_DISABLED': '2FA desactivado',
+  '2FA_LOGIN_FAILED': 'Intento de login con 2FA fallido',
+  '2FA_BACKUP_CODE_USED': 'Código de respaldo de 2FA usado',
+  ADMIN_RESET_2FA: '2FA restablecido por un admin',
 };
 
-export default function AuditLogPanel({ token }: { token: string }) {
+export default function AuditLogPanel() {
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchLog = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/audit-log?limit=100`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(`${API_URL}/api/admin/audit-log?limit=100`, { credentials: 'include' });
       if (!res.ok) throw new Error((await res.json()).error || 'No se pudo cargar la auditoría');
       setEntries(await res.json());
       setError(null);
@@ -36,7 +41,7 @@ export default function AuditLogPanel({ token }: { token: string }) {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     fetchLog();

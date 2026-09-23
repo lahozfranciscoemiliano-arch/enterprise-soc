@@ -8,12 +8,13 @@ import MonitoreoTab from './tabs/MonitoreoTab';
 import TopologiaTab from './tabs/TopologiaTab';
 import LogsRegexTab from './tabs/LogsRegexTab';
 import AdminTab from './tabs/AdminTab';
+import AccountSettingsModal from './AccountSettingsModal';
 import { getHealthStatus } from '../lib/health';
 import type {
   BackupInfo,
   ConnectionStatus,
+  CurrentUser,
   DashboardSummary,
-  Role,
   SecurityAlert,
   ServerSummary,
   TabId,
@@ -69,16 +70,15 @@ function toPoint(t: TelemetryApiPoint): TelemetryPoint {
 }
 
 export default function Dashboard({
-  token,
-  role,
-  userEmail,
+  user,
+  onUserChanged,
   onLogout,
 }: {
-  token: string;
-  role: Role;
-  userEmail: string;
+  user: CurrentUser;
+  onUserChanged: (user: CurrentUser) => void;
   onLogout: () => void;
 }) {
+  const { role } = user;
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [servers, setServers] = useState<Record<string, ServerSummary>>({});
@@ -87,21 +87,18 @@ export default function Dashboard({
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [showAccountModal, setShowAccountModal] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const summaryDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const authHeaders = useRef({ Authorization: `Bearer ${token}` });
-  authHeaders.current = { Authorization: `Bearer ${token}` };
-
   const handleAuthFailure = useCallback(() => {
-    window.localStorage.removeItem('soc_token');
     onLogout();
   }, [onLogout]);
 
   const fetchServers = useCallback(async (): Promise<ServerApiItem[] | null> => {
-    const res = await fetch(`${API_URL}/api/servers`, { headers: authHeaders.current });
+    const res = await fetch(`${API_URL}/api/servers`, { credentials: 'include' });
     if (res.status === 401) {
       handleAuthFailure();
       return null;
@@ -133,7 +130,7 @@ export default function Dashboard({
   }, [handleAuthFailure]);
 
   const fetchEvents = useCallback(async () => {
-    const res = await fetch(`${API_URL}/api/events?limit=${MAX_ALERTS}`, { headers: authHeaders.current });
+    const res = await fetch(`${API_URL}/api/events?limit=${MAX_ALERTS}`, { credentials: 'include' });
     if (res.status === 401) {
       handleAuthFailure();
       return;
@@ -142,7 +139,7 @@ export default function Dashboard({
   }, [handleAuthFailure]);
 
   const fetchSummary = useCallback(async () => {
-    const res = await fetch(`${API_URL}/api/dashboard/summary`, { headers: authHeaders.current });
+    const res = await fetch(`${API_URL}/api/dashboard/summary`, { credentials: 'include' });
     if (res.status === 401) {
       handleAuthFailure();
       return;
@@ -153,7 +150,7 @@ export default function Dashboard({
   const fetchHistoryFor = useCallback(
     async (serverId: string) => {
       const res = await fetch(`${API_URL}/api/servers/${serverId}/telemetry?limit=${MAX_POINTS}`, {
-        headers: authHeaders.current,
+        credentials: 'include',
       });
       if (res.status === 401) {
         handleAuthFailure();
@@ -187,7 +184,8 @@ export default function Dashboard({
       try {
         const res = await fetch(`${API_URL}/api/events/${id}`, {
           method: 'PATCH',
-          headers: { ...authHeaders.current, 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ status: newStatus }),
         });
         if (res.status === 401) {
@@ -215,7 +213,7 @@ export default function Dashboard({
   useEffect(() => {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -224,7 +222,9 @@ export default function Dashboard({
       if (cancelled) return;
 
       setStatus('connecting');
-      const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token)}`);
+      // El navegador manda la cookie httpOnly sola en el handshake del WS
+      // (es una request HTTP mas), sin necesidad de pasar nada en la URL.
+      const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => setStatus('connected');
@@ -370,13 +370,19 @@ export default function Dashboard({
       if (summaryDebounce.current) clearTimeout(summaryDebounce.current);
       wsRef.current?.close();
     };
-  }, [token, handleAuthFailure, scheduleSummaryRefresh]);
+  }, [handleAuthFailure, scheduleSummaryRefresh]);
 
   const serverList = Object.values(servers).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
-      <Header status={status} lastSync={lastSync} onLogout={onLogout} />
+      <Header
+        status={status}
+        lastSync={lastSync}
+        userEmail={user.email}
+        onLogout={onLogout}
+        onOpenAccount={() => setShowAccountModal(true)}
+      />
       <TabNav active={activeTab} onChange={setActiveTab} showAdmin={role === 'ADMIN'} />
 
       {activeTab === 'general' && <GeneralTab summary={summary} servers={serverList} />}
@@ -392,7 +398,16 @@ export default function Dashboard({
       {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
       {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
       {activeTab === 'admin' && role === 'ADMIN' && (
-        <AdminTab token={token} currentUserEmail={userEmail} servers={serverList} onServersChanged={fetchServers} />
+        <AdminTab currentUserEmail={user.email} servers={serverList} onServersChanged={fetchServers} />
+      )}
+
+      {showAccountModal && (
+        <AccountSettingsModal
+          user={user}
+          onUserChanged={onUserChanged}
+          onClose={() => setShowAccountModal(false)}
+          onLogout={onLogout}
+        />
       )}
     </div>
   );

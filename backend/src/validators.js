@@ -75,6 +75,26 @@ const updateMaintenanceSchema = z
   })
   .strict();
 
+const login2faSchema = z
+  .object({
+    tempToken: z.string().min(10),
+    code: z.string().min(4).max(12),
+  })
+  .strict();
+
+const twoFactorCodeSchema = z
+  .object({
+    code: z.string().min(4).max(12),
+  })
+  .strict();
+
+const disable2faSchema = z
+  .object({
+    password: z.string().min(8).max(200),
+    code: z.string().min(4).max(12),
+  })
+  .strict();
+
 module.exports = {
   telemetrySchema,
   loginSchema,
@@ -84,4 +104,7 @@ module.exports = {
   updateEventStatusSchema,
   updateThresholdsSchema,
   updateMaintenanceSchema,
+  login2faSchema,
+  twoFactorCodeSchema,
+  disable2faSchema,
 };

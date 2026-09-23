@@ -1,5 +1,9 @@
 const { WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
+const cookie = require('cookie');
+const { isSessionValid } = require('../services/sessions');
+
+const SESSION_COOKIE_NAME = 'soc_session';
 
 let wss = null;
 const clients = new Set();
@@ -7,9 +11,12 @@ const clients = new Set();
 function createSocketServer(httpServer) {
   wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
-  wss.on('connection', (ws, req) => {
-    const { searchParams } = new URL(req.url, 'http://localhost');
-    const token = searchParams.get('token');
+  wss.on('connection', async (ws, req) => {
+    // El token ya no viaja en la URL (terminaba en logs/historial del
+    // navegador); el handshake del WebSocket es una request HTTP normal, asi
+    // que el navegador manda la cookie httpOnly sola, igual que en un fetch.
+    const cookies = cookie.parse(req.headers.cookie || '');
+    const token = cookies[SESSION_COOKIE_NAME];
 
     if (!token) {
       ws.close(4001, 'Missing authentication token');
@@ -20,6 +27,11 @@ function createSocketServer(httpServer) {
     try {
       payload = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
+      ws.close(4002, 'Invalid or expired token');
+      return;
+    }
+
+    if (!payload.jti || !(await isSessionValid(payload.jti))) {
       ws.close(4002, 'Invalid or expired token');
       return;
     }
