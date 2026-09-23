@@ -69,6 +69,12 @@ export default function ServerDetailModal({
           </button>
         </div>
 
+        {server.inMaintenance && (
+          <div className="mx-6 mt-4 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs text-sky-300">
+            🔧 En mantenimiento hasta {server.maintenanceUntil ? new Date(server.maintenanceUntil).toLocaleString('es-ES') : '—'} — las alertas están silenciadas.
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-3 p-6 sm:grid-cols-2">
           <DetailTile label="Estado de Conexión">
             <span className="flex items-center gap-2">

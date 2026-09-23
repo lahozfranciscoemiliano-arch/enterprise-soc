@@ -4,7 +4,10 @@
     Instala el agente Enterprise SOC como tarea programada persistente.
 
 .DESCRIPTION
-    1. Copia enterprise-soc-agent.exe (ya compilado con PyInstaller) a InstallDir.
+    1. Consigue enterprise-soc-agent.exe: lo copia desde AgentExePath si ya esta
+       compilado localmente, o si no existe lo descarga directamente del backend
+       (GET /downloads/enterprise-soc-agent.exe) — asi no hace falta compilar ni
+       copiar el binario a mano en cada servidor nuevo.
     2. Llama a POST /api/servers/enroll en el backend con el secreto compartido
        (AGENT_ENROLLMENT_SECRET) para auto-registrar este servidor y obtener
        credenciales unicas (SERVER_ID + API_KEY) sin tocar la base a mano.
@@ -51,11 +54,6 @@ function Write-Step($message) {
 
 Write-Step "Verificando requisitos"
 
-if (-not (Test-Path $AgentExePath)) {
-    throw "No se encontro el ejecutable del agente en '$AgentExePath'. Compilalo primero con PyInstaller " +
-          "(ver instrucciones al final de agent.py) o pasa la ruta correcta con -AgentExePath."
-}
-
 if (-not $IpAddress) {
     $IpAddress = (
         Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -70,9 +68,23 @@ Write-Host "  IP detectada: $IpAddress"
 Write-Host "  Backend:     $BackendUrl"
 Write-Host "  Destino:     $InstallDir"
 
-Write-Step "Copiando el agente a $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item -Path $AgentExePath -Destination (Join-Path $InstallDir "enterprise-soc-agent.exe") -Force
+$destExe = Join-Path $InstallDir "enterprise-soc-agent.exe"
+
+if (Test-Path $AgentExePath) {
+    Write-Step "Copiando el agente local a $InstallDir"
+    Copy-Item -Path $AgentExePath -Destination $destExe -Force
+} else {
+    Write-Step "No hay .exe local; descargando la ultima version desde el backend"
+    try {
+        Invoke-WebRequest -Uri "$BackendUrl/downloads/enterprise-soc-agent.exe" -OutFile $destExe -UseBasicParsing
+    } catch {
+        throw "No se encontro el agente en '$AgentExePath' ni se pudo descargar desde " +
+              "$BackendUrl/downloads/enterprise-soc-agent.exe. Compilalo con PyInstaller (ver agent.py) " +
+              "y publicalo en backend/downloads/, o pasa la ruta correcta con -AgentExePath. Detalle: $_"
+    }
+    Write-Host "  Descargado OK ($([math]::Round((Get-Item $destExe).Length / 1MB, 1)) MB)" -ForegroundColor Green
+}
 
 Write-Step "Registrando este servidor en el backend (auto-enrolamiento)"
 $enrollBody = @{

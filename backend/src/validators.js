@@ -51,10 +51,37 @@ const createServerSchema = z
   })
   .strict();
 
+const updateEventStatusSchema = z
+  .object({
+    status: z.enum(['ACKNOWLEDGED', 'RESOLVED']),
+  })
+  .strict();
+
+const updateThresholdsSchema = z
+  .object({
+    cpuThresholdHigh: z.number().min(0).max(100).nullable().optional(),
+    cpuThresholdMedium: z.number().min(0).max(100).nullable().optional(),
+    memThresholdHigh: z.number().min(0).max(100).nullable().optional(),
+    memThresholdMedium: z.number().min(0).max(100).nullable().optional(),
+    diskThresholdHigh: z.number().min(0).max(100).nullable().optional(),
+    diskThresholdMedium: z.number().min(0).max(100).nullable().optional(),
+  })
+  .strict();
+
+const updateMaintenanceSchema = z
+  .object({
+    // null/ausente = terminar el mantenimiento ahora
+    maintenanceUntil: z.string().datetime().nullable().optional(),
+  })
+  .strict();
+
 module.exports = {
   telemetrySchema,
   loginSchema,
   backupStatusSchema,
   createUserSchema,
   createServerSchema,
+  updateEventStatusSchema,
+  updateThresholdsSchema,
+  updateMaintenanceSchema,
 };

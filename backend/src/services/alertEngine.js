@@ -1,13 +1,52 @@
-const THRESHOLDS = {
-  cpuUsage: { type: 'CPU_THRESHOLD', high: 90, medium: 75 },
-  memoryUsage: { type: 'MEMORY_THRESHOLD', high: 90, medium: 80 },
-  diskUsage: { type: 'DISK_THRESHOLD', high: 95, medium: 85 },
+// Umbrales globales por defecto. Un servidor puede sobreescribirlos via sus
+// campos cpuThresholdHigh/cpuThresholdMedium/etc (ver resolveThresholds).
+const DEFAULT_THRESHOLDS = {
+  cpuUsage: {
+    type: 'CPU_THRESHOLD',
+    high: 90,
+    medium: 75,
+    highField: 'cpuThresholdHigh',
+    mediumField: 'cpuThresholdMedium',
+  },
+  memoryUsage: {
+    type: 'MEMORY_THRESHOLD',
+    high: 90,
+    medium: 80,
+    highField: 'memThresholdHigh',
+    mediumField: 'memThresholdMedium',
+  },
+  diskUsage: {
+    type: 'DISK_THRESHOLD',
+    high: 95,
+    medium: 85,
+    highField: 'diskThresholdHigh',
+    mediumField: 'diskThresholdMedium',
+  },
 };
 
+function resolveThresholds(server) {
+  const resolved = {};
+  for (const [field, rule] of Object.entries(DEFAULT_THRESHOLDS)) {
+    resolved[field] = {
+      type: rule.type,
+      high: server?.[rule.highField] ?? rule.high,
+      medium: server?.[rule.mediumField] ?? rule.medium,
+    };
+  }
+  return resolved;
+}
+
+function isInMaintenance(server) {
+  return Boolean(server?.maintenanceUntil && new Date(server.maintenanceUntil) > new Date());
+}
+
 function evaluateTelemetry(server, telemetry) {
+  if (isInMaintenance(server)) return [];
+
+  const thresholds = resolveThresholds(server);
   const alerts = [];
 
-  for (const [field, rule] of Object.entries(THRESHOLDS)) {
+  for (const [field, rule] of Object.entries(thresholds)) {
     const value = telemetry[field];
     if (value === undefined || value === null) continue;
 
@@ -29,23 +68,9 @@ function evaluateTelemetry(server, telemetry) {
   return alerts;
 }
 
-function getHealthStatus(telemetry) {
-  if (!telemetry) return 'UNKNOWN';
-
-  let status = 'OK';
-
-  for (const [field, rule] of Object.entries(THRESHOLDS)) {
-    const value = telemetry[field];
-    if (value === undefined || value === null) continue;
-
-    if (value >= rule.high) return 'CRITICAL';
-    if (value >= rule.medium) status = 'WARNING';
-  }
-
-  return status;
-}
-
 function evaluateBackup(server, backup) {
+  if (isInMaintenance(server)) return null;
+
   if (backup.result === 'FAILED') {
     return {
       type: 'BACKUP_FAILED',
@@ -67,4 +92,28 @@ function evaluateBackup(server, backup) {
   return null;
 }
 
-module.exports = { evaluateTelemetry, evaluateBackup, getHealthStatus, THRESHOLDS };
+function getHealthStatus(telemetry, server) {
+  if (!telemetry) return 'UNKNOWN';
+
+  const thresholds = resolveThresholds(server);
+  let status = 'OK';
+
+  for (const [field, rule] of Object.entries(thresholds)) {
+    const value = telemetry[field];
+    if (value === undefined || value === null) continue;
+
+    if (value >= rule.high) return 'CRITICAL';
+    if (value >= rule.medium) status = 'WARNING';
+  }
+
+  return status;
+}
+
+module.exports = {
+  evaluateTelemetry,
+  evaluateBackup,
+  getHealthStatus,
+  resolveThresholds,
+  isInMaintenance,
+  DEFAULT_THRESHOLDS,
+};

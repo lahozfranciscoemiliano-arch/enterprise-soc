@@ -22,6 +22,10 @@ agent.log
 # Manual timestamped backups (not real history, may contain copied .env secrets)
 _backups/
 
+# Binario compilado del agente publicado para descarga (se sube al VPS a mano
+# o via CI, no se versiona en git)
+backend/downloads/*.exe
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

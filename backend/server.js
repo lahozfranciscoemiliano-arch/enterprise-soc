@@ -1,6 +1,8 @@
 require('dotenv').config();
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const http = require('http');
 const express = require('express');
 const helmet = require('helmet');
@@ -18,11 +20,17 @@ const {
   backupStatusSchema,
   createUserSchema,
   createServerSchema,
+  updateEventStatusSchema,
+  updateThresholdsSchema,
+  updateMaintenanceSchema,
 } = require('./src/validators');
-const { evaluateTelemetry, evaluateBackup, getHealthStatus } = require('./src/services/alertEngine');
+const { evaluateTelemetry, evaluateBackup, getHealthStatus, isInMaintenance } = require('./src/services/alertEngine');
+const { logAudit } = require('./src/services/auditLog');
+const { notifyAlert } = require('./src/services/notifications');
 const {
   createSocketServer,
   broadcastAlert,
+  broadcastAlertUpdate,
   broadcastTelemetry,
   broadcastBackupStatus,
 } = require('./src/websocket/socketServer');
@@ -97,11 +105,40 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
     );
 
+    logAudit({ userId: user.id, action: 'LOGIN', targetType: 'User', targetId: user.id });
+
     return res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
   } catch (err) {
     console.error('Error en login', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Descarga del agente compilado: el backend sirve el .exe mas reciente para
+// que install-agent.ps1 lo pueda bajar solo, sin copiarlo a mano en cada
+// servidor nuevo. Reemplazar el archivo en DOWNLOADS_DIR al compilar una
+// version nueva del agente (ver agent/agent.py para el comando de PyInstaller).
+// ---------------------------------------------------------------------------
+
+const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
+
+const downloadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas descargas, intenta más tarde' },
+});
+
+app.get('/downloads/enterprise-soc-agent.exe', downloadLimiter, (req, res) => {
+  const filePath = path.join(DOWNLOADS_DIR, 'enterprise-soc-agent.exe');
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Todavía no se publicó ningún build del agente en este backend' });
+  }
+
+  return res.download(filePath, 'enterprise-soc-agent.exe');
 });
 
 const telemetryLimiter = rateLimit({
@@ -162,7 +199,9 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
       );
 
       for (const event of createdEvents) {
-        broadcastAlert({ ...event, serverName: server.name });
+        const enriched = { ...event, serverName: server.name };
+        broadcastAlert(enriched);
+        notifyAlert(enriched).catch(() => {});
       }
     }
 
@@ -224,7 +263,9 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
           metadata: alert.metadata,
         },
       });
-      broadcastAlert({ ...createdEvent, serverName: server.name });
+      const enriched = { ...createdEvent, serverName: server.name };
+      broadcastAlert(enriched);
+      notifyAlert(enriched).catch(() => {});
     }
 
     return res.status(201).json({
@@ -262,11 +303,21 @@ app.get('/api/servers', authUser, async (req, res) => {
           name: s.name,
           status: s.status,
           lastSeenAt: s.lastSeenAt,
-          healthStatus: getHealthStatus(latest),
+          healthStatus: getHealthStatus(latest, s),
           cpuUsage: latest?.cpuUsage ?? null,
           memoryUsage: latest?.memoryUsage ?? null,
           diskUsage: latest?.diskUsage ?? null,
           recordedAt: latest?.recordedAt ?? null,
+          thresholds: {
+            cpuThresholdHigh: s.cpuThresholdHigh,
+            cpuThresholdMedium: s.cpuThresholdMedium,
+            memThresholdHigh: s.memThresholdHigh,
+            memThresholdMedium: s.memThresholdMedium,
+            diskThresholdHigh: s.diskThresholdHigh,
+            diskThresholdMedium: s.diskThresholdMedium,
+          },
+          maintenanceUntil: s.maintenanceUntil,
+          inMaintenance: isInMaintenance(s),
           backup: backup
             ? {
                 result: backup.result,
@@ -315,7 +366,7 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
     const breakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
     const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
     for (const s of servers) {
-      breakdown[getHealthStatus(s.telemetry[0])] += 1;
+      breakdown[getHealthStatus(s.telemetry[0], s)] += 1;
       backupBreakdown[s.backups[0]?.result ?? 'UNKNOWN'] += 1;
     }
 
@@ -379,7 +430,7 @@ app.get('/api/events', authUser, async (req, res) => {
     const events = await prisma.securityEvent.findMany({
       orderBy: { createdAt: 'desc' },
       take: limit,
-      include: { server: { select: { name: true } } },
+      include: { server: { select: { name: true } }, acknowledgedBy: { select: { name: true } } },
     });
 
     return res.json(
@@ -387,13 +438,63 @@ app.get('/api/events', authUser, async (req, res) => {
         id: e.id,
         type: e.type,
         severity: e.severity,
+        status: e.status,
         description: e.description,
         serverName: e.server?.name,
+        acknowledgedByName: e.acknowledgedBy?.name ?? null,
         createdAt: e.createdAt,
+        resolvedAt: e.resolvedAt,
       }))
     );
   } catch (err) {
     console.error('Error listando alertas', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.patch('/api/events/:id', authUser, requireRole('ADMIN', 'ANALYST'), async (req, res) => {
+  const parsed = updateEventStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Estado inválido', details: parsed.error.flatten() });
+  }
+
+  try {
+    const event = await prisma.securityEvent.update({
+      where: { id: req.params.id },
+      data: {
+        status: parsed.data.status,
+        acknowledgedById: req.user.sub,
+        resolvedAt: parsed.data.status === 'RESOLVED' ? new Date() : undefined,
+      },
+      include: { server: { select: { name: true } }, acknowledgedBy: { select: { name: true } } },
+    });
+
+    logAudit({
+      userId: req.user.sub,
+      action: `EVENT_${parsed.data.status}`,
+      targetType: 'SecurityEvent',
+      targetId: event.id,
+    });
+
+    const enriched = {
+      id: event.id,
+      type: event.type,
+      severity: event.severity,
+      status: event.status,
+      description: event.description,
+      serverName: event.server?.name,
+      acknowledgedByName: event.acknowledgedBy?.name ?? null,
+      createdAt: event.createdAt,
+      resolvedAt: event.resolvedAt,
+    };
+    broadcastAlertUpdate(enriched);
+
+    return res.json(enriched);
+  } catch (err) {
+    if (err.code === 'P2025') {
+      return res.status(404).json({ error: 'Alerta no encontrada' });
+    }
+    console.error('Error actualizando alerta', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -443,6 +544,8 @@ app.post('/api/admin/users', adminWriteLimiter, authUser, requireRole('ADMIN'), 
       select: { id: true, email: true, name: true, role: true, createdAt: true },
     });
 
+    logAudit({ userId: req.user.sub, action: 'USER_CREATE', targetType: 'User', targetId: user.id, metadata: { email, role } });
+
     return res.status(201).json(user);
   } catch (err) {
     console.error('Error creando usuario', err);
@@ -469,6 +572,7 @@ app.delete('/api/admin/users/:id', authUser, requireRole('ADMIN'), async (req, r
     }
 
     await prisma.user.delete({ where: { id: req.params.id } });
+    logAudit({ userId: req.user.sub, action: 'USER_DELETE', targetType: 'User', targetId: target.id, metadata: { email: target.email } });
     return res.status(204).send();
   } catch (err) {
     console.error('Error eliminando usuario', err);
@@ -497,6 +601,8 @@ app.post('/api/admin/servers', adminWriteLimiter, authUser, requireRole('ADMIN')
       data: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE' },
     });
 
+    logAudit({ userId: req.user.sub, action: 'SERVER_CREATE', targetType: 'Server', targetId: server.id, metadata: { name } });
+
     // La API key en texto plano solo se devuelve esta vez; despues solo se
     // guarda su hash y no se puede recuperar.
     return res.status(201).json({ id: server.id, name: server.name, apiKey });
@@ -521,6 +627,8 @@ app.post(
         data: { apiKeyHash },
       });
 
+      logAudit({ userId: req.user.sub, action: 'SERVER_ROTATE_KEY', targetType: 'Server', targetId: server.id });
+
       return res.json({ id: server.id, name: server.name, apiKey });
     } catch (err) {
       if (err.code === 'P2025') {
@@ -534,13 +642,116 @@ app.post(
 
 app.delete('/api/admin/servers/:id', authUser, requireRole('ADMIN'), async (req, res) => {
   try {
-    await prisma.server.delete({ where: { id: req.params.id } });
+    const server = await prisma.server.delete({ where: { id: req.params.id } });
+    logAudit({ userId: req.user.sub, action: 'SERVER_DELETE', targetType: 'Server', targetId: server.id, metadata: { name: server.name } });
     return res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') {
       return res.status(404).json({ error: 'Servidor no encontrado' });
     }
     console.error('Error eliminando servidor', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.patch(
+  '/api/admin/servers/:id/thresholds',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    const parsed = updateThresholdsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Umbrales inválidos', details: parsed.error.flatten() });
+    }
+
+    try {
+      const server = await prisma.server.update({
+        where: { id: req.params.id },
+        data: parsed.data,
+      });
+
+      logAudit({
+        userId: req.user.sub,
+        action: 'SERVER_UPDATE_THRESHOLDS',
+        targetType: 'Server',
+        targetId: server.id,
+        metadata: parsed.data,
+      });
+
+      return res.json({ id: server.id, name: server.name, ...parsed.data });
+    } catch (err) {
+      if (err.code === 'P2025') {
+        return res.status(404).json({ error: 'Servidor no encontrado' });
+      }
+      console.error('Error actualizando umbrales', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
+app.patch(
+  '/api/admin/servers/:id/maintenance',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    const parsed = updateMaintenanceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Datos de mantenimiento inválidos', details: parsed.error.flatten() });
+    }
+
+    try {
+      const maintenanceUntil = parsed.data.maintenanceUntil ? new Date(parsed.data.maintenanceUntil) : null;
+
+      const server = await prisma.server.update({
+        where: { id: req.params.id },
+        data: { maintenanceUntil },
+      });
+
+      logAudit({
+        userId: req.user.sub,
+        action: maintenanceUntil ? 'SERVER_MAINTENANCE_START' : 'SERVER_MAINTENANCE_END',
+        targetType: 'Server',
+        targetId: server.id,
+        metadata: { maintenanceUntil },
+      });
+
+      return res.json({ id: server.id, name: server.name, maintenanceUntil: server.maintenanceUntil });
+    } catch (err) {
+      if (err.code === 'P2025') {
+        return res.status(404).json({ error: 'Servidor no encontrado' });
+      }
+      console.error('Error actualizando ventana de mantenimiento', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
+app.get('/api/admin/audit-log', authUser, requireRole('ADMIN'), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+  try {
+    const entries = await prisma.auditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { user: { select: { name: true, email: true } } },
+    });
+
+    return res.json(
+      entries.map((e) => ({
+        id: e.id,
+        action: e.action,
+        targetType: e.targetType,
+        targetId: e.targetId,
+        metadata: e.metadata,
+        userName: e.user?.name ?? 'Sistema',
+        userEmail: e.user?.email ?? null,
+        createdAt: e.createdAt,
+      }))
+    );
+  } catch (err) {
+    console.error('Error listando auditoría', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -585,6 +796,14 @@ app.post('/api/servers/enroll', enrollLimiter, async (req, res) => {
       where: { name },
       update: { hostname, ipAddress, apiKeyHash },
       create: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE' },
+    });
+
+    logAudit({
+      userId: null,
+      action: 'SERVER_AUTO_ENROLL',
+      targetType: 'Server',
+      targetId: server.id,
+      metadata: { name, hostname, ipAddress },
     });
 
     return res.status(201).json({ serverId: server.id, apiKey });

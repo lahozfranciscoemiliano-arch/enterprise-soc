@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import ServerDetailModal from '../ServerDetailModal';
-import { BACKUP_STYLES, HEALTH_STYLES } from '../../lib/health';
+import { BACKUP_STYLES, HEALTH_STYLES, MAINTENANCE_BADGE } from '../../lib/health';
 import type { SecurityAlert, ServerSummary, TelemetryPoint } from '../../types';
 
 export default function MonitoreoTab({
@@ -116,6 +116,9 @@ export default function MonitoreoTab({
                 </span>
                 <span className={`rounded-full border px-2 py-0.5 ${health.badge}`}>{health.label}</span>
                 <span className={`rounded-full border px-2 py-0.5 ${backup.badge}`}>🗄️ {backup.label}</span>
+                {s.inMaintenance && (
+                  <span className={`rounded-full border px-2 py-0.5 ${MAINTENANCE_BADGE}`}>🔧 EN MANTENIMIENTO</span>
+                )}
                 <span className="text-gray-400">
                   {s.cpuUsage !== null ? `CPU ${s.cpuUsage.toFixed(0)}% · RAM ${s.memoryUsage!.toFixed(0)}% · Disco ${s.diskUsage!.toFixed(0)}%` : 'Sin telemetría'}
                 </span>

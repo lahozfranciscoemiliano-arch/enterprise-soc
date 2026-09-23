@@ -102,4 +102,14 @@ function broadcastBackupStatus(server, backup) {
   });
 }
 
-module.exports = { createSocketServer, broadcastAlert, broadcastTelemetry, broadcastBackupStatus };
+function broadcastAlertUpdate(event) {
+  broadcast({ type: 'SECURITY_ALERT_UPDATE', event });
+}
+
+module.exports = {
+  createSocketServer,
+  broadcastAlert,
+  broadcastAlertUpdate,
+  broadcastTelemetry,
+  broadcastBackupStatus,
+};

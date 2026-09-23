@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import ServerConfigPanel from '../ServerConfigPanel';
+import AuditLogPanel from '../AuditLogPanel';
 import type { AdminUser, Role, ServerSummary } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -30,6 +32,7 @@ export default function AdminTab({
   const [serverFormError, setServerFormError] = useState<string | null>(null);
 
   const [revealed, setRevealed] = useState<RevealedCredential | null>(null);
+  const [expandedServerId, setExpandedServerId] = useState<string | null>(null);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -263,26 +266,39 @@ export default function AdminTab({
         <div className="mb-4 space-y-2">
           {servers.length === 0 && <p className="text-sm text-gray-500">Sin servidores registrados aún</p>}
           {servers.map((s) => (
-            <div
-              key={s.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-2 text-xs"
-            >
-              <span className="font-medium text-gray-200">{s.name}</span>
-              <span className="text-gray-500">{s.status}</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleRotateKey(s)}
-                  className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
-                >
-                  Rotar API key
-                </button>
-                <button
-                  onClick={() => handleDeleteServer(s)}
-                  className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10"
-                >
-                  Eliminar
-                </button>
+            <div key={s.id}>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-2 text-xs">
+                <span className="font-medium text-gray-200">{s.name}</span>
+                <span className="text-gray-500">{s.status}</span>
+                {s.inMaintenance && (
+                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-sky-300">
+                    🔧 Mantenimiento
+                  </span>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setExpandedServerId((prev) => (prev === s.id ? null : s.id))}
+                    className="rounded-lg border border-gray-700 px-2 py-1 text-gray-300 transition-colors hover:bg-gray-800"
+                  >
+                    {expandedServerId === s.id ? 'Cerrar' : 'Configurar'}
+                  </button>
+                  <button
+                    onClick={() => handleRotateKey(s)}
+                    className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                  >
+                    Rotar API key
+                  </button>
+                  <button
+                    onClick={() => handleDeleteServer(s)}
+                    className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10"
+                  >
+                    Eliminar
+                  </button>
+                </div>
               </div>
+              {expandedServerId === s.id && (
+                <ServerConfigPanel server={s} token={token} onUpdated={onServersChanged} />
+              )}
             </div>
           ))}
         </div>
@@ -326,6 +342,8 @@ export default function AdminTab({
           para que un servidor nuevo se registre solo, sin pasar por este formulario.
         </p>
       </div>
+
+      <AuditLogPanel token={token} />
     </div>
   );
 }

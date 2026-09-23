@@ -37,7 +37,19 @@ type ServerApiItem = {
   memoryUsage: number | null;
   diskUsage: number | null;
   recordedAt: string | null;
+  thresholds: ServerSummary['thresholds'];
+  maintenanceUntil: string | null;
+  inMaintenance: boolean;
   backup: BackupInfo | null;
+};
+
+const EMPTY_THRESHOLDS: ServerSummary['thresholds'] = {
+  cpuThresholdHigh: null,
+  cpuThresholdMedium: null,
+  memThresholdHigh: null,
+  memThresholdMedium: null,
+  diskThresholdHigh: null,
+  diskThresholdMedium: null,
 };
 
 type TelemetryApiPoint = {
@@ -109,6 +121,9 @@ export default function Dashboard({
             memoryUsage: s.memoryUsage,
             diskUsage: s.diskUsage,
             recordedAt: s.recordedAt,
+            thresholds: s.thresholds,
+            maintenanceUntil: s.maintenanceUntil,
+            inMaintenance: s.inMaintenance,
             backup: s.backup,
           },
         ])
@@ -167,6 +182,28 @@ export default function Dashboard({
     }
   }, [loadAll]);
 
+  const handleUpdateEventStatus = useCallback(
+    async (id: string, newStatus: 'ACKNOWLEDGED' | 'RESOLVED') => {
+      try {
+        const res = await fetch(`${API_URL}/api/events/${id}`, {
+          method: 'PATCH',
+          headers: { ...authHeaders.current, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus }),
+        });
+        if (res.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        const updated = await res.json();
+        if (!res.ok) throw new Error(updated.error || 'No se pudo actualizar la alerta');
+        setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updated } : a)));
+      } catch (err) {
+        alert(err instanceof Error ? err.message : 'Error desconocido');
+      }
+    },
+    [handleAuthFailure]
+  );
+
   const scheduleSummaryRefresh = useCallback(() => {
     if (summaryDebounce.current) clearTimeout(summaryDebounce.current);
     summaryDebounce.current = setTimeout(fetchSummary, SUMMARY_DEBOUNCE_MS);
@@ -205,6 +242,9 @@ export default function Dashboard({
               ...prev,
               [d.serverId]: {
                 backup: null,
+                thresholds: EMPTY_THRESHOLDS,
+                maintenanceUntil: null,
+                inMaintenance: false,
                 ...prev[d.serverId],
                 id: d.serverId,
                 name: d.serverName,
@@ -247,6 +287,9 @@ export default function Dashboard({
                 memoryUsage: null,
                 diskUsage: null,
                 recordedAt: null,
+                thresholds: EMPTY_THRESHOLDS,
+                maintenanceUntil: null,
+                inMaintenance: false,
                 ...prev[d.serverId],
                 id: d.serverId,
                 name: d.serverName,
@@ -275,13 +318,22 @@ export default function Dashboard({
                   id: ev.id,
                   type: ev.type,
                   severity: ev.severity,
+                  status: 'OPEN' as const,
                   description: ev.description,
                   serverName: ev.serverName,
+                  acknowledgedByName: null,
                   createdAt: ev.createdAt ?? new Date().toISOString(),
+                  resolvedAt: null,
                 },
                 ...prev,
               ].slice(0, MAX_ALERTS)
             );
+            scheduleSummaryRefresh();
+          }
+
+          if (message.type === 'SECURITY_ALERT_UPDATE') {
+            const ev = message.event;
+            setAlerts((prev) => prev.map((a) => (a.id === ev.id ? { ...a, ...ev } : a)));
             scheduleSummaryRefresh();
           }
         } catch (err) {
@@ -334,7 +386,7 @@ export default function Dashboard({
         />
       )}
       {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
-      {activeTab === 'logs' && <LogsRegexTab alerts={alerts} />}
+      {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
       {activeTab === 'admin' && role === 'ADMIN' && (
         <AdminTab token={token} currentUserEmail={userEmail} servers={serverList} onServersChanged={fetchServers} />
       )}

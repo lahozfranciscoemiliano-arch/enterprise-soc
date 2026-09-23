@@ -62,8 +62,24 @@ model User {
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
   acknowledgedEvents SecurityEvent[] @relation("AcknowledgedBy")
+  auditLogs          AuditLog[]
 
   @@map("users")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
 }
 
 model Server {
@@ -74,11 +90,25 @@ model Server {
   apiKeyHash String
   status     ServerStatus    @default(OFFLINE)
   lastSeenAt DateTime?
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
-  telemetry  Telemetry[]
-  events     SecurityEvent[]
-  backups    BackupStatus[]
+
+  // Umbrales de alerta propios de este servidor; si son null se usan los
+  // valores globales por defecto definidos en alertEngine.js.
+  cpuThresholdHigh    Float?
+  cpuThresholdMedium  Float?
+  memThresholdHigh    Float?
+  memThresholdMedium  Float?
+  diskThresholdHigh   Float?
+  diskThresholdMedium Float?
+
+  // Mientras maintenanceUntil este en el futuro, la telemetria/backups de
+  // este servidor se siguen guardando normalmente pero no generan alertas.
+  maintenanceUntil DateTime?
+
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  telemetry Telemetry[]
+  events    SecurityEvent[]
+  backups   BackupStatus[]
 
   @@map("servers")
 }

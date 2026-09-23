@@ -1,4 +1,4 @@
-import type { BackupResult, HealthStatus, Severity } from '../types';
+import type { BackupResult, EventStatus, HealthStatus, Severity } from '../types';
 
 // Debe reflejar los mismos umbrales que enterprise-soc/backend/src/services/alertEngine.js
 const THRESHOLDS = {
@@ -52,3 +52,11 @@ export const SEVERITY_STYLES: Record<Severity, string> = {
   HIGH: 'bg-orange-500/10 text-orange-400 border-orange-500/30',
   CRITICAL: 'bg-red-500/10 text-red-400 border-red-500/30',
 };
+
+export const EVENT_STATUS_STYLES: Record<EventStatus, { badge: string; label: string }> = {
+  OPEN: { badge: 'bg-red-500/10 text-red-400 border-red-500/30', label: 'ABIERTA' },
+  ACKNOWLEDGED: { badge: 'bg-amber-500/10 text-amber-400 border-amber-500/30', label: 'RECONOCIDA' },
+  RESOLVED: { badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', label: 'RESUELTA' },
+};
+
+export const MAINTENANCE_BADGE = 'bg-sky-500/10 text-sky-400 border-sky-500/30';
