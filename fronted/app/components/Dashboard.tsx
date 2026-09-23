@@ -238,25 +238,27 @@ export default function Dashboard({
             const healthStatus = getHealthStatus(d.cpuUsage, d.memoryUsage, d.diskUsage);
             const recordedAt = d.recordedAt ?? new Date().toISOString();
 
-            setServers((prev) => ({
-              ...prev,
-              [d.serverId]: {
-                backup: null,
-                thresholds: EMPTY_THRESHOLDS,
-                maintenanceUntil: null,
-                inMaintenance: false,
-                ...prev[d.serverId],
-                id: d.serverId,
-                name: d.serverName,
-                status: 'ONLINE',
-                lastSeenAt: recordedAt,
-                healthStatus,
-                cpuUsage: d.cpuUsage,
-                memoryUsage: d.memoryUsage,
-                diskUsage: d.diskUsage,
-                recordedAt,
-              },
-            }));
+            setServers((prev) => {
+              const existing = prev[d.serverId];
+              return {
+                ...prev,
+                [d.serverId]: {
+                  backup: existing?.backup ?? null,
+                  thresholds: existing?.thresholds ?? EMPTY_THRESHOLDS,
+                  maintenanceUntil: existing?.maintenanceUntil ?? null,
+                  inMaintenance: existing?.inMaintenance ?? false,
+                  id: d.serverId,
+                  name: d.serverName,
+                  status: 'ONLINE',
+                  lastSeenAt: recordedAt,
+                  healthStatus,
+                  cpuUsage: d.cpuUsage,
+                  memoryUsage: d.memoryUsage,
+                  diskUsage: d.diskUsage,
+                  recordedAt,
+                },
+              };
+            });
 
             setHistory((prev) => {
               const existing = prev[d.serverId] ?? [];
@@ -277,34 +279,36 @@ export default function Dashboard({
             const d = message.data;
             const recordedAt = d.recordedAt ?? new Date().toISOString();
 
-            setServers((prev) => ({
-              ...prev,
-              [d.serverId]: {
-                status: 'OFFLINE',
-                lastSeenAt: null,
-                healthStatus: 'UNKNOWN',
-                cpuUsage: null,
-                memoryUsage: null,
-                diskUsage: null,
-                recordedAt: null,
-                thresholds: EMPTY_THRESHOLDS,
-                maintenanceUntil: null,
-                inMaintenance: false,
-                ...prev[d.serverId],
-                id: d.serverId,
-                name: d.serverName,
-                backup: {
-                  result: d.result,
-                  method: d.method,
-                  lastBackupAt: d.lastBackupAt ?? null,
-                  targetPath: d.targetPath ?? null,
-                  sizeBytes: d.sizeBytes ?? null,
-                  vssServiceOk: d.vssServiceOk,
-                  detail: d.detail ?? null,
-                  recordedAt,
+            setServers((prev) => {
+              const existing = prev[d.serverId];
+              return {
+                ...prev,
+                [d.serverId]: {
+                  status: existing?.status ?? 'OFFLINE',
+                  lastSeenAt: existing?.lastSeenAt ?? null,
+                  healthStatus: existing?.healthStatus ?? 'UNKNOWN',
+                  cpuUsage: existing?.cpuUsage ?? null,
+                  memoryUsage: existing?.memoryUsage ?? null,
+                  diskUsage: existing?.diskUsage ?? null,
+                  recordedAt: existing?.recordedAt ?? null,
+                  thresholds: existing?.thresholds ?? EMPTY_THRESHOLDS,
+                  maintenanceUntil: existing?.maintenanceUntil ?? null,
+                  inMaintenance: existing?.inMaintenance ?? false,
+                  id: d.serverId,
+                  name: d.serverName,
+                  backup: {
+                    result: d.result,
+                    method: d.method,
+                    lastBackupAt: d.lastBackupAt ?? null,
+                    targetPath: d.targetPath ?? null,
+                    sizeBytes: d.sizeBytes ?? null,
+                    vssServiceOk: d.vssServiceOk,
+                    detail: d.detail ?? null,
+                    recordedAt,
+                  },
                 },
-              },
-            }));
+              };
+            });
 
             setLastSync(recordedAt);
             scheduleSummaryRefresh();

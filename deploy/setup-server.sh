@@ -2,6 +2,10 @@
 # setup-server.sh - Provisionamiento inicial de un VPS Ubuntu/Debian (ej. Donweb)
 # para Enterprise SOC. Se corre UNA sola vez, como root o con sudo.
 #
+# Con el stack central dockerizado (docker-compose.yml en la raiz del repo),
+# el VPS solo necesita Docker + Nginx + Certbot — no hace falta instalar
+# Node.js en el host, todo corre adentro de los contenedores.
+#
 # Uso: sudo bash setup-server.sh
 set -euo pipefail
 
@@ -17,18 +21,12 @@ apt-get upgrade -y
 echo "==> Instalando dependencias basicas"
 apt-get install -y curl git ufw nginx certbot python3-certbot-nginx ca-certificates gnupg
 
-echo "==> Instalando Node.js 20 LTS"
-if ! command -v node >/dev/null 2>&1; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs
-fi
-node --version
-
-echo "==> Instalando Docker (para PostgreSQL via docker-compose)"
+echo "==> Instalando Docker"
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
 fi
 docker --version
+docker compose version
 
 echo "==> Creando usuario de aplicacion sin privilegios (socapp)"
 if ! id socapp >/dev/null 2>&1; then
@@ -39,8 +37,9 @@ fi
 echo "==> Configurando firewall (ufw)"
 ufw allow OpenSSH
 ufw allow "Nginx Full"
-# Postgres (5432), backend (3000) y frontend (3001) NUNCA se exponen
-# directo a internet: solo Nginx habla con ellos via localhost.
+# Postgres, backend (3000) y frontend (3001) NUNCA se exponen directo a
+# internet: docker-compose.yml ya los liga solo a 127.0.0.1, y esto es una
+# segunda capa de defensa a nivel de firewall.
 ufw --force enable
 ufw status verbose
 
@@ -48,12 +47,11 @@ echo ""
 echo "================================================================"
 echo " Provisionamiento base completo."
 echo "================================================================"
-echo "Proximos pasos manuales:"
+echo "Proximos pasos manuales (ver deploy/DEPLOY.md para el detalle):"
 echo "  1. Clona el repo en /home/socapp/enterprise-soc (o sube el codigo por rsync/scp)."
-echo "  2. Copia y completa los .env de backend/ y fronted/ con credenciales de PRODUCCION"
-echo "     (nunca reuses las de desarrollo: nueva DATABASE_URL, JWT_SECRET, AGENT_ENROLLMENT_SECRET)."
-echo "  3. Corre 'docker compose up -d' dentro de backend/ para levantar Postgres."
-echo "  4. Copia deploy/*.service a /etc/systemd/system/ y ajusta las rutas si hace falta."
+echo "  2. Copia .env.example a .env en la raiz del repo y completa con credenciales"
+echo "     de PRODUCCION (nunca reuses las de desarrollo)."
+echo "  3. Corre 'docker compose up -d --build' para levantar Postgres + backend + frontend."
+echo "  4. Corre el seed para crear el primer usuario ADMIN."
 echo "  5. Copia deploy/nginx.conf a /etc/nginx/sites-available/enterprise-soc, ajusta el dominio,"
 echo "     activalo con 'ln -s' en sites-enabled, y corre 'certbot --nginx' para el TLS."
-echo "  6. Corre deploy/deploy.sh para el primer deploy real."

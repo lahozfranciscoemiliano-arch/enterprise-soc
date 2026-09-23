@@ -1,0 +1,72 @@
+# Stack central completo (Postgres + backend + frontend) para produccion.
+# Variables leidas desde un .env en esta misma carpeta (ver .env.example).
+# Nginx corre FUERA de Docker, en el host, y reenvia a estos servicios via
+# localhost (ver deploy/nginx.conf) — por eso los puertos se publican solo
+# en 127.0.0.1, nunca en 0.0.0.0.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: enterprise-soc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-nocsoc}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-nocsoc}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Sin "ports:": solo accesible desde otros contenedores de esta red,
+    # nunca desde el host ni desde internet.
+
+  backend:
+    build:
+      context: ./backend
+    container_name: enterprise-soc-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nocsoc}?schema=public
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      PORT: 3000
+      NODE_ENV: production
+      AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET}
+      NOTIFY_MIN_SEVERITY: ${NOTIFY_MIN_SEVERITY:-HIGH}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+    volumes:
+      # El .exe del agente publicado sobrevive a un "docker compose up --build"
+      - agent_downloads:/app/downloads
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  frontend:
+    build:
+      context: ./fronted
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL}
+    container_name: enterprise-soc-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:3001:3001"
+
+volumes:
+  postgres_data:
+  agent_downloads:
