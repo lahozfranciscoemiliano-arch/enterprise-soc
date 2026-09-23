@@ -4,3 +4,7 @@
 *.sh text eol=lf
 *.service text eol=lf
 deploy/nginx.conf text eol=lf
+
+# Binarios: nunca normalizar finales de linea (los corromperia)
+*.pdf binary
+*.exe binary
