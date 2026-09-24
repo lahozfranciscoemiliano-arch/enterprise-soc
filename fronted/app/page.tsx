@@ -177,7 +177,11 @@ export default function DashboardPage() {
           onSubmit={handleLogin}
           className="w-full max-w-sm animate-fade-in-scale rounded-xl border border-gray-800 bg-gray-900/60 p-8 shadow-xl"
         >
-          <h1 className="mb-1 text-xl font-semibold text-gray-100">Enterprise SOC</h1>
+          <div className="mb-2 flex items-center gap-3">
+            <h1 className="text-xl font-semibold text-gray-100">SOC / NOC Central de</h1>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo-bistro.png" alt="Grupo Bistro" className="mt-1 block h-9 w-auto shrink-0 object-contain" />
+          </div>
           <p className="mb-6 text-sm text-gray-400">Inicia sesión para acceder al panel</p>
 
           <label className="mb-1 block text-xs font-medium text-gray-400">Email</label>

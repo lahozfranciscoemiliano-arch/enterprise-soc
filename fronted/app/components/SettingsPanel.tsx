@@ -1,0 +1,286 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { SystemSettings } from '../types';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+
+type FormState = Record<string, string | boolean>;
+
+function plainField(settings: SystemSettings | null, key: keyof SystemSettings): string {
+  if (!settings) return '';
+  const s = settings[key] as { value: unknown } | undefined;
+  return s?.value === null || s?.value === undefined ? '' : String(s.value);
+}
+
+function boolField(settings: SystemSettings | null, key: keyof SystemSettings): boolean {
+  if (!settings) return false;
+  const s = settings[key] as { value: unknown } | undefined;
+  return Boolean(s?.value);
+}
+
+export default function SettingsPanel() {
+  const [settings, setSettings] = useState<SystemSettings | null>(null);
+  const [form, setForm] = useState<FormState>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+
+  const fetchSettings = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/admin/settings`, { credentials: 'include' });
+      if (!res.ok) throw new Error((await res.json()).error || 'No se pudo cargar la configuración');
+      const data: SystemSettings = await res.json();
+      setSettings(data);
+      setForm({
+        SMTP_HOST: plainField(data, 'SMTP_HOST'),
+        SMTP_PORT: plainField(data, 'SMTP_PORT'),
+        SMTP_SECURE: boolField(data, 'SMTP_SECURE'),
+        SMTP_USER: plainField(data, 'SMTP_USER'),
+        SMTP_PASS: '',
+        SMTP_FROM: plainField(data, 'SMTP_FROM'),
+        ALERT_EMAIL_TO: plainField(data, 'ALERT_EMAIL_TO'),
+        SLACK_WEBHOOK_URL: '',
+        WEBHOOK_URL: '',
+        NOTIFY_MIN_SEVERITY: plainField(data, 'NOTIFY_MIN_SEVERITY') || 'HIGH',
+        JWT_EXPIRES_IN: plainField(data, 'JWT_EXPIRES_IN') || '8h',
+        DEFAULT_CPU_HIGH: plainField(data, 'DEFAULT_CPU_HIGH'),
+        DEFAULT_CPU_MEDIUM: plainField(data, 'DEFAULT_CPU_MEDIUM'),
+        DEFAULT_MEM_HIGH: plainField(data, 'DEFAULT_MEM_HIGH'),
+        DEFAULT_MEM_MEDIUM: plainField(data, 'DEFAULT_MEM_MEDIUM'),
+        DEFAULT_DISK_HIGH: plainField(data, 'DEFAULT_DISK_HIGH'),
+        DEFAULT_DISK_MEDIUM: plainField(data, 'DEFAULT_DISK_MEDIUM'),
+        AGENT_ENROLLMENT_SECRET: '',
+        AGENT_LATEST_VERSION: plainField(data, 'AGENT_LATEST_VERSION'),
+        FORTI_SYSLOG_ENABLED: boolField(data, 'FORTI_SYSLOG_ENABLED'),
+        FORTI_SYSLOG_PORT: plainField(data, 'FORTI_SYSLOG_PORT') || '5514',
+        ANTHROPIC_API_KEY: '',
+        ANTHROPIC_MODEL: plainField(data, 'ANTHROPIC_MODEL') || 'claude-sonnet-4-5',
+        REMOTE_ACCESS_ENABLED: boolField(data, 'REMOTE_ACCESS_ENABLED'),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSettings();
+  }, [fetchSettings]);
+
+  const save = useCallback(
+    async (section: string, keys: string[]) => {
+      setSaving(section);
+      setError(null);
+      setSavedMessage(null);
+
+      const payload: Record<string, unknown> = {};
+      for (const key of keys) {
+        const value = form[key];
+        if (typeof value === 'boolean') {
+          payload[key] = value;
+        } else if (value !== '') {
+          const numericKeys = [
+            'SMTP_PORT',
+            'DEFAULT_CPU_HIGH',
+            'DEFAULT_CPU_MEDIUM',
+            'DEFAULT_MEM_HIGH',
+            'DEFAULT_MEM_MEDIUM',
+            'DEFAULT_DISK_HIGH',
+            'DEFAULT_DISK_MEDIUM',
+            'FORTI_SYSLOG_PORT',
+          ];
+          payload[key] = numericKeys.includes(key) ? Number(value) : value;
+        }
+      }
+
+      try {
+        const res = await fetch(`${API_URL}/api/admin/settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(payload),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || 'No se pudo guardar');
+        setSettings(body);
+        setSavedMessage(`Guardado: ${section}`);
+        setTimeout(() => setSavedMessage(null), 3000);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Error desconocido');
+      } finally {
+        setSaving(null);
+      }
+    },
+    [form]
+  );
+
+  const set = (key: string, value: string | boolean) => setForm((p) => ({ ...p, [key]: value }));
+
+  const input = (key: string, placeholder?: string, type = 'text') => (
+    <input
+      type={type}
+      value={form[key] as string}
+      onChange={(e) => set(key, e.target.value)}
+      placeholder={placeholder}
+      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+    />
+  );
+
+  const checkbox = (key: string, label: string) => (
+    <label className="flex items-center gap-2 text-xs text-gray-300">
+      <input
+        type="checkbox"
+        checked={form[key] as boolean}
+        onChange={(e) => set(key, e.target.checked)}
+        className="h-4 w-4 rounded border-gray-700 bg-gray-800"
+      />
+      {label}
+    </label>
+  );
+
+  const sensitiveHint = (key: keyof SystemSettings) => {
+    const s = settings?.[key] as { configured: boolean; hint: string | null } | undefined;
+    return s?.configured ? `Configurado (${s.hint})` : 'No configurado';
+  };
+
+  const saveBtn = (section: string, keys: string[]) => (
+    <button
+      onClick={() => save(section, keys)}
+      disabled={saving === section}
+      className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+    >
+      {saving === section ? 'Guardando...' : 'Guardar'}
+    </button>
+  );
+
+  if (loading) return <p className="text-sm text-gray-500">Cargando configuración...</p>;
+
+  return (
+    <div className="space-y-4">
+      {error && <p className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-xs text-red-400">{error}</p>}
+      {savedMessage && (
+        <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-400">
+          ✓ {savedMessage}
+        </p>
+      )}
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">📧 Notificaciones externas</h3>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {input('SMTP_HOST', 'SMTP_HOST (ej: smtp.gmail.com)')}
+          {input('SMTP_PORT', 'Puerto (587)')}
+          {input('SMTP_USER', 'Usuario SMTP')}
+          {input('SMTP_PASS', `Contraseña SMTP (${sensitiveHint('SMTP_PASS')})`, 'password')}
+          {input('SMTP_FROM', 'Remitente (noc@tudominio.com)')}
+          {input('ALERT_EMAIL_TO', 'Destinatario(s) de alertas')}
+          {input('SLACK_WEBHOOK_URL', `Slack webhook (${sensitiveHint('SLACK_WEBHOOK_URL')})`, 'password')}
+          {input('WEBHOOK_URL', `Webhook genérico (${sensitiveHint('WEBHOOK_URL')})`, 'password')}
+          <select
+            value={form.NOTIFY_MIN_SEVERITY as string}
+            onChange={(e) => set('NOTIFY_MIN_SEVERITY', e.target.value)}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+          >
+            <option value="LOW">Notificar desde: LOW</option>
+            <option value="MEDIUM">Notificar desde: MEDIUM</option>
+            <option value="HIGH">Notificar desde: HIGH</option>
+            <option value="CRITICAL">Notificar desde: CRITICAL</option>
+          </select>
+        </div>
+        <div className="mt-2 flex items-center gap-1 checkbox">{checkbox('SMTP_SECURE', 'SMTP con TLS implícito (puerto 465)')}</div>
+        <div className="mt-3">
+          {saveBtn('notificaciones', [
+            'SMTP_HOST',
+            'SMTP_PORT',
+            'SMTP_SECURE',
+            'SMTP_USER',
+            'SMTP_PASS',
+            'SMTP_FROM',
+            'ALERT_EMAIL_TO',
+            'SLACK_WEBHOOK_URL',
+            'WEBHOOK_URL',
+            'NOTIFY_MIN_SEVERITY',
+          ])}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">📊 Umbrales globales por defecto</h3>
+        <p className="mb-2 text-[11px] text-gray-500">
+          Se usan cuando un servidor no tiene sus propios umbrales configurados (Admin → Servidores → Configurar).
+        </p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          {input('DEFAULT_CPU_MEDIUM', 'CPU advertencia (75)')}
+          {input('DEFAULT_CPU_HIGH', 'CPU crítico (90)')}
+          {input('DEFAULT_MEM_MEDIUM', 'RAM advertencia (80)')}
+          {input('DEFAULT_MEM_HIGH', 'RAM crítico (90)')}
+          {input('DEFAULT_DISK_MEDIUM', 'Disco advertencia (85)')}
+          {input('DEFAULT_DISK_HIGH', 'Disco crítico (95)')}
+        </div>
+        <div className="mt-3">
+          {saveBtn('umbrales', [
+            'DEFAULT_CPU_MEDIUM',
+            'DEFAULT_CPU_HIGH',
+            'DEFAULT_MEM_MEDIUM',
+            'DEFAULT_MEM_HIGH',
+            'DEFAULT_DISK_MEDIUM',
+            'DEFAULT_DISK_HIGH',
+          ])}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">🔐 Sesión y agentes</h3>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {input('JWT_EXPIRES_IN', 'Duración de sesión (8h)')}
+          {input('AGENT_ENROLLMENT_SECRET', `Secreto de auto-enrolamiento (${sensitiveHint('AGENT_ENROLLMENT_SECRET')})`, 'password')}
+          {input('AGENT_LATEST_VERSION', 'Última versión de agente publicada (ej: 1.1.0)')}
+        </div>
+        <p className="mt-2 text-[11px] text-gray-500">
+          Publicar una versión nueva acá hace que todos los agentes con una versión anterior se auto-actualicen en su
+          próximo ciclo (bajan el .exe publicado en /downloads y se reinician solos).
+        </p>
+        <div className="mt-3">{saveBtn('sesión y agentes', ['JWT_EXPIRES_IN', 'AGENT_ENROLLMENT_SECRET', 'AGENT_LATEST_VERSION'])}</div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">🧱 Fortinet</h3>
+        <div className="flex flex-wrap items-center gap-4">
+          {checkbox('FORTI_SYSLOG_ENABLED', 'Activar receptor de syslog UDP (requiere reiniciar el backend)')}
+          <div className="w-40">{input('FORTI_SYSLOG_PORT', 'Puerto UDP (5514)')}</div>
+        </div>
+        <p className="mt-2 text-[11px] text-gray-500">
+          Alternativa sin syslog: usar la ingesta por API con la API key de cada dispositivo (ver sección de
+          dispositivos Fortinet más abajo).
+        </p>
+        <div className="mt-3">{saveBtn('fortinet', ['FORTI_SYSLOG_ENABLED', 'FORTI_SYSLOG_PORT'])}</div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">🤖 Asistente (Claude)</h3>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {input('ANTHROPIC_API_KEY', `API key de Anthropic (${sensitiveHint('ANTHROPIC_API_KEY')})`, 'password')}
+          {input('ANTHROPIC_MODEL', 'Modelo (claude-sonnet-4-5)')}
+        </div>
+        <p className="mt-2 text-[11px] text-gray-500">
+          Requiere una API key de{' '}
+          <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-blue-400 underline">
+            console.anthropic.com
+          </a>{' '}
+          (se factura por uso, es distinta de una suscripción Claude Pro).
+        </p>
+        <div className="mt-3">{saveBtn('asistente', ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL'])}</div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">🖥️ Acceso remoto</h3>
+        {checkbox('REMOTE_ACCESS_ENABLED', 'Mostrar el botón "Conectar" (RDP/VNC) en la ficha de cada servidor')}
+        <p className="mt-2 text-[11px] text-gray-500">
+          El túnel en sí siempre está disponible en el backend; este interruptor solo controla si el botón aparece en
+          el panel, para no tentar a usarlo hasta que el equipo esté cómodo con la función.
+        </p>
+        <div className="mt-3">{saveBtn('acceso remoto', ['REMOTE_ACCESS_ENABLED'])}</div>
+      </div>
+    </div>
+  );
+}

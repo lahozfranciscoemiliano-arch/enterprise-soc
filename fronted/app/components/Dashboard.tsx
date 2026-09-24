@@ -9,12 +9,15 @@ import TopologiaTab from './tabs/TopologiaTab';
 import LogsRegexTab from './tabs/LogsRegexTab';
 import AdminTab from './tabs/AdminTab';
 import AccountSettingsModal from './AccountSettingsModal';
+import AssistantPanel from './AssistantPanel';
+import FortiTab from './tabs/FortiTab';
 import { getHealthStatus } from '../lib/health';
 import type {
   BackupInfo,
   ConnectionStatus,
   CurrentUser,
   DashboardSummary,
+  FortiEvent,
   SecurityAlert,
   ServerSummary,
   TabId,
@@ -33,6 +36,8 @@ type ServerApiItem = {
   name: string;
   status: string;
   lastSeenAt: string | null;
+  tags: string[];
+  agentVersion: string | null;
   healthStatus: ServerSummary['healthStatus'];
   cpuUsage: number | null;
   memoryUsage: number | null;
@@ -88,6 +93,8 @@ export default function Dashboard({
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
+  const [fortiEvents, setFortiEvents] = useState<FortiEvent[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -113,6 +120,8 @@ export default function Dashboard({
             name: s.name,
             status: s.status,
             lastSeenAt: s.lastSeenAt,
+            tags: s.tags,
+            agentVersion: s.agentVersion,
             healthStatus: s.healthStatus,
             cpuUsage: s.cpuUsage,
             memoryUsage: s.memoryUsage,
@@ -202,6 +211,15 @@ export default function Dashboard({
     [handleAuthFailure]
   );
 
+  const fetchFortiEvents = useCallback(async () => {
+    const res = await fetch(`${API_URL}/api/forti/events?limit=200`, { credentials: 'include' });
+    if (res.status === 401) {
+      handleAuthFailure();
+      return;
+    }
+    if (res.ok) setFortiEvents(await res.json());
+  }, [handleAuthFailure]);
+
   const scheduleSummaryRefresh = useCallback(() => {
     if (summaryDebounce.current) clearTimeout(summaryDebounce.current);
     summaryDebounce.current = setTimeout(fetchSummary, SUMMARY_DEBOUNCE_MS);
@@ -247,6 +265,8 @@ export default function Dashboard({
                   thresholds: existing?.thresholds ?? EMPTY_THRESHOLDS,
                   maintenanceUntil: existing?.maintenanceUntil ?? null,
                   inMaintenance: existing?.inMaintenance ?? false,
+                  tags: existing?.tags ?? [],
+                  agentVersion: existing?.agentVersion ?? null,
                   id: d.serverId,
                   name: d.serverName,
                   status: 'ONLINE',
@@ -294,6 +314,8 @@ export default function Dashboard({
                   thresholds: existing?.thresholds ?? EMPTY_THRESHOLDS,
                   maintenanceUntil: existing?.maintenanceUntil ?? null,
                   inMaintenance: existing?.inMaintenance ?? false,
+                  tags: existing?.tags ?? [],
+                  agentVersion: existing?.agentVersion ?? null,
                   id: d.serverId,
                   name: d.serverName,
                   backup: {
@@ -339,6 +361,11 @@ export default function Dashboard({
             const ev = message.event;
             setAlerts((prev) => prev.map((a) => (a.id === ev.id ? { ...a, ...ev } : a)));
             scheduleSummaryRefresh();
+          }
+
+          if (message.type === 'FORTI_EVENT') {
+            const ev = message.event;
+            setFortiEvents((prev) => [ev, ...prev].slice(0, 200));
           }
         } catch (err) {
           console.error('Mensaje WS inválido', err);
@@ -397,6 +424,7 @@ export default function Dashboard({
       )}
       {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
       {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
+      {activeTab === 'fortinet' && <FortiTab events={fortiEvents} onRefresh={fetchFortiEvents} />}
       {activeTab === 'admin' && role === 'ADMIN' && (
         <AdminTab currentUserEmail={user.email} servers={serverList} onServersChanged={fetchServers} />
       )}
@@ -408,6 +436,18 @@ export default function Dashboard({
           onClose={() => setShowAccountModal(false)}
           onLogout={onLogout}
         />
+      )}
+
+      {showAssistant ? (
+        <AssistantPanel onClose={() => setShowAssistant(false)} />
+      ) : (
+        <button
+          onClick={() => setShowAssistant(true)}
+          className="fixed bottom-4 right-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-xl shadow-lg shadow-blue-900/40 transition-transform hover:scale-105"
+          title="Abrir asistente"
+        >
+          🤖
+        </button>
       )}
     </div>
   );

@@ -1,11 +1,16 @@
 """
 agent.py - Agente de monitoreo Enterprise SOC (Windows)
+Autor: Francisco E. Lahoz F.
 
 Recolecta metricas de CPU/RAM/disco/red con psutil, los errores mas
 recientes del Visor de Eventos de Windows (System y Application), y el
 estado del backup nativo de Windows (Windows Server Backup / Backup and
 Restore heredado en Windows 10 y 11), y los envia al backend NOC/SOC via
 POST /api/telemetry y POST /api/backup-status.
+
+Tambien mantiene un canal de control persistente hacia el backend para
+recibir pedidos de acceso remoto (tunel inverso RDP/VNC) y se auto-actualiza
+cuando el backend publica una version nueva del agente.
 
 IMPORTANTE: la revision de backups (wbadmin / WMI de Windows Server Backup)
 requiere que el proceso corra como Administrador. Sin privilegios elevados,
@@ -23,8 +28,10 @@ import json
 import logging
 import os
 import re
+import socket as socket_module
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,6 +42,11 @@ from typing import Any
 import psutil
 import requests
 from dotenv import load_dotenv
+
+try:
+    import websocket  # websocket-client: canal de control para el tunel de acceso remoto
+except ImportError:  # pragma: no cover - se degrada sin la funcion de acceso remoto
+    websocket = None
 
 try:
     import win32evtlog
@@ -51,6 +63,13 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
     win32com = None
     win32service = None
     win32serviceutil = None
+
+
+# Se compara contra AGENT_LATEST_VERSION (configurable en Admin -> Configuracion
+# del backend) para el auto-update -- ver check_and_apply_update(). Subir este
+# numero (y el valor guardado en el backend) cada vez que se publique un
+# nuevo build del .exe.
+AGENT_VERSION = "1.1.0"
 
 
 def get_base_dir() -> Path:
@@ -462,6 +481,7 @@ def build_payload() -> dict[str, Any]:
     return {
         **metrics,
         "recordedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "agentVersion": AGENT_VERSION,
         "metadata": {
             "hostname": os.getenv("COMPUTERNAME", ""),
             "recentEventLogErrors": recent_errors,
@@ -469,7 +489,10 @@ def build_payload() -> dict[str, Any]:
     }
 
 
-def send_telemetry(payload: dict[str, Any]) -> None:
+def send_telemetry(payload: dict[str, Any]) -> str | None:
+    """Devuelve la ultima version de agente publicada en el backend (si la
+    respuesta la trae), para que el loop principal decida si auto-actualizar.
+    """
     url = f"{BACKEND_URL}/api/telemetry"
     headers = {
         "Content-Type": "application/json",
@@ -488,9 +511,11 @@ def send_telemetry(payload: dict[str, Any]) -> None:
             body.get("telemetryId"),
             body.get("alertsTriggered", 0),
         )
+        return body.get("latestAgentVersion")
     except requests.exceptions.RequestException as exc:
         status = getattr(exc.response, "status_code", "sin respuesta")
         logger.error("Fallo al enviar telemetria a %s (HTTP %s): %s", url, status, exc)
+        return None
 
 
 def validate_config() -> None:
@@ -502,6 +527,229 @@ def validate_config() -> None:
             ", ".join(missing),
         )
         sys.exit(1)
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(p) for p in v.strip().split("."))
+    except ValueError:
+        return (0,)
+
+
+def check_and_apply_update(latest_version: str | None) -> None:
+    """Si el backend reporta una version de agente mas nueva (AGENT_LATEST_VERSION
+    en Admin -> Configuracion) que la propia, descarga el .exe publicado y se
+    reemplaza a si mismo -- para no tener que reinstalar a mano en cada
+    servidor cada vez que se publica una mejora.
+
+    Solo aplica cuando corre compilado (sys.frozen); en modo script no tiene
+    sentido. Cualquier fallo en el proceso se loguea y se sigue con el ciclo
+    normal: un update fallido nunca debe tirar abajo el monitoreo.
+    """
+    if not latest_version or _version_tuple(latest_version) <= _version_tuple(AGENT_VERSION):
+        return
+
+    if not getattr(sys, "frozen", False):
+        logger.warning(
+            "Hay una version de agente mas nueva disponible (%s, la actual es %s), pero el "
+            "auto-update solo aplica al .exe compilado, no en modo script.",
+            latest_version,
+            AGENT_VERSION,
+        )
+        return
+
+    logger.info("Actualizando el agente de %s a %s ...", AGENT_VERSION, latest_version)
+
+    try:
+        current_exe = Path(sys.executable).resolve()
+        download_url = f"{BACKEND_URL}/downloads/enterprise-soc-agent.exe"
+
+        response = requests.get(download_url, timeout=120, stream=True)
+        response.raise_for_status()
+
+        new_exe = current_exe.with_name(current_exe.stem + ".new.exe")
+        with open(new_exe, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024 * 256):
+                f.write(chunk)
+
+        # Un .exe de PyInstaller de este agente nunca pesa unos pocos KB; si
+        # pesa eso es que se descargo una pagina de error, no el binario.
+        if new_exe.stat().st_size < 1_000_000:
+            raise RuntimeError(f"El archivo descargado parece inválido ({new_exe.stat().st_size} bytes)")
+
+        old_exe = current_exe.with_name(current_exe.stem + ".old.exe")
+        if old_exe.exists():
+            old_exe.unlink()
+        current_exe.rename(old_exe)
+        new_exe.rename(current_exe)
+
+        logger.info("Actualización descargada y aplicada. Reiniciando para tomar la versión %s...", latest_version)
+        # Exit code distinto de 0 a proposito: la Tarea Programada (ver
+        # install-agent.ps1, -RestartCount/-RestartInterval) relanza el
+        # proceso automaticamente ante una salida no exitosa, y con eso
+        # arranca de nuevo ya con el .exe nuevo en su lugar.
+        sys.exit(75)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        logger.error("Falló la auto-actualización del agente: %s", exc)
+
+
+def _cleanup_previous_update() -> None:
+    """Borra el .exe viejo (name.old.exe) que haya quedado de una
+    actualizacion anterior, ahora que ya arranco bien el nuevo."""
+    if not getattr(sys, "frozen", False):
+        return
+    current_exe = Path(sys.executable).resolve()
+    old_exe = current_exe.with_name(current_exe.stem + ".old.exe")
+    if old_exe.exists():
+        try:
+            old_exe.unlink()
+            logger.debug("Limpieza: se borró el ejecutable anterior (%s)", old_exe)
+        except OSError:
+            pass  # puede seguir bloqueado un instante justo despues de reiniciar; no es grave
+
+
+def _ws_base_url() -> str:
+    if BACKEND_URL.startswith("https://"):
+        return "wss://" + BACKEND_URL[len("https://") :]
+    if BACKEND_URL.startswith("http://"):
+        return "ws://" + BACKEND_URL[len("http://") :]
+    return BACKEND_URL
+
+
+def _close_quietly(*closers) -> None:
+    for closer in closers:
+        try:
+            closer()
+        except Exception:
+            pass
+
+
+def _pump_socket_to_ws(sock: socket_module.socket, ws: Any, stop_event: threading.Event) -> None:
+    try:
+        while not stop_event.is_set():
+            data = sock.recv(65536)
+            if not data:
+                break
+            ws.send(data, opcode=websocket.ABNF.OPCODE_BINARY)
+    except Exception as exc:
+        logger.debug("Pata TCP->WS del tunel terminada: %s", exc)
+    finally:
+        # Cerrar las dos puntas aca, no solo marcar el evento: si no, el otro
+        # thread puede quedar bloqueado para siempre en un recv() que nunca
+        # se va a desbloquear solo porque este thread termino.
+        stop_event.set()
+        _close_quietly(sock.close, ws.close)
+
+
+def _pump_ws_to_socket(ws: Any, sock: socket_module.socket, stop_event: threading.Event) -> None:
+    try:
+        while not stop_event.is_set():
+            opcode, data = ws.recv_data()
+            if opcode == websocket.ABNF.OPCODE_CLOSE:
+                break
+            if opcode in (websocket.ABNF.OPCODE_BINARY, websocket.ABNF.OPCODE_TEXT) and data:
+                sock.sendall(data)
+    except Exception as exc:
+        logger.debug("Pata WS->TCP del tunel terminada: %s", exc)
+    finally:
+        stop_event.set()
+        _close_quietly(sock.close, ws.close)
+
+
+def handle_remote_tunnel(session_id: str, target_port: int) -> None:
+    """Abre la "pata" de datos del tunel de acceso remoto: conecta un socket
+    TCP local (donde escucha RDP/VNC en esta misma maquina) y lo pega, byte a
+    byte, a un WebSocket hacia el backend. El backend no interpreta nada de
+    este trafico, solo lo reenvia a la otra punta -- el relay que corre el
+    operador en su propia maquina (ver tools/remote-relay.js).
+    """
+    if websocket is None:
+        logger.error("No se puede abrir un túnel de acceso remoto: falta el paquete websocket-client")
+        return
+
+    logger.info("Solicitud de acceso remoto recibida (sesión=%s, puerto=%s)", session_id, target_port)
+
+    tunnel_url = f"{_ws_base_url()}/ws/tunnel/{session_id}?role=agent"
+    headers = [f"X-Server-Id: {SERVER_ID}", f"X-Api-Key: {API_KEY}"]
+
+    sock = None
+    ws = None
+    try:
+        # El timeout de 10s es solo para el connect inicial. Si no se
+        # resetea a None despues, python deja ese mismo timeout puesto para
+        # los recv() de ahi en mas, y el tunel se corta solo apenas pasan 10
+        # segundos sin trafico (que es exactamente lo que pasa entre que se
+        # abre el tunel y el operador conecta su cliente RDP/VNC).
+        sock = socket_module.create_connection(("127.0.0.1", target_port), timeout=10)
+        sock.settimeout(None)
+        ws = websocket.create_connection(tunnel_url, header=headers, timeout=10)
+        ws.settimeout(None)
+
+        stop_event = threading.Event()
+        t1 = threading.Thread(target=_pump_socket_to_ws, args=(sock, ws, stop_event), daemon=True)
+        t2 = threading.Thread(target=_pump_ws_to_socket, args=(ws, sock, stop_event), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        logger.info("Túnel de acceso remoto finalizado (sesión=%s)", session_id)
+    except Exception as exc:
+        logger.error("Error en el túnel de acceso remoto (sesión=%s): %s", session_id, exc)
+    finally:
+        for closer in (sock.close if sock else None, ws.close if ws else None):
+            if closer:
+                try:
+                    closer()
+                except Exception:
+                    pass
+
+
+def start_control_connection() -> None:
+    """Mantiene una conexion de control persistente y saliente hacia el
+    backend, para recibir pedidos de acceso remoto (START_TUNNEL) sin que el
+    servidor tenga que abrir ningun puerto entrante -- la conexion siempre
+    sale del agente, nunca entra. Corre en un thread propio con reconexion
+    automatica con backoff; su caida no afecta el ciclo normal de telemetria.
+    """
+    if websocket is None:
+        logger.warning(
+            "El paquete websocket-client no está instalado: la función de acceso remoto queda deshabilitada "
+            "(el monitoreo normal sigue funcionando sin problema)."
+        )
+        return
+
+    control_url = f"{_ws_base_url()}/ws/agent-control"
+    headers = [f"X-Server-Id: {SERVER_ID}", f"X-Api-Key: {API_KEY}"]
+    state = {"backoff": 5}
+
+    def on_open(_ws):
+        state["backoff"] = 5
+        logger.debug("Canal de control conectado al backend")
+
+    def on_message(_ws, message):
+        try:
+            data = json.loads(message)
+        except (TypeError, ValueError):
+            return
+        if data.get("type") == "START_TUNNEL":
+            threading.Thread(
+                target=handle_remote_tunnel,
+                args=(data.get("sessionId"), int(data.get("targetPort", 3389))),
+                daemon=True,
+            ).start()
+
+    while True:
+        try:
+            app = websocket.WebSocketApp(control_url, header=headers, on_open=on_open, on_message=on_message)
+            app.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as exc:
+            logger.debug("Conexión de control interrumpida: %s", exc)
+
+        time.sleep(state["backoff"])
+        state["backoff"] = min(state["backoff"] * 2, 120)
 
 
 def parse_args() -> argparse.Namespace:
@@ -516,6 +764,11 @@ def parse_args() -> argparse.Namespace:
         "--once",
         action="store_true",
         help="Ejecuta un unico ciclo de recoleccion y envio, y termina (util para probar sin esperar 60s).",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Imprime la version del agente y termina.",
     )
     return parser.parse_args()
 
@@ -547,7 +800,8 @@ def run_cycle(debug: bool) -> None:
             )
         logger.debug("Payload completo a enviar:\n%s", json.dumps(payload, indent=2, ensure_ascii=False))
 
-    send_telemetry(payload)
+    latest_version = send_telemetry(payload)
+    check_and_apply_update(latest_version)
 
     global _last_backup_check
     now = time.monotonic()
@@ -579,18 +833,27 @@ def run_cycle(debug: bool) -> None:
 def main() -> None:
     args = parse_args()
 
+    if args.version:
+        print(AGENT_VERSION)
+        return
+
     if args.debug:
         logger.setLevel(logging.DEBUG)
         _console_handler.setLevel(logging.DEBUG)
 
     validate_config()
+    _cleanup_previous_update()
     logger.info(
-        "Agente Enterprise SOC iniciado. Backend=%s, intervalo=%ss, debug=%s, once=%s",
+        "Agente Enterprise SOC iniciado (v%s). Backend=%s, intervalo=%ss, debug=%s, once=%s",
+        AGENT_VERSION,
         BACKEND_URL,
         POLL_INTERVAL_SECONDS,
         args.debug,
         args.once,
     )
+
+    if not args.once:
+        threading.Thread(target=start_control_connection, daemon=True).start()
 
     while True:
         cycle_start = time.monotonic()
@@ -639,6 +902,13 @@ if __name__ == "__main__":
 #    --hidden-import=win32timezone es necesario porque PyInstaller no
 #    detecta automaticamente esa dependencia interna de pywin32, y sin ella
 #    el .exe compilado falla al iniciar con un ImportError.
+#
+#    IMPORTANTE al publicar una version nueva: subi el .exe compilado a
+#    backend/downloads/enterprise-soc-agent.exe Y actualiza el valor de
+#    AGENT_LATEST_VERSION en Admin -> Configuracion con el mismo numero que
+#    tiene la constante AGENT_VERSION de este archivo. Si no coinciden, los
+#    agentes viejos nunca se enteran de que hay una version nueva (o peor,
+#    quedan reintentando actualizarse a la misma version sin parar).
 #
 # 3. El ejecutable queda en dist\enterprise-soc-agent.exe. Copia junto a el
 #    un archivo .env (basado en .env.example) con el SERVER_ID y API_KEY

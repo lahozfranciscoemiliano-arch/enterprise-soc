@@ -48,11 +48,25 @@ services:
       ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-5}
+      FORTI_SYSLOG_ENABLED: ${FORTI_SYSLOG_ENABLED:-false}
+      FORTI_SYSLOG_PORT: ${FORTI_SYSLOG_PORT:-5514}
     volumes:
       # El .exe del agente publicado sobrevive a un "docker compose up --build"
       - agent_downloads:/app/downloads
     ports:
       - "127.0.0.1:3000:3000"
+      # Si activas el receptor de syslog de Fortinet (Admin -> Configuracion
+      # -> Fortinet), el FortiGate necesita llegar a este puerto UDP desde
+      # afuera del VPS -- a diferencia de arriba, NO se puede dejar en
+      # 127.0.0.1. OJO: Docker maneja sus propias reglas de iptables y por
+      # default IGNORA ufw para los puertos que publica; descomentar la
+      # linea de abajo expone ese puerto a internet aunque "ufw status"
+      # diga que esta bloqueado. Antes de activarlo, restringi el origen
+      # (por IP del FortiGate o VPN) o revisa la guia de ufw-docker en
+      # deploy/DEPLOY.md, seccion de Fortinet.
+      # - "0.0.0.0:5514:5514/udp"
 
   frontend:
     build:

@@ -9,7 +9,20 @@ let wss = null;
 const clients = new Set();
 
 function createSocketServer(httpServer) {
-  wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  // noServer + enrutamiento manual por pathname: el backend expone varios
+  // WebSocketServer distintos sobre el mismo httpServer (este, el canal de
+  // control de agentes, y el tunel de acceso remoto). Con {server, path} la
+  // libreria "ws" aborta la conexion con 400 apenas UNA instancia no
+  // matchea el path, sin dejarle la oportunidad a las demas -- por eso cada
+  // una se registra en modo noServer y decide ella misma si el path es el
+  // suyo, sin tocar el socket si no lo es.
+  wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on('upgrade', (req, socket, head) => {
+    const { pathname } = new URL(req.url, 'http://localhost');
+    if (pathname !== '/ws') return;
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  });
 
   wss.on('connection', async (ws, req) => {
     // El token ya no viaja en la URL (terminaba en logs/historial del
@@ -118,10 +131,15 @@ function broadcastAlertUpdate(event) {
   broadcast({ type: 'SECURITY_ALERT_UPDATE', event });
 }
 
+function broadcastFortiEvent(event) {
+  broadcast({ type: 'FORTI_EVENT', event });
+}
+
 module.exports = {
   createSocketServer,
   broadcastAlert,
   broadcastAlertUpdate,
   broadcastTelemetry,
   broadcastBackupStatus,
+  broadcastFortiEvent,
 };

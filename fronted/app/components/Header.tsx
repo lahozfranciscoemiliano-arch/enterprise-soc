@@ -27,9 +27,11 @@ export default function Header({
             🛰️
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-gray-100">
-              Enterprise SOC <span className="text-blue-400">Command Center</span>
-            </h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-lg font-semibold text-gray-100">SOC / NOC Central de</h1>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo-bistro.png" alt="Grupo Bistro" className="mt-1 block h-8 w-auto shrink-0 object-contain" />
+            </div>
             <p className="flex items-center gap-1 text-xs text-gray-500">
               🕒 Última sincronización: {lastSync ? new Date(lastSync).toLocaleString('es-ES') : '—'}
             </p>

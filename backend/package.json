@@ -2,6 +2,7 @@
   "name": "noc-soc-backend",
   "version": "1.0.0",
   "description": "Backend NOC/SOC: ingesta de telemetria y alertas de seguridad en tiempo real",
+  "author": "Francisco E. Lahoz F.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -1,5 +1,8 @@
-// Umbrales globales por defecto. Un servidor puede sobreescribirlos via sus
-// campos cpuThresholdHigh/cpuThresholdMedium/etc (ver resolveThresholds).
+const { getSettings } = require('./settings');
+
+// Umbrales globales por defecto "de fabrica"; se usan si no hay nada
+// guardado en Admin -> Configuracion (ver getEffectiveDefaultThresholds) ni
+// en el propio servidor.
 const DEFAULT_THRESHOLDS = {
   cpuUsage: {
     type: 'CPU_THRESHOLD',
@@ -7,6 +10,8 @@ const DEFAULT_THRESHOLDS = {
     medium: 75,
     highField: 'cpuThresholdHigh',
     mediumField: 'cpuThresholdMedium',
+    settingHigh: 'DEFAULT_CPU_HIGH',
+    settingMedium: 'DEFAULT_CPU_MEDIUM',
   },
   memoryUsage: {
     type: 'MEMORY_THRESHOLD',
@@ -14,6 +19,8 @@ const DEFAULT_THRESHOLDS = {
     medium: 80,
     highField: 'memThresholdHigh',
     mediumField: 'memThresholdMedium',
+    settingHigh: 'DEFAULT_MEM_HIGH',
+    settingMedium: 'DEFAULT_MEM_MEDIUM',
   },
   diskUsage: {
     type: 'DISK_THRESHOLD',
@@ -21,16 +28,38 @@ const DEFAULT_THRESHOLDS = {
     medium: 85,
     highField: 'diskThresholdHigh',
     mediumField: 'diskThresholdMedium',
+    settingHigh: 'DEFAULT_DISK_HIGH',
+    settingMedium: 'DEFAULT_DISK_MEDIUM',
   },
 };
 
-function resolveThresholds(server) {
+// Trae los 6 umbrales globales configurados en Admin -> Configuracion (si
+// hay), completando lo que falte con los valores de fabrica. Pensado para
+// pedirse una sola vez por request y pasarlo a resolveThresholds/
+// evaluateTelemetry/getHealthStatus, no una vez por servidor.
+async function getEffectiveDefaultThresholds() {
+  const keys = Object.values(DEFAULT_THRESHOLDS).flatMap((r) => [r.settingHigh, r.settingMedium]);
+  const stored = await getSettings(keys);
+
+  const effective = {};
+  for (const [field, rule] of Object.entries(DEFAULT_THRESHOLDS)) {
+    effective[field] = {
+      type: rule.type,
+      high: stored[rule.settingHigh] ?? rule.high,
+      medium: stored[rule.settingMedium] ?? rule.medium,
+    };
+  }
+  return effective;
+}
+
+function resolveThresholds(server, defaults = DEFAULT_THRESHOLDS) {
   const resolved = {};
   for (const [field, rule] of Object.entries(DEFAULT_THRESHOLDS)) {
+    const fallback = defaults[field] ?? rule;
     resolved[field] = {
       type: rule.type,
-      high: server?.[rule.highField] ?? rule.high,
-      medium: server?.[rule.mediumField] ?? rule.medium,
+      high: server?.[rule.highField] ?? fallback.high,
+      medium: server?.[rule.mediumField] ?? fallback.medium,
     };
   }
   return resolved;
@@ -40,10 +69,10 @@ function isInMaintenance(server) {
   return Boolean(server?.maintenanceUntil && new Date(server.maintenanceUntil) > new Date());
 }
 
-function evaluateTelemetry(server, telemetry) {
+function evaluateTelemetry(server, telemetry, defaults = DEFAULT_THRESHOLDS) {
   if (isInMaintenance(server)) return [];
 
-  const thresholds = resolveThresholds(server);
+  const thresholds = resolveThresholds(server, defaults);
   const alerts = [];
 
   for (const [field, rule] of Object.entries(thresholds)) {
@@ -92,10 +121,10 @@ function evaluateBackup(server, backup) {
   return null;
 }
 
-function getHealthStatus(telemetry, server) {
+function getHealthStatus(telemetry, server, defaults = DEFAULT_THRESHOLDS) {
   if (!telemetry) return 'UNKNOWN';
 
-  const thresholds = resolveThresholds(server);
+  const thresholds = resolveThresholds(server, defaults);
   let status = 'OK';
 
   for (const [field, rule] of Object.entries(thresholds)) {
@@ -115,5 +144,6 @@ module.exports = {
   getHealthStatus,
   resolveThresholds,
   isInMaintenance,
+  getEffectiveDefaultThresholds,
   DEFAULT_THRESHOLDS,
 };

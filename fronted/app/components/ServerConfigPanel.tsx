@@ -22,7 +22,34 @@ export default function ServerConfigPanel({
   });
   const [savingThresholds, setSavingThresholds] = useState(false);
   const [savingMaintenance, setSavingMaintenance] = useState(false);
+  const [tagsInput, setTagsInput] = useState(server.tags.join(', '));
+  const [savingTags, setSavingTags] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleSaveTags = async () => {
+    setSavingTags(true);
+    setError(null);
+
+    const tags = tagsInput
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    try {
+      const res = await fetch(`${API_URL}/api/admin/servers/${server.id}/tags`, {
+        method: 'PATCH',
+        headers: jsonHeaders,
+        credentials: 'include',
+        body: JSON.stringify({ tags }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'No se pudieron guardar las etiquetas');
+      onUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setSavingTags(false);
+    }
+  };
 
   const handleSaveThresholds = async () => {
     setSavingThresholds(true);
@@ -88,6 +115,28 @@ export default function ServerConfigPanel({
 
   return (
     <div className="mt-2 rounded-lg border border-gray-800 bg-gray-950/60 p-4">
+      <div className="mb-3 border-b border-gray-800 pb-3">
+        <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">
+          Etiquetas (separadas por coma — sucursal, ambiente, rol, etc.)
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <input
+            type="text"
+            value={tagsInput}
+            onChange={(e) => setTagsInput(e.target.value)}
+            placeholder="ej: sucursal-centro, produccion, sql"
+            className="min-w-[240px] flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <button
+            onClick={handleSaveTags}
+            disabled={savingTags}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+          >
+            {savingTags ? 'Guardando...' : 'Guardar etiquetas'}
+          </button>
+        </div>
+      </div>
+
       <div className="mb-3">
         <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">
           Umbrales personalizados (vacío = usar el default global)

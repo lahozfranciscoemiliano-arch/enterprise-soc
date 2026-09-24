@@ -14,6 +14,7 @@ const jwt = require('jsonwebtoken');
 
 const prisma = require('./src/prismaClient');
 const authServer = require('./src/middleware/authServer');
+const authFortiDevice = require('./src/middleware/authFortiDevice');
 const { authUser, requireRole, SESSION_COOKIE_NAME } = require('./src/middleware/authUser');
 const { csrfGuard } = require('./src/middleware/csrfGuard');
 const {
@@ -28,10 +29,25 @@ const {
   login2faSchema,
   twoFactorCodeSchema,
   disable2faSchema,
+  settingsSchema,
+  createFortiDeviceSchema,
+  fortiEventIngestSchema,
+  updateServerTagsSchema,
+  assistantChatSchema,
+  createRemoteSessionSchema,
 } = require('./src/validators');
-const { evaluateTelemetry, evaluateBackup, getHealthStatus, isInMaintenance } = require('./src/services/alertEngine');
+const {
+  evaluateTelemetry,
+  evaluateBackup,
+  getHealthStatus,
+  isInMaintenance,
+  getEffectiveDefaultThresholds,
+} = require('./src/services/alertEngine');
 const { logAudit } = require('./src/services/auditLog');
-const { notifyAlert } = require('./src/services/notifications');
+const { notifyAlert, notifyGeneric } = require('./src/services/notifications');
+const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
+const { ingestFortiEvent } = require('./src/services/fortinet');
+const { askClaude } = require('./src/services/claude');
 const { createSession, revokeSession, revokeAllUserSessions } = require('./src/services/sessions');
 const {
   generateSecret,
@@ -48,6 +64,14 @@ const {
   broadcastTelemetry,
   broadcastBackupStatus,
 } = require('./src/websocket/socketServer');
+const {
+  createRemoteBroker,
+  isAgentControlConnected,
+  sendStartTunnel,
+  generateSessionToken,
+  closeSession,
+} = require('./src/services/remoteBroker');
+const { startFortiSyslogListener } = require('./src/services/fortiSyslog');
 
 const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET'];
 for (const key of REQUIRED_ENV) {
@@ -429,12 +453,17 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
 
     await prisma.server.update({
       where: { id: server.id },
-      data: { status: 'ONLINE', lastSeenAt: new Date() },
+      data: {
+        status: 'ONLINE',
+        lastSeenAt: new Date(),
+        ...(data.agentVersion ? { agentVersion: data.agentVersion } : {}),
+      },
     });
 
     broadcastTelemetry(server, telemetry);
 
-    const triggeredAlerts = evaluateTelemetry(server, data);
+    const defaultThresholds = await getEffectiveDefaultThresholds();
+    const triggeredAlerts = evaluateTelemetry(server, data, defaultThresholds);
     let createdEvents = [];
 
     if (triggeredAlerts.length > 0) {
@@ -459,9 +488,14 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
       }
     }
 
+    const latestAgentVersion = await getSetting('AGENT_LATEST_VERSION');
+
     return res.status(201).json({
       telemetryId: telemetry.id,
       alertsTriggered: createdEvents.length,
+      // El agente compara esto contra su propia version (--version) para
+      // saber si tiene que actualizarse solo (ver agent.py: check_for_update).
+      latestAgentVersion: latestAgentVersion || null,
     });
   } catch (err) {
     console.error('Error procesando telemetría', err);
@@ -534,19 +568,22 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
 
 app.get('/api/servers', authUser, async (req, res) => {
   try {
-    const servers = await prisma.server.findMany({
-      orderBy: { name: 'asc' },
-      include: {
-        telemetry: {
-          orderBy: { recordedAt: 'desc' },
-          take: 1,
+    const [servers, defaultThresholds] = await Promise.all([
+      prisma.server.findMany({
+        orderBy: { name: 'asc' },
+        include: {
+          telemetry: {
+            orderBy: { recordedAt: 'desc' },
+            take: 1,
+          },
+          backups: {
+            orderBy: { recordedAt: 'desc' },
+            take: 1,
+          },
         },
-        backups: {
-          orderBy: { recordedAt: 'desc' },
-          take: 1,
-        },
-      },
-    });
+      }),
+      getEffectiveDefaultThresholds(),
+    ]);
 
     return res.json(
       servers.map((s) => {
@@ -557,7 +594,9 @@ app.get('/api/servers', authUser, async (req, res) => {
           name: s.name,
           status: s.status,
           lastSeenAt: s.lastSeenAt,
-          healthStatus: getHealthStatus(latest, s),
+          tags: s.tags,
+          agentVersion: s.agentVersion,
+          healthStatus: getHealthStatus(latest, s, defaultThresholds),
           cpuUsage: latest?.cpuUsage ?? null,
           memoryUsage: latest?.memoryUsage ?? null,
           diskUsage: latest?.diskUsage ?? null,
@@ -611,16 +650,17 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
 
-    const [telemetryToday, openAlerts, criticalAlerts] = await Promise.all([
+    const [telemetryToday, openAlerts, criticalAlerts, defaultThresholds] = await Promise.all([
       prisma.telemetry.count({ where: { recordedAt: { gte: startOfDay } } }),
       prisma.securityEvent.count({ where: { status: 'OPEN' } }),
       prisma.securityEvent.count({ where: { status: 'OPEN', severity: 'CRITICAL' } }),
+      getEffectiveDefaultThresholds(),
     ]);
 
     const breakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
     const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
     for (const s of servers) {
-      breakdown[getHealthStatus(s.telemetry[0], s)] += 1;
+      breakdown[getHealthStatus(s.telemetry[0], s, defaultThresholds)] += 1;
       backupBreakdown[s.backups[0]?.result ?? 'UNKNOWN'] += 1;
     }
 
@@ -1045,6 +1085,144 @@ app.patch(
   }
 );
 
+app.patch(
+  '/api/admin/servers/:id/tags',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    const parsed = updateServerTagsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Etiquetas inválidas', details: parsed.error.flatten() });
+    }
+
+    try {
+      const server = await prisma.server.update({
+        where: { id: req.params.id },
+        data: { tags: parsed.data.tags },
+      });
+
+      logAudit({
+        userId: req.user.sub,
+        action: 'SERVER_UPDATE_TAGS',
+        targetType: 'Server',
+        targetId: server.id,
+        metadata: { tags: parsed.data.tags },
+      });
+
+      return res.json({ id: server.id, name: server.name, tags: server.tags });
+    } catch (err) {
+      if (err.code === 'P2025') {
+        return res.status(404).json({ error: 'Servidor no encontrado' });
+      }
+      console.error('Error actualizando etiquetas', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Acceso remoto (tunel inverso RDP/VNC). Solo ADMIN: es acceso interactivo
+// directo a un servidor de un cliente, el nivel mas alto de privilegio que
+// existe en este sistema. Ver src/services/remoteBroker.js para el diseño
+// completo y tools/remote-relay.js para el lado del operador.
+// ---------------------------------------------------------------------------
+
+const remoteSessionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes de acceso remoto, intenta más tarde' },
+});
+
+const ALLOWED_REMOTE_PORTS = new Set([3389, 5900]); // RDP, VNC
+
+app.post(
+  '/api/admin/servers/:id/remote-session',
+  remoteSessionLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    const parsed = createRemoteSessionSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Datos inválidos', details: parsed.error.flatten() });
+    }
+
+    const targetPort = parsed.data.targetPort;
+    if (!ALLOWED_REMOTE_PORTS.has(targetPort)) {
+      return res.status(400).json({ error: `Puerto no permitido. Usar uno de: ${[...ALLOWED_REMOTE_PORTS].join(', ')}` });
+    }
+
+    try {
+      const server = await prisma.server.findUnique({ where: { id: req.params.id } });
+      if (!server) return res.status(404).json({ error: 'Servidor no encontrado' });
+
+      if (!isAgentControlConnected(server.id)) {
+        return res.status(409).json({
+          error: 'El agente de este servidor no tiene una conexión de control activa con el backend en este momento',
+        });
+      }
+
+      const token = generateSessionToken();
+      const tokenHash = await bcrypt.hash(token, 10);
+      const expiresAt = new Date(Date.now() + 2 * 60 * 1000);
+
+      const session = await prisma.remoteSession.create({
+        data: { serverId: server.id, userId: req.user.sub, targetPort, tokenHash, expiresAt },
+      });
+
+      sendStartTunnel(server.id, session.id, targetPort);
+
+      logAudit({
+        userId: req.user.sub,
+        action: 'REMOTE_SESSION_CREATE',
+        targetType: 'Server',
+        targetId: server.id,
+        metadata: { sessionId: session.id, targetPort },
+      });
+
+      return res.status(201).json({
+        sessionId: session.id,
+        token,
+        targetPort,
+        expiresAt: session.expiresAt,
+      });
+    } catch (err) {
+      console.error('Error creando sesión de acceso remoto', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
+app.get('/api/admin/remote-session/:id', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const session = await prisma.remoteSession.findUnique({ where: { id: req.params.id } });
+    if (!session || session.userId !== req.user.sub) {
+      return res.status(404).json({ error: 'Sesión no encontrada' });
+    }
+    return res.json({ id: session.id, status: session.status, startedAt: session.startedAt, expiresAt: session.expiresAt });
+  } catch (err) {
+    console.error('Error consultando sesión de acceso remoto', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/admin/remote-session/:id/close', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const session = await prisma.remoteSession.findUnique({ where: { id: req.params.id } });
+    if (!session) return res.status(404).json({ error: 'Sesión no encontrada' });
+
+    await closeSession(session.id, {});
+    logAudit({ userId: req.user.sub, action: 'REMOTE_SESSION_CLOSE', targetType: 'Server', targetId: session.serverId, metadata: { sessionId: session.id } });
+
+    return res.status(204).send();
+  } catch (err) {
+    console.error('Error cerrando sesión de acceso remoto', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 app.get('/api/admin/audit-log', authUser, requireRole('ADMIN'), async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
 
@@ -1074,6 +1252,253 @@ app.get('/api/admin/audit-log', authUser, requireRole('ADMIN'), async (req, res)
 });
 
 // ---------------------------------------------------------------------------
+// Configuracion editable en caliente (Admin -> Configuracion): notificaciones,
+// umbrales globales, secretos de integraciones, etc. sin tocar el .env ni
+// reiniciar el contenedor.
+// ---------------------------------------------------------------------------
+
+app.get('/api/admin/settings', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    return res.json(await getPublicSettings());
+  } catch (err) {
+    console.error('Error obteniendo configuración', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.patch('/api/admin/settings', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const parsed = settingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Configuración inválida', details: parsed.error.flatten() });
+  }
+
+  const SENSITIVE_KEYS = new Set([
+    'SMTP_PASS',
+    'SLACK_WEBHOOK_URL',
+    'WEBHOOK_URL',
+    'AGENT_ENROLLMENT_SECRET',
+    'ANTHROPIC_API_KEY',
+  ]);
+
+  try {
+    await setSettings(parsed.data);
+
+    // En la auditoria se guardan los nombres de los campos tocados, nunca
+    // los valores sensibles (ni el anterior ni el nuevo).
+    const changedKeys = Object.keys(parsed.data);
+    const metadata = { changedKeys };
+    for (const key of changedKeys) {
+      if (!SENSITIVE_KEYS.has(key)) metadata[key] = parsed.data[key];
+    }
+
+    logAudit({ userId: req.user.sub, action: 'SETTINGS_UPDATE', targetType: 'Setting', metadata });
+
+    return res.json(await getPublicSettings());
+  } catch (err) {
+    console.error('Error guardando configuración', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Monitor Fortinet: dispositivos FortiGate registrados y sus eventos. Dos
+// vias de ingesta posibles (ver src/services/fortiSyslog.js y el comentario
+// en fortinet.js): push por API con una API key propia por dispositivo
+// (igual que los agentes Windows), o syslog UDP directo si el FortiGate no
+// puede hacer POSTs HTTP. Cual usar se configura en Admin -> Configuracion.
+// ---------------------------------------------------------------------------
+
+app.get('/api/admin/forti-devices', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const devices = await prisma.fortiDevice.findMany({ orderBy: { name: 'asc' } });
+    return res.json(
+      devices.map((d) => ({
+        id: d.id,
+        name: d.name,
+        host: d.host,
+        method: d.method,
+        lastSeenAt: d.lastSeenAt,
+        createdAt: d.createdAt,
+      }))
+    );
+  } catch (err) {
+    console.error('Error listando dispositivos Forti', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/admin/forti-devices', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const parsed = createFortiDeviceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos de dispositivo inválidos', details: parsed.error.flatten() });
+  }
+
+  const { name, host, method } = parsed.data;
+
+  try {
+    const existing = await prisma.fortiDevice.findUnique({ where: { name } });
+    if (existing) {
+      return res.status(409).json({ error: 'Ya existe un dispositivo con ese nombre' });
+    }
+
+    const apiKey = generateApiKey();
+    const apiKeyHash = await bcrypt.hash(apiKey, 12);
+
+    const device = await prisma.fortiDevice.create({ data: { name, host, method, apiKeyHash } });
+
+    logAudit({ userId: req.user.sub, action: 'FORTI_DEVICE_CREATE', targetType: 'FortiDevice', targetId: device.id, metadata: { name, host, method } });
+
+    return res.status(201).json({ id: device.id, name: device.name, apiKey });
+  } catch (err) {
+    console.error('Error creando dispositivo Forti', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post(
+  '/api/admin/forti-devices/:id/rotate-key',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    try {
+      const apiKey = generateApiKey();
+      const apiKeyHash = await bcrypt.hash(apiKey, 12);
+
+      const device = await prisma.fortiDevice.update({ where: { id: req.params.id }, data: { apiKeyHash } });
+
+      logAudit({ userId: req.user.sub, action: 'FORTI_DEVICE_ROTATE_KEY', targetType: 'FortiDevice', targetId: device.id });
+
+      return res.json({ id: device.id, name: device.name, apiKey });
+    } catch (err) {
+      if (err.code === 'P2025') return res.status(404).json({ error: 'Dispositivo no encontrado' });
+      console.error('Error rotando API key de dispositivo Forti', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
+app.delete('/api/admin/forti-devices/:id', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const device = await prisma.fortiDevice.delete({ where: { id: req.params.id } });
+    logAudit({ userId: req.user.sub, action: 'FORTI_DEVICE_DELETE', targetType: 'FortiDevice', targetId: device.id, metadata: { name: device.name } });
+    return res.status(204).send();
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Dispositivo no encontrado' });
+    console.error('Error eliminando dispositivo Forti', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+const fortiEventLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Límite de eventos Forti excedido' },
+});
+
+app.post('/api/forti/events', fortiEventLimiter, authFortiDevice, async (req, res) => {
+  const parsed = fortiEventIngestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Payload de evento Forti inválido', details: parsed.error.flatten() });
+  }
+
+  try {
+    const event = await ingestFortiEvent(req.fortiDevice, parsed.data, parsed.data.raw);
+    return res.status(201).json({ eventId: event.id });
+  } catch (err) {
+    console.error('Error procesando evento Forti', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/forti/events', authUser, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+  try {
+    const events = await prisma.fortiEvent.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { device: { select: { name: true } } },
+    });
+
+    return res.json(
+      events.map((e) => ({
+        id: e.id,
+        type: e.type,
+        severity: e.severity,
+        description: e.description,
+        sourceIp: e.sourceIp,
+        destIp: e.destIp,
+        deviceName: e.device?.name,
+        createdAt: e.createdAt,
+      }))
+    );
+  } catch (err) {
+    console.error('Error listando eventos Forti', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Asistente (Claude): consultas del equipo con contexto en vivo del estado
+// del NOC/SOC. Requiere ANTHROPIC_API_KEY configurada (Admin -> Configuración).
+// ---------------------------------------------------------------------------
+
+const assistantLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas consultas al asistente, intenta más tarde' },
+});
+
+app.post('/api/assistant/chat', assistantLimiter, authUser, async (req, res) => {
+  const parsed = assistantChatSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Mensaje inválido', details: parsed.error.flatten() });
+  }
+
+  try {
+    const reply = await askClaude(parsed.data.messages, req.user.sub);
+    return res.json({ reply });
+  } catch (err) {
+    if (err.code === 'NOT_CONFIGURED') {
+      return res.status(503).json({ error: err.message });
+    }
+    console.error('Error consultando al asistente', err);
+    return res.status(502).json({ error: 'No se pudo consultar al asistente en este momento' });
+  }
+});
+
+app.get('/api/admin/assistant-log', authUser, requireRole('ADMIN'), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+  try {
+    const entries = await prisma.assistantLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { user: { select: { name: true, email: true } } },
+    });
+
+    return res.json(
+      entries.map((e) => ({
+        id: e.id,
+        prompt: e.prompt,
+        response: e.response,
+        userName: e.user?.name ?? 'Desconocido',
+        userEmail: e.user?.email ?? null,
+        createdAt: e.createdAt,
+      }))
+    );
+  } catch (err) {
+    console.error('Error listando log del asistente', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Auto-enrolamiento de agentes: el instalador llama este endpoint con un
 // secreto compartido (AGENT_ENROLLMENT_SECRET) en vez de credenciales por
 // servidor, que todavia no tiene la primera vez que se instala. Si el
@@ -1089,12 +1514,13 @@ const enrollLimiter = rateLimit({
 });
 
 app.post('/api/servers/enroll', enrollLimiter, async (req, res) => {
-  if (!process.env.AGENT_ENROLLMENT_SECRET) {
+  const enrollmentSecret = await getSetting('AGENT_ENROLLMENT_SECRET');
+  if (!enrollmentSecret) {
     return res.status(503).json({ error: 'El enrolamiento automático no está configurado en este backend' });
   }
 
   const secret = req.header('x-enrollment-secret');
-  if (!secret || secret !== process.env.AGENT_ENROLLMENT_SECRET) {
+  if (!secret || secret !== enrollmentSecret) {
     return res.status(401).json({ error: 'Secreto de enrolamiento inválido' });
   }
 
@@ -1139,11 +1565,23 @@ app.use((err, req, res, next) => {
 
 const httpServer = http.createServer(app);
 createSocketServer(httpServer);
+createRemoteBroker(httpServer);
+
+// Fallback final: si ninguno de los handlers de arriba reclamo el upgrade
+// (path desconocido), no dejar el socket colgado.
+const KNOWN_WS_PREFIXES = ['/ws/agent-control', '/ws/tunnel/', '/ws'];
+httpServer.on('upgrade', (req, socket) => {
+  const { pathname } = new URL(req.url, 'http://localhost');
+  if (KNOWN_WS_PREFIXES.some((p) => pathname === p || pathname.startsWith(p))) return;
+  socket.destroy();
+});
 
 const PORT = process.env.PORT || 4000;
 httpServer.listen(PORT, () => {
   console.log(`NOC/SOC backend escuchando en el puerto ${PORT}`);
 });
+
+startFortiSyslogListener().catch((err) => console.error('No se pudo iniciar el listener de syslog Forti', err));
 
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();

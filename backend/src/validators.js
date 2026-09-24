@@ -10,6 +10,7 @@ const telemetrySchema = z
     processCount: z.number().int().min(0).optional(),
     metadata: z.record(z.any()).optional(),
     recordedAt: z.string().datetime().optional(),
+    agentVersion: z.string().max(50).optional(),
   })
   .strict();
 
@@ -95,6 +96,96 @@ const disable2faSchema = z
   })
   .strict();
 
+// Todos opcionales (PATCH parcial); un string vacio en un campo sensible se
+// interpreta como "no cambiar" (ver settings.js).
+const settingsSchema = z
+  .object({
+    SMTP_HOST: z.string().max(255).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+    SMTP_SECURE: z.boolean().optional(),
+    SMTP_USER: z.string().max(255).optional(),
+    SMTP_PASS: z.string().max(500).optional(),
+    SMTP_FROM: z.string().max(255).optional(),
+    ALERT_EMAIL_TO: z.string().max(1000).optional(),
+    SLACK_WEBHOOK_URL: z.string().max(500).optional(),
+    WEBHOOK_URL: z.string().max(500).optional(),
+    NOTIFY_MIN_SEVERITY: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+    JWT_EXPIRES_IN: z.string().max(20).optional(),
+    DEFAULT_CPU_HIGH: z.coerce.number().min(0).max(100).optional(),
+    DEFAULT_CPU_MEDIUM: z.coerce.number().min(0).max(100).optional(),
+    DEFAULT_MEM_HIGH: z.coerce.number().min(0).max(100).optional(),
+    DEFAULT_MEM_MEDIUM: z.coerce.number().min(0).max(100).optional(),
+    DEFAULT_DISK_HIGH: z.coerce.number().min(0).max(100).optional(),
+    DEFAULT_DISK_MEDIUM: z.coerce.number().min(0).max(100).optional(),
+    AGENT_ENROLLMENT_SECRET: z.string().max(200).optional(),
+    AGENT_LATEST_VERSION: z.string().max(50).optional(),
+    FORTI_SYSLOG_ENABLED: z.boolean().optional(),
+    FORTI_SYSLOG_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+    ANTHROPIC_API_KEY: z.string().max(500).optional(),
+    ANTHROPIC_MODEL: z.string().max(100).optional(),
+    REMOTE_ACCESS_ENABLED: z.boolean().optional(),
+  })
+  .strict();
+
+const createFortiDeviceSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    host: z.string().min(1).max(255),
+    method: z.enum(['API', 'SYSLOG']).default('API'),
+  })
+  .strict();
+
+const fortiEventIngestSchema = z
+  .object({
+    type: z.enum([
+      'VPN_LOGIN',
+      'VPN_LOGOUT',
+      'ADMIN_LOGIN',
+      'CONFIG_CHANGE',
+      'IPS_ATTACK',
+      'VIRUS_DETECTED',
+      'INTERFACE_DOWN',
+      'HA_FAILOVER',
+      'TRAFFIC_ANOMALY',
+      'FIREWALL_DENY',
+      'OTHER',
+    ]),
+    severity: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
+    description: z.string().min(1).max(1000),
+    sourceIp: z.string().max(100).optional(),
+    destIp: z.string().max(100).optional(),
+    raw: z.record(z.any()).optional(),
+  })
+  .strict();
+
+const updateServerTagsSchema = z
+  .object({
+    tags: z.array(z.string().min(1).max(50)).max(20),
+  })
+  .strict();
+
+const assistantChatSchema = z
+  .object({
+    messages: z
+      .array(
+        z
+          .object({
+            role: z.enum(['user', 'assistant']),
+            content: z.string().min(1).max(4000),
+          })
+          .strict()
+      )
+      .min(1)
+      .max(30),
+  })
+  .strict();
+
+const createRemoteSessionSchema = z
+  .object({
+    targetPort: z.number().int().min(1).max(65535).default(3389),
+  })
+  .strict();
+
 module.exports = {
   telemetrySchema,
   loginSchema,
@@ -107,4 +198,10 @@ module.exports = {
   login2faSchema,
   twoFactorCodeSchema,
   disable2faSchema,
+  settingsSchema,
+  createFortiDeviceSchema,
+  fortiEventIngestSchema,
+  updateServerTagsSchema,
+  assistantChatSchema,
+  createRemoteSessionSchema,
 };

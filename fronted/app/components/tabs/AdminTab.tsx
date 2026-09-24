@@ -1,11 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import ServerConfigPanel from '../ServerConfigPanel';
 import AuditLogPanel from '../AuditLogPanel';
+import SettingsPanel from '../SettingsPanel';
+import FortiDeviceAdmin from '../FortiDeviceAdmin';
+import RemoteAccessModal from '../RemoteAccessModal';
 import type { AdminUser, Role, ServerSummary } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 type RevealedCredential = { label: string; serverId: string; apiKey: string };
+type AdminSection = 'usuarios' | 'servidores' | 'fortinet' | 'configuracion' | 'auditoria';
+
+const SECTIONS: { id: AdminSection; label: string }[] = [
+  { id: 'usuarios', label: '👤 Usuarios' },
+  { id: 'servidores', label: '🖧 Servidores' },
+  { id: 'fortinet', label: '🧱 Fortinet' },
+  { id: 'configuracion', label: '⚙️ Configuración' },
+  { id: 'auditoria', label: '📋 Auditoría' },
+];
 
 export default function AdminTab({
   currentUserEmail,
@@ -17,6 +29,8 @@ export default function AdminTab({
   onServersChanged: () => void;
 }) {
   const jsonHeaders = { 'Content-Type': 'application/json' };
+
+  const [section, setSection] = useState<AdminSection>('usuarios');
 
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [usersError, setUsersError] = useState<string | null>(null);
@@ -31,6 +45,15 @@ export default function AdminTab({
 
   const [revealed, setRevealed] = useState<RevealedCredential | null>(null);
   const [expandedServerId, setExpandedServerId] = useState<string | null>(null);
+  const [remoteAccessServer, setRemoteAccessServer] = useState<ServerSummary | null>(null);
+  const [remoteAccessEnabled, setRemoteAccessEnabled] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/admin/settings`, { credentials: 'include' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setRemoteAccessEnabled(Boolean(data?.REMOTE_ACCESS_ENABLED?.value)))
+      .catch(() => {});
+  }, []);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -206,6 +229,20 @@ export default function AdminTab({
 
   return (
     <div className="animate-fade-in space-y-6 px-6 py-6">
+      <div className="flex flex-wrap gap-1 rounded-xl border border-gray-800 bg-gray-900/40 p-1.5">
+        {SECTIONS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => setSection(s.id)}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+              section === s.id ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
       {revealed && (
         <div className="animate-fade-in-scale rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
           <p className="mb-2 text-sm font-semibold text-amber-400">
@@ -224,6 +261,7 @@ export default function AdminTab({
         </div>
       )}
 
+      {section === 'usuarios' && (
       <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
         <h2 className="mb-4 text-sm font-semibold text-gray-200">👤 Usuarios del dashboard</h2>
 
@@ -321,7 +359,9 @@ export default function AdminTab({
         </form>
         {userFormError && <p className="mt-2 text-xs text-red-400">{userFormError}</p>}
       </div>
+      )}
 
+      {section === 'servidores' && (
       <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
         <h2 className="mb-4 text-sm font-semibold text-gray-200">🖧 Servidores registrados</h2>
 
@@ -332,6 +372,12 @@ export default function AdminTab({
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-2 text-xs">
                 <span className="font-medium text-gray-200">{s.name}</span>
                 <span className="text-gray-500">{s.status}</span>
+                {s.tags.map((tag) => (
+                  <span key={tag} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-violet-300">
+                    {tag}
+                  </span>
+                ))}
+                {s.agentVersion && <span className="font-mono text-gray-600">agente v{s.agentVersion}</span>}
                 {s.inMaintenance && (
                   <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-sky-300">
                     🔧 Mantenimiento
@@ -350,6 +396,14 @@ export default function AdminTab({
                   >
                     Rotar API key
                   </button>
+                  {remoteAccessEnabled && (
+                    <button
+                      onClick={() => setRemoteAccessServer(s)}
+                      className="rounded-lg border border-sky-500/30 px-2 py-1 text-sky-300 transition-colors hover:bg-sky-500/10"
+                    >
+                      🖥️ Conectar
+                    </button>
+                  )}
                   <button
                     onClick={() => handleDeleteServer(s)}
                     className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10"
@@ -402,8 +456,17 @@ export default function AdminTab({
           para que un servidor nuevo se registre solo, sin pasar por este formulario.
         </p>
       </div>
+      )}
 
-      <AuditLogPanel />
+      {section === 'fortinet' && <FortiDeviceAdmin />}
+
+      {section === 'configuracion' && <SettingsPanel />}
+
+      {section === 'auditoria' && <AuditLogPanel />}
+
+      {remoteAccessServer && (
+        <RemoteAccessModal server={remoteAccessServer} onClose={() => setRemoteAccessServer(null)} />
+      )}
     </div>
   );
 }

@@ -53,6 +53,33 @@ enum EventStatus {
   RESOLVED
 }
 
+enum FortiIngestMethod {
+  API
+  SYSLOG
+}
+
+enum FortiEventType {
+  VPN_LOGIN
+  VPN_LOGOUT
+  ADMIN_LOGIN
+  CONFIG_CHANGE
+  IPS_ATTACK
+  VIRUS_DETECTED
+  INTERFACE_DOWN
+  HA_FAILOVER
+  TRAFFIC_ANOMALY
+  FIREWALL_DENY
+  OTHER
+}
+
+enum RemoteSessionStatus {
+  PENDING
+  ACTIVE
+  CLOSED
+  EXPIRED
+  FAILED
+}
+
 model User {
   id                   String          @id @default(uuid())
   email                String          @unique
@@ -67,8 +94,95 @@ model User {
   acknowledgedEvents   SecurityEvent[] @relation("AcknowledgedBy")
   auditLogs            AuditLog[]
   sessions             Session[]
+  remoteSessions       RemoteSession[]
+  assistantLogs        AssistantLog[]
 
   @@map("users")
+}
+
+// Configuracion editable en caliente desde Admin -> Configuracion (SMTP,
+// Slack, umbrales por defecto, secretos de integraciones, etc.) sin tener
+// que tocar variables de entorno ni reiniciar el contenedor. Los valores
+// sensibles (contraseñas, tokens, API keys) se guardan igual que cualquier
+// otro pero nunca se devuelven en texto plano por la API (ver settings.js).
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model FortiDevice {
+  id         String            @id @default(uuid())
+  name       String            @unique
+  host       String
+  apiKeyHash String
+  method     FortiIngestMethod @default(API)
+  lastSeenAt DateTime?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  events     FortiEvent[]
+
+  @@map("forti_devices")
+}
+
+model FortiEvent {
+  id          String         @id @default(uuid())
+  deviceId    String
+  device      FortiDevice    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  type        FortiEventType
+  severity    EventSeverity
+  description String
+  sourceIp    String?
+  destIp      String?
+  raw         Json?
+  createdAt   DateTime       @default(now())
+
+  @@index([deviceId, createdAt])
+  @@index([severity, createdAt])
+  @@map("forti_events")
+}
+
+// Sesion de acceso remoto (tunel inverso RDP/VNC/lo que este escuchando en
+// targetPort). El agente nunca abre puertos entrantes: se conecta el mismo
+// hacia el backend cuando se le pide, y el backend solo re-envia bytes en
+// crudo entre esa conexion y la del operador (ver services/remoteBroker.js).
+model RemoteSession {
+  id         String              @id @default(uuid())
+  serverId   String
+  server     Server              @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  // Nullable + SetNull (no Cascade): quien pidio un acceso remoto a un
+  // servidor es informacion de auditoria sensible -- si esa cuenta se borra
+  // despues, el registro de que existio esa sesion tiene que sobrevivir,
+  // igual que en AuditLog.
+  userId     String?
+  user       User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  targetPort Int                 @default(3389)
+  status     RemoteSessionStatus @default(PENDING)
+  tokenHash  String
+  createdAt  DateTime            @default(now())
+  startedAt  DateTime?
+  endedAt    DateTime?
+  expiresAt  DateTime
+
+  @@index([serverId, createdAt])
+  @@map("remote_sessions")
+}
+
+// Log de auditoria de lo consultado al asistente (Claude) -- no es un
+// historial de conversacion completo, es rastreo de uso/costos y para poder
+// revisar despues que se le pregunto sobre datos de la empresa.
+model AssistantLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt    String
+  response  String
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("assistant_logs")
 }
 
 // Sesiones activas emitidas en el login. El JWT por si solo es stateless
@@ -113,6 +227,10 @@ model Server {
   apiKeyHash String
   status     ServerStatus    @default(OFFLINE)
   lastSeenAt DateTime?
+  agentVersion String?
+
+  // Etiquetas libres para agrupar servidores (sucursal, ambiente, rol, etc.)
+  tags String[] @default([])
 
   // Umbrales de alerta propios de este servidor; si son null se usan los
   // valores globales por defecto definidos en alertEngine.js.
@@ -132,6 +250,7 @@ model Server {
   telemetry Telemetry[]
   events    SecurityEvent[]
   backups   BackupStatus[]
+  remoteSessions RemoteSession[]
 
   @@map("servers")
 }

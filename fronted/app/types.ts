@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'topologia' | 'logs' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'topologia' | 'logs' | 'fortinet' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {
@@ -72,6 +72,8 @@ export type ServerSummary = {
   name: string;
   status: string;
   lastSeenAt: string | null;
+  tags: string[];
+  agentVersion: string | null;
   healthStatus: HealthStatus;
   cpuUsage: number | null;
   memoryUsage: number | null;
@@ -81,6 +83,97 @@ export type ServerSummary = {
   maintenanceUntil: string | null;
   inMaintenance: boolean;
   backup: BackupInfo | null;
+};
+
+export type FortiEventType =
+  | 'VPN_LOGIN'
+  | 'VPN_LOGOUT'
+  | 'ADMIN_LOGIN'
+  | 'CONFIG_CHANGE'
+  | 'IPS_ATTACK'
+  | 'VIRUS_DETECTED'
+  | 'INTERFACE_DOWN'
+  | 'HA_FAILOVER'
+  | 'TRAFFIC_ANOMALY'
+  | 'FIREWALL_DENY'
+  | 'OTHER';
+
+export type FortiDevice = {
+  id: string;
+  name: string;
+  host: string;
+  method: 'API' | 'SYSLOG';
+  lastSeenAt: string | null;
+  createdAt: string;
+};
+
+export type FortiEvent = {
+  id: string;
+  type: FortiEventType;
+  severity: Severity;
+  description: string;
+  sourceIp: string | null;
+  destIp: string | null;
+  deviceName: string;
+  createdAt: string;
+};
+
+export type RemoteSessionInfo = {
+  sessionId: string;
+  token: string;
+  targetPort: number;
+  expiresAt: string;
+};
+
+export type RemoteSessionStatus = {
+  id: string;
+  status: 'PENDING' | 'ACTIVE' | 'CLOSED' | 'EXPIRED' | 'FAILED';
+  startedAt: string | null;
+  expiresAt: string;
+};
+
+export type AssistantChatMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+export type AssistantLogEntry = {
+  id: string;
+  prompt: string;
+  response: string;
+  userName: string;
+  userEmail: string | null;
+  createdAt: string;
+};
+
+export type SensitiveSetting = { configured: boolean; hint: string | null; source: 'db' | 'env' | null };
+export type PlainSetting<T> = { value: T | null; source: 'db' | 'env' | null };
+
+export type SystemSettings = {
+  SMTP_HOST: PlainSetting<string>;
+  SMTP_PORT: PlainSetting<number>;
+  SMTP_SECURE: PlainSetting<boolean>;
+  SMTP_USER: PlainSetting<string>;
+  SMTP_PASS: SensitiveSetting;
+  SMTP_FROM: PlainSetting<string>;
+  ALERT_EMAIL_TO: PlainSetting<string>;
+  SLACK_WEBHOOK_URL: SensitiveSetting;
+  WEBHOOK_URL: SensitiveSetting;
+  NOTIFY_MIN_SEVERITY: PlainSetting<Severity>;
+  JWT_EXPIRES_IN: PlainSetting<string>;
+  DEFAULT_CPU_HIGH: PlainSetting<number>;
+  DEFAULT_CPU_MEDIUM: PlainSetting<number>;
+  DEFAULT_MEM_HIGH: PlainSetting<number>;
+  DEFAULT_MEM_MEDIUM: PlainSetting<number>;
+  DEFAULT_DISK_HIGH: PlainSetting<number>;
+  DEFAULT_DISK_MEDIUM: PlainSetting<number>;
+  AGENT_ENROLLMENT_SECRET: SensitiveSetting;
+  AGENT_LATEST_VERSION: PlainSetting<string>;
+  FORTI_SYSLOG_ENABLED: PlainSetting<boolean>;
+  FORTI_SYSLOG_PORT: PlainSetting<number>;
+  ANTHROPIC_API_KEY: SensitiveSetting;
+  ANTHROPIC_MODEL: PlainSetting<string>;
+  REMOTE_ACCESS_ENABLED: PlainSetting<boolean>;
 };
 
 export type TelemetryPoint = {
