@@ -1,9 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { FortiDevice } from '../types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { FortiDevice, FortiScreenshotEvent } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 type Revealed = { name: string; apiKey: string };
+
+function fileToBase64(file: File): Promise<{ data: string; mediaType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const [prefix, data] = result.split(',');
+      const mediaType = prefix.match(/data:(.*);base64/)?.[1] ?? 'image/png';
+      resolve({ data, mediaType });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function FortiDeviceAdmin() {
   const [devices, setDevices] = useState<FortiDevice[]>([]);
@@ -11,6 +25,15 @@ export default function FortiDeviceAdmin() {
   const [newDevice, setNewDevice] = useState({ name: '', host: '', method: 'API' as 'API' | 'SYSLOG' });
   const [creating, setCreating] = useState(false);
   const [revealed, setRevealed] = useState<Revealed | null>(null);
+
+  const [screenshotDeviceId, setScreenshotDeviceId] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [proposedEvents, setProposedEvents] = useState<FortiScreenshotEvent[]>([]);
+  const [selectedEvents, setSelectedEvents] = useState<Set<number>>(new Set());
+  const [ingesting, setIngesting] = useState(false);
+  const [ingestOk, setIngestOk] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -65,7 +88,68 @@ export default function FortiDeviceAdmin() {
     fetchDevices();
   };
 
+  const handleFileSelected = async (file: File) => {
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    setProposedEvents([]);
+    setSelectedEvents(new Set());
+    setIngestOk(null);
+    try {
+      const { data, mediaType } = await fileToBase64(file);
+      const res = await fetch(`${API_URL}/api/admin/forti-devices/analyze-screenshot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ imageBase64: data, mediaType }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo analizar la imagen');
+      const events: FortiScreenshotEvent[] = body.events ?? [];
+      setProposedEvents(events);
+      setSelectedEvents(new Set(events.map((_, i) => i)));
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const toggleEventSelection = (index: number) => {
+    setSelectedEvents((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
+  const handleIngestSelected = async () => {
+    if (!screenshotDeviceId || selectedEvents.size === 0) return;
+    setIngesting(true);
+    setAnalyzeError(null);
+    try {
+      const events = proposedEvents.filter((_, i) => selectedEvents.has(i));
+      const res = await fetch(`${API_URL}/api/admin/forti-devices/${screenshotDeviceId}/ingest-reviewed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ events }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo ingerir los eventos');
+      setIngestOk(body.createdEventIds.length);
+      setProposedEvents([]);
+      setSelectedEvents(new Set());
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setIngesting(false);
+    }
+  };
+
   return (
+    <div className="space-y-4">
     <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
       <h2 className="mb-4 text-sm font-semibold text-gray-200">🧱 Dispositivos Fortinet</h2>
 
@@ -161,6 +245,77 @@ export default function FortiDeviceAdmin() {
         Si elegís SYSLOG, el campo IP se usa para matchear el origen de los paquetes UDP entrantes — necesitás activar
         el receptor en Admin → Configuración → Fortinet.
       </p>
+    </div>
+
+    <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+      <h2 className="mb-1 text-sm font-semibold text-gray-200">🤖 Analizar captura de pantalla (vision)</h2>
+      <p className="mb-4 text-[11px] text-gray-500">
+        Para los sitios sin API key ni syslog configurado todavía: subí una captura del panel del FortiGate y Claude
+        extrae los eventos visibles. Nunca se ingesta nada automático — revisás y confirmás cuáles cargar.
+      </p>
+
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <select
+          value={screenshotDeviceId}
+          onChange={(e) => setScreenshotDeviceId(e.target.value)}
+          className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+        >
+          <option value="">Elegí el dispositivo destino...</option>
+          {devices.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          disabled={!screenshotDeviceId || analyzing}
+          onChange={(e) => e.target.files?.[0] && handleFileSelected(e.target.files[0])}
+          className="text-xs text-gray-300 file:mr-2 file:rounded-lg file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:text-white hover:file:bg-blue-500"
+        />
+      </div>
+
+      {!screenshotDeviceId && <p className="text-xs text-gray-600">Elegí primero a qué dispositivo pertenece la captura.</p>}
+      {analyzing && <p className="text-xs text-gray-500">Analizando imagen...</p>}
+      {analyzeError && <p className="text-xs text-red-400">{analyzeError}</p>}
+      {ingestOk !== null && <p className="text-xs text-emerald-400">✓ {ingestOk} evento(s) ingresado(s) correctamente</p>}
+
+      {proposedEvents.length > 0 && (
+        <div className="mt-3 space-y-2">
+          <p className="text-[11px] text-gray-500">
+            {proposedEvents.length} evento(s) detectado(s) — desmarcá los que no quieras cargar:
+          </p>
+          {proposedEvents.map((ev, i) => (
+            <label
+              key={i}
+              className="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2 text-xs"
+            >
+              <input
+                type="checkbox"
+                checked={selectedEvents.has(i)}
+                onChange={() => toggleEventSelection(i)}
+                className="mt-0.5 h-3.5 w-3.5"
+              />
+              <span>
+                <span className="rounded-full border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">{ev.type}</span>{' '}
+                <span className="rounded-full border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">{ev.severity}</span>{' '}
+                {ev.description}
+                {ev.sourceIp && <span className="text-gray-500"> · origen: {ev.sourceIp}</span>}
+              </span>
+            </label>
+          ))}
+          <button
+            onClick={handleIngestSelected}
+            disabled={ingesting || selectedEvents.size === 0}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+          >
+            {ingesting ? 'Cargando...' : `Cargar ${selectedEvents.size} evento(s) seleccionado(s)`}
+          </button>
+        </div>
+      )}
+    </div>
     </div>
   );
 }

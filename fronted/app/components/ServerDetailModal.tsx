@@ -1,6 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { BACKUP_METHOD_LABELS, BACKUP_STYLES, HEALTH_STYLES, SEVERITY_STYLES } from '../lib/health';
 import type { SecurityAlert, ServerSummary } from '../types';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 function relativeTime(iso: string | null): string {
   if (!iso) return 'Sin datos';
@@ -43,6 +45,30 @@ export default function ServerDetailModal({
   const isOnline = server.status === 'ONLINE';
   const backup = server.backup;
   const backupStyle = BACKUP_STYLES[backup?.result ?? 'UNKNOWN'];
+
+  const [eventLogAnalysis, setEventLogAnalysis] = useState<string | null>(null);
+  const [eventLogErrorCount, setEventLogErrorCount] = useState<number | null>(null);
+  const [analyzingEvents, setAnalyzingEvents] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+
+  const handleAnalyzeEvents = async () => {
+    setAnalyzingEvents(true);
+    setAnalyzeError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/servers/${server.id}/analyze-events`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo analizar los logs');
+      setEventLogAnalysis(body.analysis);
+      setEventLogErrorCount(body.errorCount);
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setAnalyzingEvents(false);
+    }
+  };
 
   return (
     <div
@@ -127,6 +153,34 @@ export default function ServerDetailModal({
             </>
           ) : (
             <p className="text-sm text-gray-500">Este servidor todavía no reportó estado de backup.</p>
+          )}
+        </div>
+
+        <div className="border-t border-gray-800 p-6">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs uppercase tracking-wide text-gray-500">🪟 Visor de Eventos de Windows</p>
+            <button
+              onClick={handleAnalyzeEvents}
+              disabled={analyzingEvents}
+              className="rounded-lg border border-sky-500/30 px-2 py-1 text-[11px] text-sky-300 transition-colors hover:bg-sky-500/10 disabled:opacity-50"
+            >
+              {analyzingEvents ? 'Analizando...' : '🤖 Analizar con IA'}
+            </button>
+          </div>
+          {analyzeError && <p className="text-xs text-red-400">{analyzeError}</p>}
+          {eventLogAnalysis && (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-4">
+              {eventLogErrorCount !== null && (
+                <p className="mb-2 text-[11px] text-gray-500">{eventLogErrorCount} error(es) recientes analizados</p>
+              )}
+              <p className="whitespace-pre-wrap text-xs text-gray-300">{eventLogAnalysis}</p>
+            </div>
+          )}
+          {!eventLogAnalysis && !analyzeError && (
+            <p className="text-xs text-gray-500">
+              Analiza los errores recientes del Visor de Eventos (System/Application) que manda el agente, buscando
+              patrones que merezcan atención.
+            </p>
           )}
         </div>
 

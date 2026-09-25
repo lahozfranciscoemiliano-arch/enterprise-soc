@@ -36,6 +36,10 @@ const {
   assistantChatSchema,
   createRemoteSessionSchema,
   playbookSchema,
+  naturalLanguageFilterSchema,
+  fortiScreenshotSchema,
+  ingestReviewedFortiEventsSchema,
+  siteInfoSchema,
 } = require('./src/validators');
 const {
   evaluateTelemetry,
@@ -45,10 +49,16 @@ const {
   getEffectiveDefaultThresholds,
 } = require('./src/services/alertEngine');
 const { logAudit } = require('./src/services/auditLog');
-const { notifyAlert, notifyGeneric, sendReportEmail } = require('./src/services/notifications');
+const { notifyGeneric, sendReportEmail } = require('./src/services/notifications');
+const { createAndDispatchEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
 const { ingestFortiEvent } = require('./src/services/fortinet');
-const { askClaude } = require('./src/services/claude');
+const {
+  askClaude,
+  analyzeEventLogErrors,
+  filterEventsByNaturalLanguage,
+  analyzeFortiScreenshot,
+} = require('./src/services/claude');
 const { createSession, revokeSession, revokeAllUserSessions } = require('./src/services/sessions');
 const {
   generateSecret,
@@ -60,7 +70,6 @@ const {
 } = require('./src/services/twoFactor');
 const {
   createSocketServer,
-  broadcastAlert,
   broadcastAlertUpdate,
   broadcastTelemetry,
   broadcastBackupStatus,
@@ -74,7 +83,15 @@ const {
 } = require('./src/services/remoteBroker');
 const { startFortiSyslogListener } = require('./src/services/fortiSyslog');
 const { runHousekeeping, getLastRun: getHousekeepingLastRun, scheduleHousekeeping } = require('./src/services/housekeeping');
-const { generateAndStoreReport, listReports, getReportPath, scheduleReports } = require('./src/services/reports');
+const { runHeartbeatCheck, getLastRun: getHeartbeatLastRun, scheduleHeartbeat } = require('./src/services/heartbeat');
+const { scheduleProactiveDigest } = require('./src/services/proactiveDigest');
+const { evaluateAnomalies, getBaselineStatus, scheduleAnomalyBaselineRefresh } = require('./src/services/anomalyDetection');
+const { generateAndStoreReport, generateReportCsv, listReports, getReportPath, scheduleReports } = require('./src/services/reports');
+const {
+  runSyntheticChecks,
+  getLastRun: getSyntheticMonitorLastRun,
+  scheduleSyntheticMonitor,
+} = require('./src/services/syntheticMonitor');
 
 const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET'];
 for (const key of REQUIRED_ENV) {
@@ -94,7 +111,12 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '100kb' }));
+// 5mb (no 100kb) porque POST /api/admin/forti-devices/analyze-screenshot
+// manda una captura de pantalla en base64; el resto de los endpoints usan
+// payloads de unos pocos KB como mucho, asi que el limite mas alto no
+// cambia la superficie de ataque real (solo ADMIN autenticado llega a esa
+// ruta, y el rate limiter de esa ruta especifica es mas estricto).
+app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
 // Limite general por IP sobre toda la API, como defensa en profundidad ante
@@ -467,29 +489,30 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
 
     const defaultThresholds = await getEffectiveDefaultThresholds();
     const triggeredAlerts = evaluateTelemetry(server, data, defaultThresholds);
-    let createdEvents = [];
 
-    if (triggeredAlerts.length > 0) {
-      createdEvents = await prisma.$transaction(
-        triggeredAlerts.map((alert) =>
-          prisma.securityEvent.create({
-            data: {
-              serverId: server.id,
-              type: alert.type,
-              severity: alert.severity,
-              description: alert.description,
-              metadata: alert.metadata,
-            },
-          })
-        )
-      );
+    // Anomalias estadisticas (services/anomalyDetection.js): se evaluan
+    // ademas de los umbrales fijos de arriba, pero no para el mismo campo
+    // que ya disparo un umbral fijo en esta misma telemetria -- evitar que
+    // un pico de CPU se reporte dos veces como CPU_THRESHOLD y ANOMALY_DETECTED.
+    const fieldsAlreadyAlerted = new Set(
+      triggeredAlerts.filter((a) => a.metadata?.field).map((a) => a.metadata.field)
+    );
+    const anomalyAlerts = isInMaintenance(server)
+      ? []
+      : evaluateAnomalies(server, { ...data, recordedAt: telemetry.recordedAt }, fieldsAlreadyAlerted);
 
-      for (const event of createdEvents) {
-        const enriched = { ...event, serverName: server.name };
-        broadcastAlert(enriched);
-        notifyAlert(enriched).catch(() => {});
-      }
-    }
+    const createdEvents = await Promise.all(
+      [...triggeredAlerts, ...anomalyAlerts].map((alert) =>
+        createAndDispatchEvent({
+          serverId: server.id,
+          serverName: server.name,
+          type: alert.type,
+          severity: alert.severity,
+          description: alert.description,
+          metadata: alert.metadata,
+        })
+      )
+    );
 
     const latestAgentVersion = await getSetting('AGENT_LATEST_VERSION');
 
@@ -545,18 +568,14 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
     let createdEvent = null;
 
     if (alert) {
-      createdEvent = await prisma.securityEvent.create({
-        data: {
-          serverId: server.id,
-          type: alert.type,
-          severity: alert.severity,
-          description: alert.description,
-          metadata: alert.metadata,
-        },
+      createdEvent = await createAndDispatchEvent({
+        serverId: server.id,
+        serverName: server.name,
+        type: alert.type,
+        severity: alert.severity,
+        description: alert.description,
+        metadata: alert.metadata,
       });
-      const enriched = { ...createdEvent, serverName: server.name };
-      broadcastAlert(enriched);
-      notifyAlert(enriched).catch(() => {});
     }
 
     return res.status(201).json({
@@ -614,6 +633,17 @@ app.get('/api/servers', authUser, async (req, res) => {
           },
           maintenanceUntil: s.maintenanceUntil,
           inMaintenance: isInMaintenance(s),
+          latitude: s.latitude,
+          longitude: s.longitude,
+          ispPrimaryName: s.ispPrimaryName,
+          ispPrimaryContact: s.ispPrimaryContact,
+          ispSecondaryName: s.ispSecondaryName,
+          ispSecondaryContact: s.ispSecondaryContact,
+          siteContactName: s.siteContactName,
+          siteContactPhone: s.siteContactPhone,
+          hasFortinet: s.hasFortinet,
+          siteNotes: s.siteNotes,
+          syntheticCheckPort: s.syntheticCheckPort,
           backup: backup
             ? {
                 result: backup.result,
@@ -703,6 +733,46 @@ app.get('/api/servers/:id/telemetry', authUser, async (req, res) => {
   }
 });
 
+// Analisis con IA de los errores del Visor de Eventos de Windows que el
+// agente ya manda en cada telemetria (metadata.recentEventLogErrors) pero
+// que hasta ahora nadie leia. A demanda, no se guarda el resultado.
+const eventLogAnalysisLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados análisis solicitados, intenta más tarde' },
+});
+
+app.post(
+  '/api/servers/:id/analyze-events',
+  eventLogAnalysisLimiter,
+  authUser,
+  requireRole('ADMIN', 'ANALYST'),
+  async (req, res) => {
+    try {
+      const server = await prisma.server.findUnique({ where: { id: req.params.id } });
+      if (!server) return res.status(404).json({ error: 'Servidor no encontrado' });
+
+      const latestTelemetry = await prisma.telemetry.findFirst({
+        where: { serverId: server.id },
+        orderBy: { recordedAt: 'desc' },
+      });
+
+      const errors = latestTelemetry?.metadata?.recentEventLogErrors ?? [];
+      const analysis = await analyzeEventLogErrors(server.name, errors);
+
+      return res.json({ analysis, errorCount: errors.length });
+    } catch (err) {
+      if (err.code === 'NOT_CONFIGURED') {
+        return res.status(503).json({ error: err.message });
+      }
+      console.error('Error analizando logs de eventos', err);
+      return res.status(502).json({ error: 'No se pudo analizar los logs en este momento' });
+    }
+  }
+);
+
 app.get('/api/servers/:id/backup-status', authUser, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 20, 100);
 
@@ -739,6 +809,7 @@ app.get('/api/events', authUser, async (req, res) => {
         description: e.description,
         serverName: e.server?.name,
         acknowledgedByName: e.acknowledgedBy?.name ?? null,
+        aiTriage: e.aiTriage,
         createdAt: e.createdAt,
         resolvedAt: e.resolvedAt,
       }))
@@ -781,6 +852,7 @@ app.patch('/api/events/:id', authUser, requireRole('ADMIN', 'ANALYST'), async (r
       description: event.description,
       serverName: event.server?.name,
       acknowledgedByName: event.acknowledgedBy?.name ?? null,
+      aiTriage: event.aiTriage,
       createdAt: event.createdAt,
       resolvedAt: event.resolvedAt,
     };
@@ -1177,6 +1249,51 @@ app.patch(
   }
 );
 
+// Mini-CMDB + ubicacion (Mapa): datos operativos del sitio que hoy solo
+// viven "en la cabeza" de alguien -- ISP contratado, contacto local, si
+// tiene Fortinet propio, coordenadas para el mapa. Todo opcional, nada de
+// esto afecta alertas ni permisos.
+app.patch(
+  '/api/admin/servers/:id/site-info',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    const parsed = siteInfoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Datos inválidos', details: parsed.error.flatten() });
+    }
+
+    try {
+      const server = await prisma.server.update({
+        where: { id: req.params.id },
+        data: parsed.data,
+      });
+
+      logAudit({
+        userId: req.user.sub,
+        action: 'SERVER_UPDATE_SITE_INFO',
+        targetType: 'Server',
+        targetId: server.id,
+        metadata: { changedKeys: Object.keys(parsed.data) },
+      });
+
+      // Nunca devolver apiKeyHash -- a diferencia de los otros PATCH de
+      // servidor (tags, thresholds), aca conviene devolver el objeto casi
+      // completo para que el frontend actualice el mapa/CMDB sin otro
+      // round-trip, asi que se lista todo lo demas explicitamente.
+      const { apiKeyHash, ...safeServer } = server;
+      return res.json(safeServer);
+    } catch (err) {
+      if (err.code === 'P2025') {
+        return res.status(404).json({ error: 'Servidor no encontrado' });
+      }
+      console.error('Error actualizando información del sitio', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Acceso remoto (tunel inverso RDP/VNC). Solo ADMIN: es acceso interactivo
 // directo a un servidor de un cliente, el nivel mas alto de privilegio que
@@ -1379,6 +1496,46 @@ app.post('/api/admin/housekeeping/run', adminWriteLimiter, authUser, requireRole
 });
 
 // ---------------------------------------------------------------------------
+// Heartbeat (watchdog de agente caido): ver src/services/heartbeat.js.
+// ---------------------------------------------------------------------------
+
+app.get('/api/admin/heartbeat', authUser, requireRole('ADMIN'), (req, res) => {
+  return res.json({ lastRun: getHeartbeatLastRun() });
+});
+
+app.post('/api/admin/heartbeat/run', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const result = await runHeartbeatCheck();
+    return res.json(result);
+  } catch (err) {
+    console.error('Error corriendo heartbeat manual', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Deteccion de anomalias estadistica: ver src/services/anomalyDetection.js.
+// Solo lectura de estado -- se recalcula sola cada hora, no hace falta un
+// endpoint para forzarla.
+app.get('/api/admin/anomaly-detection', authUser, requireRole('ADMIN'), (req, res) => {
+  return res.json(getBaselineStatus());
+});
+
+// Synthetic monitoring: ver src/services/syntheticMonitor.js.
+app.get('/api/admin/synthetic-monitor', authUser, requireRole('ADMIN'), (req, res) => {
+  return res.json({ lastRun: getSyntheticMonitorLastRun() });
+});
+
+app.post('/api/admin/synthetic-monitor/run', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const result = await runSyntheticChecks();
+    return res.json(result);
+  } catch (err) {
+    console.error('Error corriendo synthetic monitoring manual', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Reportes ejecutivos: PDF con SLA, incidentes y estado de backups del
 // periodo, generados a demanda o automaticamente segun Admin -> Configuracion
 // -> Reportes ejecutivos (ver src/services/reports.js).
@@ -1425,6 +1582,23 @@ app.post('/api/admin/reports/generate', reportGenerateLimiter, authUser, require
     return res.status(201).json({ filename, periodDays, generatedAt: data.generatedAt });
   } catch (err) {
     console.error('Error generando reporte', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Registrada ANTES de la ruta con :filename de abajo -- Express matchea en
+// orden de registro, y "export.csv" calzaria como valor de :filename si esta
+// ruta especifica estuviera despues.
+app.get('/api/admin/reports/export.csv', authUser, requireRole('ADMIN'), async (req, res) => {
+  const periodDays = Math.min(Math.max(Number(req.query.periodDays) || 7, 1), 90);
+
+  try {
+    const csv = await generateReportCsv({ periodDays });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="enterprise-soc-report-${periodDays}d.csv"`);
+    return res.send(csv);
+  } catch (err) {
+    console.error('Error generando CSV del reporte', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -1525,6 +1699,86 @@ app.delete('/api/admin/forti-devices/:id', authUser, requireRole('ADMIN'), async
   }
 });
 
+// ---------------------------------------------------------------------------
+// Lectura de capturas de pantalla del panel de un FortiGate (vision de
+// Claude): para los sitios sin API key ni syslog configurados todavia.
+// Nunca crea eventos por si solo -- devuelve una propuesta para que un
+// ADMIN la revise y confirme con el segundo endpoint antes de ingestarla.
+// ---------------------------------------------------------------------------
+
+const fortiScreenshotLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados análisis de capturas solicitados, intenta más tarde' },
+});
+
+app.post(
+  '/api/admin/forti-devices/analyze-screenshot',
+  fortiScreenshotLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    const parsed = fortiScreenshotSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Datos de imagen inválidos', details: parsed.error.flatten() });
+    }
+
+    try {
+      const events = await analyzeFortiScreenshot({
+        base64Data: parsed.data.imageBase64,
+        mediaType: parsed.data.mediaType,
+      });
+      return res.json({ events });
+    } catch (err) {
+      if (err.code === 'NOT_CONFIGURED') {
+        return res.status(503).json({ error: err.message });
+      }
+      console.error('Error analizando captura de Fortinet', err);
+      return res.status(502).json({ error: 'No se pudo analizar la imagen en este momento' });
+    }
+  }
+);
+
+app.post(
+  '/api/admin/forti-devices/:id/ingest-reviewed',
+  adminWriteLimiter,
+  authUser,
+  requireRole('ADMIN'),
+  async (req, res) => {
+    const parsed = ingestReviewedFortiEventsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Datos inválidos', details: parsed.error.flatten() });
+    }
+
+    try {
+      const device = await prisma.fortiDevice.findUnique({ where: { id: req.params.id } });
+      if (!device) return res.status(404).json({ error: 'Dispositivo no encontrado' });
+
+      const created = [];
+      for (const event of parsed.data.events) {
+        // eslint-disable-next-line no-await-in-loop
+        const saved = await ingestFortiEvent(device, event, { source: 'screenshot-analysis' });
+        created.push(saved.id);
+      }
+
+      logAudit({
+        userId: req.user.sub,
+        action: 'FORTI_SCREENSHOT_INGEST',
+        targetType: 'FortiDevice',
+        targetId: device.id,
+        metadata: { eventCount: created.length },
+      });
+
+      return res.status(201).json({ createdEventIds: created });
+    } catch (err) {
+      console.error('Error ingiriendo eventos revisados de captura Forti', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  }
+);
+
 const fortiEventLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 120,
@@ -1604,6 +1858,27 @@ app.post('/api/assistant/chat', assistantLimiter, authUser, async (req, res) => 
     }
     console.error('Error consultando al asistente', err);
     return res.status(502).json({ error: 'No se pudo consultar al asistente en este momento' });
+  }
+});
+
+// Busqueda en lenguaje natural sobre las alertas ya cargadas en el cliente
+// (ver LogsRegexTab): no vuelve a consultar la base, filtra el lote que el
+// dashboard ya tiene en memoria.
+app.post('/api/assistant/filter-events', assistantLimiter, authUser, async (req, res) => {
+  const parsed = naturalLanguageFilterSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos inválidos', details: parsed.error.flatten() });
+  }
+
+  try {
+    const ids = await filterEventsByNaturalLanguage(parsed.data.query, parsed.data.events);
+    return res.json({ ids });
+  } catch (err) {
+    if (err.code === 'NOT_CONFIGURED') {
+      return res.status(503).json({ error: err.message });
+    }
+    console.error('Error filtrando alertas con IA', err);
+    return res.status(502).json({ error: 'No se pudo procesar la búsqueda en este momento' });
   }
 });
 
@@ -1722,6 +1997,10 @@ httpServer.listen(PORT, () => {
 startFortiSyslogListener().catch((err) => console.error('No se pudo iniciar el listener de syslog Forti', err));
 scheduleHousekeeping();
 scheduleReports();
+scheduleHeartbeat();
+scheduleProactiveDigest();
+scheduleAnomalyBaselineRefresh();
+scheduleSyntheticMonitor();
 
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();

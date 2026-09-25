@@ -4,8 +4,10 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'general', label: 'General', icon: '📈' },
   { id: 'monitoreo', label: 'Monitoreo', icon: '🖥️' },
   { id: 'topologia', label: 'Topología', icon: '🕸️' },
+  { id: 'mapa', label: 'Mapa', icon: '🗺️' },
   { id: 'logs', label: 'Logs Regex', icon: '⌥' },
   { id: 'fortinet', label: 'Fortinet', icon: '🧱' },
+  { id: 'guardia', label: 'Guardia', icon: '🌙' },
 ];
 
 const ADMIN_TAB: { id: TabId; label: string; icon: string } = { id: 'admin', label: 'Admin', icon: '🛡️' };

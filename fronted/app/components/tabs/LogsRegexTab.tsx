@@ -25,6 +25,11 @@ export default function LogsRegexTab({
   const [playbookCache, setPlaybookCache] = useState<Record<string, Playbook | 'NOT_FOUND'>>({});
   const [loadingPlaybook, setLoadingPlaybook] = useState<string | null>(null);
 
+  const [nlQuery, setNlQuery] = useState('');
+  const [nlResultIds, setNlResultIds] = useState<Set<string> | null>(null);
+  const [nlLoading, setNlLoading] = useState(false);
+  const [nlError, setNlError] = useState<string | null>(null);
+
   const togglePlaybook = useCallback(
     async (alertId: string, eventType: string) => {
       if (openPlaybookFor === alertId) {
@@ -51,22 +56,63 @@ export default function LogsRegexTab({
   const filtered = useMemo(() => {
     const byStatus = statusFilter === 'ALL' ? alerts : alerts.filter((a) => a.status === statusFilter);
 
+    const byNl = nlResultIds ? byStatus.filter((a) => nlResultIds.has(a.id)) : byStatus;
+
     if (!pattern.trim()) {
       setRegexError(null);
-      return byStatus;
+      return byNl;
     }
 
     try {
       const re = new RegExp(pattern, 'i');
       setRegexError(null);
-      return byStatus.filter(
+      return byNl.filter(
         (a) => re.test(a.type) || re.test(a.severity) || re.test(a.description) || re.test(a.serverName ?? '')
       );
     } catch {
       setRegexError('Expresión regular inválida');
-      return byStatus;
+      return byNl;
     }
-  }, [alerts, pattern, statusFilter]);
+  }, [alerts, pattern, statusFilter, nlResultIds]);
+
+  const handleNlSearch = useCallback(async () => {
+    if (!nlQuery.trim()) return;
+    setNlLoading(true);
+    setNlError(null);
+    try {
+      const byStatus = statusFilter === 'ALL' ? alerts : alerts.filter((a) => a.status === statusFilter);
+      const res = await fetch(`${API_URL}/api/assistant/filter-events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          query: nlQuery,
+          events: byStatus.map((a) => ({
+            id: a.id,
+            serverName: a.serverName ?? null,
+            type: a.type,
+            severity: a.severity,
+            status: a.status,
+            createdAt: a.createdAt,
+            description: a.description,
+          })),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo procesar la búsqueda');
+      setNlResultIds(new Set(body.ids));
+    } catch (err) {
+      setNlError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setNlLoading(false);
+    }
+  }, [nlQuery, alerts, statusFilter]);
+
+  const clearNlSearch = () => {
+    setNlQuery('');
+    setNlResultIds(null);
+    setNlError(null);
+  };
 
   return (
     <div className="animate-fade-in px-6 py-6">
@@ -96,8 +142,36 @@ export default function LogsRegexTab({
           placeholder="Ej: CRITICAL|MEMORY|web-server..."
           value={pattern}
           onChange={(e) => setPattern(e.target.value)}
-          className="mb-1 w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 font-mono text-xs text-gray-200 outline-none focus:border-blue-500"
+          className="mb-2 w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 font-mono text-xs text-gray-200 outline-none focus:border-blue-500"
         />
+
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            placeholder="🤖 O preguntá en lenguaje natural: ej. 'problemas de backup de Kansas este mes'"
+            value={nlQuery}
+            onChange={(e) => setNlQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleNlSearch()}
+            className="min-w-[280px] flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <button
+            onClick={handleNlSearch}
+            disabled={nlLoading || !nlQuery.trim()}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+          >
+            {nlLoading ? 'Buscando...' : 'Buscar con IA'}
+          </button>
+          {nlResultIds && (
+            <button
+              onClick={clearNlSearch}
+              className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800"
+            >
+              Limpiar búsqueda IA
+            </button>
+          )}
+        </div>
+        {nlError && <p className="mb-2 text-xs text-red-400">{nlError}</p>}
+
         {regexError && <p className="mb-3 text-xs text-red-400">{regexError}</p>}
         {!regexError && <p className="mb-3 text-xs text-gray-600">{filtered.length} resultado(s)</p>}
 
@@ -144,7 +218,15 @@ export default function LogsRegexTab({
                           <p className="mt-0.5 text-[10px] text-gray-600">por {a.acknowledgedByName}</p>
                         )}
                       </td>
-                      <td className="py-2 pr-4 text-gray-400">{a.description}</td>
+                      <td className="py-2 pr-4 text-gray-400">
+                        {a.description}
+                        {a.aiTriage && (
+                          <p className="mt-1 flex items-start gap-1 text-[11px] text-sky-300/90">
+                            <span>🤖</span>
+                            <span>{a.aiTriage}</span>
+                          </p>
+                        )}
+                      </td>
                       <td className="py-2 pr-4">
                         <div className="flex gap-1">
                           <button

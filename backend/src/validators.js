@@ -137,6 +137,9 @@ const settingsSchema = z
     REPORT_FREQUENCY: z.enum(['daily', 'weekly']).optional(),
     REPORT_HOUR: z.coerce.number().int().min(0).max(23).optional(),
     REPORT_EMAIL_TO: z.string().max(1000).optional(),
+    AGENT_STALE_THRESHOLD_SECONDS: z.coerce.number().int().min(60).max(86400).optional(),
+    TELEGRAM_BOT_TOKEN: z.string().max(200).optional(),
+    TELEGRAM_CHAT_ID: z.string().max(100).optional(),
   })
   .strict();
 
@@ -144,6 +147,73 @@ const playbookSchema = z
   .object({
     title: z.string().min(1).max(200),
     content: z.string().min(1).max(20000),
+  })
+  .strict();
+
+const naturalLanguageFilterSchema = z
+  .object({
+    query: z.string().min(1).max(300),
+    events: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            serverName: z.string().nullable().optional(),
+            type: z.string(),
+            severity: z.string(),
+            status: z.string(),
+            createdAt: z.string(),
+            description: z.string(),
+          })
+          .strict()
+      )
+      .max(300),
+  })
+  .strict();
+
+const fortiScreenshotSchema = z
+  .object({
+    imageBase64: z.string().min(100).max(8_000_000),
+    mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  })
+  .strict();
+
+const ingestReviewedFortiEventsSchema = z
+  .object({
+    events: z
+      .array(
+        z
+          .object({
+            type: z.enum([
+              'VPN_LOGIN', 'VPN_LOGOUT', 'ADMIN_LOGIN', 'CONFIG_CHANGE', 'IPS_ATTACK',
+              'VIRUS_DETECTED', 'INTERFACE_DOWN', 'HA_FAILOVER', 'TRAFFIC_ANOMALY',
+              'FIREWALL_DENY', 'OTHER',
+            ]),
+            severity: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
+            description: z.string().min(1).max(1000),
+            sourceIp: z.string().max(100).nullable().optional(),
+            destIp: z.string().max(100).nullable().optional(),
+          })
+          .strict()
+      )
+      .min(1)
+      .max(50),
+  })
+  .strict();
+
+const siteInfoSchema = z
+  .object({
+    latitude: z.number().min(-90).max(90).nullable().optional(),
+    longitude: z.number().min(-180).max(180).nullable().optional(),
+    ispPrimaryName: z.string().max(200).nullable().optional(),
+    ispPrimaryContact: z.string().max(200).nullable().optional(),
+    ispSecondaryName: z.string().max(200).nullable().optional(),
+    ispSecondaryContact: z.string().max(200).nullable().optional(),
+    siteContactName: z.string().max(200).nullable().optional(),
+    siteContactPhone: z.string().max(100).nullable().optional(),
+    hasFortinet: z.boolean().nullable().optional(),
+    siteNotes: z.string().max(2000).nullable().optional(),
+    syntheticCheckPort: z.number().int().min(1).max(65535).nullable().optional(),
   })
   .strict();
 
@@ -225,4 +295,8 @@ module.exports = {
   assistantChatSchema,
   createRemoteSessionSchema,
   playbookSchema,
+  naturalLanguageFilterSchema,
+  fortiScreenshotSchema,
+  ingestReviewedFortiEventsSchema,
+  siteInfoSchema,
 };

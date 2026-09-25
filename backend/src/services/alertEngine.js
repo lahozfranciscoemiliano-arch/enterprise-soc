@@ -137,6 +137,12 @@ function evaluateBackup(server, backup) {
 }
 
 function getHealthStatus(telemetry, server, defaults = DEFAULT_THRESHOLDS) {
+  // El heartbeat (services/heartbeat.js) mantiene server.status al dia: si
+  // dice OFFLINE es porque dejo de reportar telemetria hace rato, sin
+  // importar que valores traia su ULTIMA telemetria (podrian ser viejos y
+  // "buenos" justo antes de caerse). Offline siempre pesa mas que cualquier
+  // umbral.
+  if (server?.status === 'OFFLINE') return 'CRITICAL';
   if (!telemetry) return 'UNKNOWN';
 
   const thresholds = resolveThresholds(server, defaults);

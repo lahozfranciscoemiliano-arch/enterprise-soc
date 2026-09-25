@@ -5,6 +5,7 @@ const prisma = require('../prismaClient');
 const { getSettings } = require('./settings');
 const { getHealthStatus, getEffectiveDefaultThresholds } = require('./alertEngine');
 const { sendReportEmail } = require('./notifications');
+const { summarizeReportNaturalLanguage } = require('./claude');
 
 // Los PDF generados se guardan aca, igual que el .exe del agente en
 // server.js (DOWNLOADS_DIR): sobreviven a un "docker compose up --build"
@@ -140,6 +141,13 @@ function drawReportPdf(doc, data) {
   doc.text(`Generado: ${data.generatedAt.toLocaleString('es-AR')}`);
   doc.moveDown(1);
 
+  if (data.naturalSummary) {
+    doc.fontSize(13).fillColor('#111827').text('Resumen para gerencia');
+    doc.moveDown(0.3);
+    doc.fontSize(10).fillColor('#374151').text(data.naturalSummary, { align: 'justify' });
+    doc.moveDown(1);
+  }
+
   doc.fontSize(13).fillColor('#111827').text('Resumen');
   doc.moveDown(0.3);
   doc.fontSize(10).fillColor('#374151');
@@ -217,6 +225,36 @@ function reportFilename(date = new Date()) {
   return `enterprise-soc-report-${datePart}T${timePart}Z.pdf`;
 }
 
+function csvEscape(value) {
+  const str = String(value ?? '');
+  return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+// CSV con el detalle por servidor del periodo -- complementa el PDF para
+// quien prefiera abrirlo en Excel y manipular los numeros (filtrar, armar
+// su propio grafico, pegar en otro reporte).
+function buildReportCsv(data) {
+  const header = ['servidor', 'tags', 'salud', 'cpuUsage', 'memoryUsage', 'diskUsage', 'backupResult', 'ultimoBackup'];
+  const rows = data.serverRows.map((s) => [
+    s.name,
+    s.tags.join('|'),
+    s.health,
+    s.cpuUsage ?? '',
+    s.memoryUsage ?? '',
+    s.diskUsage ?? '',
+    s.backupResult,
+    s.backupLastAt ? new Date(s.backupLastAt).toISOString() : '',
+  ]);
+
+  const lines = [header, ...rows].map((row) => row.map(csvEscape).join(','));
+  return `﻿${lines.join('\n')}\n`; // BOM: para que Excel detecte UTF-8 solo
+}
+
+async function generateReportCsv({ periodDays = 7 } = {}) {
+  const data = await collectReportData(periodDays);
+  return buildReportCsv(data);
+}
+
 function pruneOldReports() {
   const files = fs
     .readdirSync(REPORTS_DIR)
@@ -234,6 +272,7 @@ function pruneOldReports() {
 
 async function generateAndStoreReport({ periodDays = 7 } = {}) {
   const data = await collectReportData(periodDays);
+  data.naturalSummary = await summarizeReportNaturalLanguage(data);
   const buffer = await buildPdfBuffer(data);
   const filename = reportFilename(data.generatedAt);
   fs.writeFileSync(path.join(REPORTS_DIR, filename), buffer);
@@ -305,6 +344,7 @@ function scheduleReports() {
 
 module.exports = {
   generateAndStoreReport,
+  generateReportCsv,
   listReports,
   getReportPath,
   maybeSendScheduledReport,

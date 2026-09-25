@@ -16,6 +16,8 @@ const SETTING_DEFS = {
   ALERT_EMAIL_TO: { envFallback: 'ALERT_EMAIL_TO', type: 'string', sensitive: false },
   SLACK_WEBHOOK_URL: { envFallback: 'SLACK_WEBHOOK_URL', type: 'string', sensitive: true },
   WEBHOOK_URL: { envFallback: 'WEBHOOK_URL', type: 'string', sensitive: true },
+  TELEGRAM_BOT_TOKEN: { envFallback: 'TELEGRAM_BOT_TOKEN', type: 'string', sensitive: true },
+  TELEGRAM_CHAT_ID: { envFallback: 'TELEGRAM_CHAT_ID', type: 'string', sensitive: false },
   NOTIFY_MIN_SEVERITY: { envFallback: 'NOTIFY_MIN_SEVERITY', type: 'string', sensitive: false },
 
   // Sesion
@@ -32,6 +34,9 @@ const SETTING_DEFS = {
   // Enrolamiento de agentes
   AGENT_ENROLLMENT_SECRET: { envFallback: 'AGENT_ENROLLMENT_SECRET', type: 'string', sensitive: true },
   AGENT_LATEST_VERSION: { envFallback: null, type: 'string', sensitive: false },
+  // Heartbeat (services/heartbeat.js): segundos sin telemetria antes de
+  // marcar un servidor OFFLINE y alertar.
+  AGENT_STALE_THRESHOLD_SECONDS: { envFallback: null, type: 'number', sensitive: false },
 
   // Integracion Fortinet
   FORTI_SYSLOG_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },

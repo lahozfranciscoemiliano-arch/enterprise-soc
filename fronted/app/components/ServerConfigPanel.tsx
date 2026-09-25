@@ -26,6 +26,21 @@ export default function ServerConfigPanel({
   const [savingTags, setSavingTags] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [siteInfo, setSiteInfo] = useState({
+    latitude: server.latitude ?? '',
+    longitude: server.longitude ?? '',
+    ispPrimaryName: server.ispPrimaryName ?? '',
+    ispPrimaryContact: server.ispPrimaryContact ?? '',
+    ispSecondaryName: server.ispSecondaryName ?? '',
+    ispSecondaryContact: server.ispSecondaryContact ?? '',
+    siteContactName: server.siteContactName ?? '',
+    siteContactPhone: server.siteContactPhone ?? '',
+    hasFortinet: server.hasFortinet,
+    siteNotes: server.siteNotes ?? '',
+    syntheticCheckPort: server.syntheticCheckPort ?? '',
+  });
+  const [savingSiteInfo, setSavingSiteInfo] = useState(false);
+
   const handleSaveTags = async () => {
     setSavingTags(true);
     setError(null);
@@ -73,6 +88,40 @@ export default function ServerConfigPanel({
       setError(err instanceof Error ? err.message : 'Error desconocido');
     } finally {
       setSavingThresholds(false);
+    }
+  };
+
+  const handleSaveSiteInfo = async () => {
+    setSavingSiteInfo(true);
+    setError(null);
+
+    const body = {
+      latitude: siteInfo.latitude === '' ? null : Number(siteInfo.latitude),
+      longitude: siteInfo.longitude === '' ? null : Number(siteInfo.longitude),
+      ispPrimaryName: siteInfo.ispPrimaryName || null,
+      ispPrimaryContact: siteInfo.ispPrimaryContact || null,
+      ispSecondaryName: siteInfo.ispSecondaryName || null,
+      ispSecondaryContact: siteInfo.ispSecondaryContact || null,
+      siteContactName: siteInfo.siteContactName || null,
+      siteContactPhone: siteInfo.siteContactPhone || null,
+      hasFortinet: siteInfo.hasFortinet,
+      siteNotes: siteInfo.siteNotes || null,
+      syntheticCheckPort: siteInfo.syntheticCheckPort === '' ? null : Number(siteInfo.syntheticCheckPort),
+    };
+
+    try {
+      const res = await fetch(`${API_URL}/api/admin/servers/${server.id}/site-info`, {
+        method: 'PATCH',
+        headers: jsonHeaders,
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'No se pudo guardar la información del sitio');
+      onUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setSavingSiteInfo(false);
     }
   };
 
@@ -165,6 +214,110 @@ export default function ServerConfigPanel({
             {savingThresholds ? 'Guardando...' : 'Guardar umbrales'}
           </button>
         </div>
+      </div>
+
+      <div className="mb-3 border-t border-gray-800 pt-3">
+        <p className="mb-2 text-[11px] uppercase tracking-wide text-gray-500">
+          Info del sitio (mapa + CMDB) — todo opcional
+        </p>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <input
+            type="number"
+            step="any"
+            placeholder="Latitud (ej: -34.5701)"
+            value={siteInfo.latitude}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, latitude: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="number"
+            step="any"
+            placeholder="Longitud (ej: -58.5237)"
+            value={siteInfo.longitude}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, longitude: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="text"
+            placeholder="ISP primario"
+            value={siteInfo.ispPrimaryName}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, ispPrimaryName: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="text"
+            placeholder="Contacto ISP primario"
+            value={siteInfo.ispPrimaryContact}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, ispPrimaryContact: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="text"
+            placeholder="ISP secundario"
+            value={siteInfo.ispSecondaryName}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, ispSecondaryName: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="text"
+            placeholder="Contacto ISP secundario"
+            value={siteInfo.ispSecondaryContact}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, ispSecondaryContact: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="text"
+            placeholder="Contacto del sitio (nombre)"
+            value={siteInfo.siteContactName}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, siteContactName: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="text"
+            placeholder="Teléfono del contacto"
+            value={siteInfo.siteContactPhone}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, siteContactPhone: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <input
+            type="number"
+            min={1}
+            max={65535}
+            placeholder="Puerto synthetic monitoring (ej: 3389)"
+            value={siteInfo.syntheticCheckPort}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, syntheticCheckPort: e.target.value }))}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+          />
+          <select
+            value={siteInfo.hasFortinet === null ? '' : String(siteInfo.hasFortinet)}
+            onChange={(e) =>
+              setSiteInfo((p) => ({ ...p, hasFortinet: e.target.value === '' ? null : e.target.value === 'true' }))
+            }
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200"
+          >
+            <option value="">¿Tiene Fortinet propio? (sin definir)</option>
+            <option value="true">Sí, tiene Fortinet propio</option>
+            <option value="false">No, sin Fortinet propio</option>
+          </select>
+          <textarea
+            placeholder="Notas del sitio"
+            value={siteInfo.siteNotes}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, siteNotes: e.target.value }))}
+            rows={1}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500 sm:col-span-2 lg:col-span-3"
+          />
+        </div>
+        <p className="mt-2 text-[11px] text-gray-500">
+          El puerto de synthetic monitoring es opcional: si se define, el backend intenta conectarse a ese puerto
+          cada 2 minutos para distinguir un sitio caído de red de un agente que dejó de responder.
+        </p>
+        <button
+          onClick={handleSaveSiteInfo}
+          disabled={savingSiteInfo}
+          className="mt-2 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+        >
+          {savingSiteInfo ? 'Guardando...' : 'Guardar info del sitio'}
+        </button>
       </div>
 
       <div className="border-t border-gray-800 pt-3">

@@ -83,6 +83,30 @@ async function sendGenericWebhook(cfg, notif) {
   }
 }
 
+// Canal adicional pensado para equipos de operaciones que viven en WhatsApp
+// pero no tienen infraestructura para la API de WhatsApp Business (requiere
+// cuenta Meta verificada o un puente como Twilio/360dialog). Telegram es la
+// alternativa mas simple: un bot propio (gratis, @BotFather) + el chat_id
+// del grupo/persona a notificar, sin proceso de aprobacion.
+async function sendTelegramAlert(cfg, notif) {
+  if (!cfg.TELEGRAM_BOT_TOKEN || !cfg.TELEGRAM_CHAT_ID) return;
+
+  try {
+    const url = `https://api.telegram.org/bot${cfg.TELEGRAM_BOT_TOKEN}/sendMessage`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: cfg.TELEGRAM_CHAT_ID,
+        text: `${SEVERITY_EMOJI[notif.severity] ?? ''} *${notif.severity}* — ${notif.subject}\n${notif.text}`,
+        parse_mode: 'Markdown',
+      }),
+    });
+  } catch (err) {
+    console.error('Error enviando alerta a Telegram', err);
+  }
+}
+
 const NOTIFICATION_SETTING_KEYS = [
   'NOTIFY_MIN_SEVERITY',
   'SMTP_HOST',
@@ -94,6 +118,8 @@ const NOTIFICATION_SETTING_KEYS = [
   'ALERT_EMAIL_TO',
   'SLACK_WEBHOOK_URL',
   'WEBHOOK_URL',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_CHAT_ID',
 ];
 
 async function dispatch(notif) {
@@ -101,7 +127,12 @@ async function dispatch(notif) {
   const minSeverity = cfg.NOTIFY_MIN_SEVERITY || 'HIGH';
   if ((SEVERITY_RANK[notif.severity] ?? 0) < (SEVERITY_RANK[minSeverity] ?? 2)) return;
 
-  await Promise.allSettled([sendEmailAlert(cfg, notif), sendSlackAlert(cfg, notif), sendGenericWebhook(cfg, notif)]);
+  await Promise.allSettled([
+    sendEmailAlert(cfg, notif),
+    sendSlackAlert(cfg, notif),
+    sendGenericWebhook(cfg, notif),
+    sendTelegramAlert(cfg, notif),
+  ]);
 }
 
 // Se llama sin "await" desde las rutas para no demorar la respuesta HTTP;

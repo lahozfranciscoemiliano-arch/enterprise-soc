@@ -1,28 +1,39 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { HousekeepingRun, ReportMeta } from '../types';
+import type { AnomalyBaselineStatus, HeartbeatRun, HousekeepingRun, ReportMeta, SyntheticMonitorRun } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 export default function ReportsPanel() {
   const [reports, setReports] = useState<ReportMeta[]>([]);
   const [housekeeping, setHousekeeping] = useState<HousekeepingRun | null>(null);
+  const [heartbeat, setHeartbeat] = useState<HeartbeatRun | null>(null);
+  const [synthetic, setSynthetic] = useState<SyntheticMonitorRun | null>(null);
+  const [anomaly, setAnomaly] = useState<AnomalyBaselineStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [runningHousekeeping, setRunningHousekeeping] = useState(false);
+  const [runningHeartbeat, setRunningHeartbeat] = useState(false);
+  const [runningSynthetic, setRunningSynthetic] = useState(false);
   const [periodDays, setPeriodDays] = useState('7');
 
   const fetchAll = useCallback(async () => {
     try {
-      const [reportsRes, hkRes] = await Promise.all([
+      const [reportsRes, hkRes, hbRes, synRes, anomalyRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/reports`, { credentials: 'include' }),
         fetch(`${API_URL}/api/admin/housekeeping`, { credentials: 'include' }),
+        fetch(`${API_URL}/api/admin/heartbeat`, { credentials: 'include' }),
+        fetch(`${API_URL}/api/admin/synthetic-monitor`, { credentials: 'include' }),
+        fetch(`${API_URL}/api/admin/anomaly-detection`, { credentials: 'include' }),
       ]);
       if (!reportsRes.ok) throw new Error((await reportsRes.json()).error || 'No se pudieron cargar los reportes');
       setReports(await reportsRes.json());
       if (hkRes.ok) setHousekeeping((await hkRes.json()).lastRun);
+      if (hbRes.ok) setHeartbeat((await hbRes.json()).lastRun);
+      if (synRes.ok) setSynthetic((await synRes.json()).lastRun);
+      if (anomalyRes.ok) setAnomaly(await anomalyRes.json());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -70,6 +81,36 @@ export default function ReportsPanel() {
     }
   }, []);
 
+  const handleRunHeartbeat = useCallback(async () => {
+    setRunningHeartbeat(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/heartbeat/run`, { method: 'POST', credentials: 'include' });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo correr el heartbeat');
+      setHeartbeat(body);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setRunningHeartbeat(false);
+    }
+  }, []);
+
+  const handleRunSynthetic = useCallback(async () => {
+    setRunningSynthetic(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/synthetic-monitor/run`, { method: 'POST', credentials: 'include' });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'No se pudo correr el chequeo de red');
+      setSynthetic(body);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setRunningSynthetic(false);
+    }
+  }, []);
+
   const totalDeleted = housekeeping ? Object.values(housekeeping.deleted).reduce((a, b) => a + b, 0) : null;
 
   if (loading) return <p className="text-sm text-gray-500">Cargando...</p>;
@@ -81,11 +122,12 @@ export default function ReportsPanel() {
       <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
         <h2 className="mb-1 text-sm font-semibold text-gray-200">📄 Reportes ejecutivos</h2>
         <p className="mb-4 text-[11px] text-gray-500">
-          PDF con SLA, incidentes y estado de backups del período. Se pueden generar a demanda acá, o programar el
-          envío automático por email en Admin → Configuración → Reportes ejecutivos.
+          PDF con SLA, incidentes y estado de backups del período (incluye un resumen redactado por IA si el
+          asistente está configurado). Se pueden generar a demanda acá, o programar el envío automático por email en
+          Admin → Configuración → Reportes ejecutivos.
         </p>
 
-        <div className="mb-4 flex items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           <label className="text-xs text-gray-400">Período (días)</label>
           <input
             type="number"
@@ -100,8 +142,16 @@ export default function ReportsPanel() {
             disabled={generating}
             className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
           >
-            {generating ? 'Generando...' : '+ Generar ahora'}
+            {generating ? 'Generando...' : '+ Generar PDF'}
           </button>
+          <a
+            href={`${API_URL}/api/admin/reports/export.csv?periodDays=${Number(periodDays) || 7}`}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-800"
+          >
+            ⬇ Exportar CSV
+          </a>
         </div>
 
         <div className="space-y-1">
@@ -125,6 +175,86 @@ export default function ReportsPanel() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+          <h2 className="mb-1 text-sm font-semibold text-gray-200">💓 Heartbeat (agentes caídos)</h2>
+          <p className="mb-3 text-[11px] text-gray-500">
+            Corre cada minuto. Marca OFFLINE y alerta CRITICAL a cualquier servidor sin telemetría por más del umbral
+            configurado (Admin → Configuración → Sesión y agentes).
+          </p>
+          <button
+            onClick={handleRunHeartbeat}
+            disabled={runningHeartbeat}
+            className="mb-3 rounded-lg border border-amber-500/30 px-3 py-1.5 text-xs text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
+          >
+            {runningHeartbeat ? 'Corriendo...' : '▶ Correr ahora'}
+          </button>
+          {heartbeat ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3 text-xs text-gray-300">
+              <p className="mb-1 text-gray-500">Última corrida: {new Date(heartbeat.checkedAt).toLocaleString('es-ES')}</p>
+              {heartbeat.markedOffline.length === 0 ? (
+                <p className="text-emerald-400">Todos los servidores reportando con normalidad</p>
+              ) : (
+                <p className="text-red-400">
+                  Marcados OFFLINE: {heartbeat.markedOffline.map((s) => s.name).join(', ')}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">Todavía no corrió (corre solo a los 30s de arrancar el backend)</p>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+          <h2 className="mb-1 text-sm font-semibold text-gray-200">📡 Synthetic monitoring (red)</h2>
+          <p className="mb-3 text-[11px] text-gray-500">
+            Chequeo TCP activo cada 2 minutos a los servidores con puerto configurado (Admin → Servidores →
+            Configurar). Distingue un sitio caído de red de un agente que dejó de responder.
+          </p>
+          <button
+            onClick={handleRunSynthetic}
+            disabled={runningSynthetic}
+            className="mb-3 rounded-lg border border-amber-500/30 px-3 py-1.5 text-xs text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
+          >
+            {runningSynthetic ? 'Corriendo...' : '▶ Correr ahora'}
+          </button>
+          {synthetic ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3 text-xs text-gray-300">
+              <p className="mb-1 text-gray-500">
+                Última corrida: {new Date(synthetic.checkedAt).toLocaleString('es-ES')} ({synthetic.checked} servidor(es) con chequeo activo)
+              </p>
+              {synthetic.unreachable.length === 0 ? (
+                <p className="text-emerald-400">Todos los puertos chequeados responden</p>
+              ) : (
+                <p className="text-red-400">Inalcanzables: {synthetic.unreachable.map((s) => s.name).join(', ')}</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">Todavía no corrió, o ningún servidor tiene puerto configurado</p>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h2 className="mb-1 text-sm font-semibold text-gray-200">📈 Detección de anomalías</h2>
+        <p className="mb-3 text-[11px] text-gray-500">
+          Baseline estadístico (media + desvío por servidor, métrica y hora del día) recalculado cada hora sobre los
+          últimos 14 días. Detecta picos raros para ESE servidor aunque no crucen ningún umbral fijo.
+        </p>
+        {anomaly ? (
+          <p className="text-xs text-gray-300">
+            {anomaly.serversWithBaseline > 0
+              ? `${anomaly.serversWithBaseline} servidor(es) con historial suficiente para tener baseline propio.`
+              : 'Todavía no hay suficiente historial (se necesitan al menos ~20 muestras por hora en los últimos 14 días).'}
+            {anomaly.lastRefreshAt && (
+              <span className="text-gray-500"> Última actualización: {new Date(anomaly.lastRefreshAt).toLocaleString('es-ES')}</span>
+            )}
+          </p>
+        ) : (
+          <p className="text-xs text-gray-500">Sin datos todavía.</p>
+        )}
       </div>
 
       <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">

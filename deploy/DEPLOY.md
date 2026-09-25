@@ -379,6 +379,83 @@ Se muestra directamente junto a cada alerta en **Logs Regex** (botón "📘 Play
 equipo no depende de acordarse el procedimiento de memoria. Volver a correr
 `node prisma/seed.js` nunca pisa un playbook que ya fue editado — solo crea los que falten.
 
+## 22. Watchdog de agente caído (heartbeat)
+
+El campo de estado (ONLINE/OFFLINE) de cada servidor ahora se mantiene solo: si un agente
+deja de reportar telemetría por más del umbral configurado (default 240s, ~4 ciclos de
+60s), se marca OFFLINE automáticamente y dispara una alerta `CRITICAL`. Se ajusta en
+**Admin → Configuración → Sesión y agentes**; el resultado de la última corrida (corre cada
+minuto solo) se ve en **Admin → Reportes**.
+
+## 23. Triage automático y resumen de reportes con IA
+
+Con `ANTHROPIC_API_KEY` configurada (sección 15), cada alerta nueva recibe automáticamente
+un triage corto de Claude (causa probable + primera acción, usando el playbook del tipo
+como contexto) que aparece junto a la alerta en **Logs Regex**. Los reportes ejecutivos
+también incluyen un resumen en lenguaje natural para gerencia. Sin la API key configurada,
+todo funciona igual pero sin estas dos cosas — nunca bloquea ni demora la alerta en sí.
+
+## 24. Análisis de logs de Windows y búsqueda en lenguaje natural
+
+Desde el detalle de cada servidor (Monitoreo → clic en un nodo), el botón **🤖 Analizar con
+IA** resume los errores recientes del Visor de Eventos que el agente ya manda. En **Logs
+Regex**, el campo "🤖 Buscar con IA" permite preguntar en lenguaje natural sobre las alertas
+cargadas (ej. "problemas de backup de Kansas este mes") en vez de armar una regex. Ambos
+requieren la API key de Claude.
+
+## 25. Detección de anomalías estadística
+
+Corre sola, sin configuración: cada hora recalcula un baseline (media + desvío estándar)
+por servidor, métrica y hora del día sobre los últimos 14 días, y compara la telemetría
+nueva contra ESE patrón — detecta picos raros para un servidor puntual aunque no crucen
+ningún umbral fijo (ej. un pico de red a las 3am en un sitio que normalmente no tiene
+tráfico a esa hora). Necesita al menos ~20 muestras por hora antes de generar su primer
+baseline (unos días de historial real). Estado visible en **Admin → Reportes**.
+
+## 26. Synthetic monitoring (chequeo de red activo)
+
+Opt-in por servidor: en **Admin → Servidores → Configurar → Info del sitio**, definí un
+puerto TCP (ej. 3389 para RDP) y el backend intenta conectarse cada 2 minutos. Distingue
+"el agente se colgó pero la red está bien" de "el sitio entero perdió conectividad" —
+relevante con 2 conexiones de internet dedicadas por sitio. Dos fallos seguidos disparan
+una alerta `NETWORK_UNREACHABLE` (CRITICAL si el heartbeat también lo tiene OFFLINE).
+
+## 27. Digest proactivo
+
+Corre cada 6 horas: si un mismo servidor acumula 3 o más alertas en las últimas 24hs, manda
+una notificación por los canales configurados (sección 9) señalando el patrón — con una nota
+redactada por Claude si está configurado, o un texto genérico si no. No hace falta abrir el
+dashboard para enterarse de un problema recurrente.
+
+## 28. Lectura de capturas de Fortinet por visión (Claude)
+
+Para los sitios sin API key ni syslog de Fortinet configurado todavía: en **Admin →
+Fortinet → Analizar captura de pantalla**, subí un screenshot del panel del FortiGate y
+Claude extrae los eventos visibles (tipo, severidad, descripción, IPs). Nunca se ingesta
+nada automáticamente — se revisan y confirman los eventos antes de cargarlos.
+
+## 29. Notificaciones por Telegram
+
+Canal adicional en **Admin → Configuración → Notificaciones externas**: creá un bot gratis
+con [@BotFather](https://t.me/BotFather) (sin proceso de aprobación, a diferencia de
+WhatsApp Business que requiere cuenta Meta verificada), agregalo al grupo/chat a notificar,
+y cargá el token + chat ID.
+
+## 30. Mapa geográfico y mini-CMDB por sitio
+
+Nueva pestaña **Mapa**: muestra cada sucursal en un mapa real (OpenStreetMap) con un
+marcador coloreado según su salud. Requiere cargar latitud/longitud por servidor en
+**Admin → Servidores → Configurar → Info del sitio**, junto con datos operativos opcionales
+(ISP primario/secundario y su contacto, contacto del sitio, si tiene Fortinet propio,
+notas) — información que hoy solo vive en la cabeza de alguien.
+
+## 31. Modo Guardia y exportar reportes a CSV
+
+Nueva pestaña **Guardia**: vista simplificada pensada para el celular de quien está de
+guardia a la noche — solo alertas CRITICAL/HIGH abiertas, servidores caídos y backups
+fallidos, en texto grande. Además, **Admin → Reportes** ahora tiene un botón "Exportar CSV"
+junto al PDF, para quien prefiera abrir los números en Excel.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

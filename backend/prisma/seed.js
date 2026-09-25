@@ -164,6 +164,34 @@ const DEFAULT_PLAYBOOKS = [
       '3. Si no es clara la causa, consultar al asistente (boton 🤖) con el detalle de la alerta.',
   },
   {
+    key: 'AGENT_OFFLINE',
+    title: 'Agente sin reportar (servidor caído o aislado)',
+    content:
+      '1. Confirmar si es real: intentar acceso remoto (RDP/VNC via el boton Conectar, o fisico/VPN al sitio) antes de asumir que el servidor esta apagado.\n' +
+      '2. Si el servidor responde pero el agente no: revisar la Tarea Programada "EnterpriseSOCAgent" en el Programador de Tareas y sus logs en agent.log.\n' +
+      '3. Si el servidor no responde a nada: verificar alimentacion electrica y ambas conexiones de internet del sitio antes de asumir falla de hardware.\n' +
+      '4. Si es un host que aloja VMs (ej. Kansas con ALOHA adentro), revisar tambien el estado de las VMs que dependen de el.\n' +
+      '5. Una vez resuelto, el servidor vuelve a ONLINE solo en su proximo reporte de telemetria -- no hace falta nada manual en el panel.',
+  },
+  {
+    key: 'ANOMALY_DETECTED',
+    title: 'Anomalía estadística (fuera de lo habitual para este servidor)',
+    content:
+      '1. Esta alerta NO cruzo ningun umbral fijo -- el valor esta dentro de rangos "normales" en general, pero es raro para ESE servidor a ESA hora especifica.\n' +
+      '2. Revisar que tarea/proceso puede explicarlo (backup fuera de horario, actualizacion de Windows, alguien corriendo algo manualmente).\n' +
+      '3. Si tiene una explicacion clara y esperada, no requiere accion -- el baseline se recalcula solo cada hora con los ultimos 14 dias.\n' +
+      '4. Si se repite sin explicacion los proximos dias, si amerita investigar mas a fondo.',
+  },
+  {
+    key: 'NETWORK_UNREACHABLE',
+    title: 'Sitio inalcanzable por red (synthetic monitoring)',
+    content:
+      '1. Esto es un chequeo de RED activo (conexion TCP), distinto de "agente sin reportar" -- confirma que ni siquiera se puede conectar al puerto configurado.\n' +
+      '2. Si tambien esta AGENT_OFFLINE al mismo tiempo: es casi seguro un corte de conectividad real del sitio completo (revisar las 2 conexiones de internet dedicadas).\n' +
+      '3. Si el agente SIGUE reportando telemetria con normalidad pero este chequeo falla: el problema es especifico de ese puerto/servicio, no del sitio entero (revisar firewall local, o si el servicio en ese puerto se cayo).\n' +
+      '4. Contactar al proveedor de internet del sitio si el corte persiste mas de unos minutos.',
+  },
+  {
     key: 'IPS_ATTACK',
     title: 'Ataque detectado por IPS (Fortinet)',
     content:

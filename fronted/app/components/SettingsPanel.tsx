@@ -65,6 +65,9 @@ export default function SettingsPanel() {
         REPORT_FREQUENCY: plainField(data, 'REPORT_FREQUENCY') || 'daily',
         REPORT_HOUR: plainField(data, 'REPORT_HOUR') || '8',
         REPORT_EMAIL_TO: plainField(data, 'REPORT_EMAIL_TO'),
+        AGENT_STALE_THRESHOLD_SECONDS: plainField(data, 'AGENT_STALE_THRESHOLD_SECONDS') || '240',
+        TELEGRAM_BOT_TOKEN: '',
+        TELEGRAM_CHAT_ID: plainField(data, 'TELEGRAM_CHAT_ID'),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -104,6 +107,7 @@ export default function SettingsPanel() {
             'FORTI_EVENT_RETENTION_DAYS',
             'AUDIT_LOG_RETENTION_DAYS',
             'REPORT_HOUR',
+            'AGENT_STALE_THRESHOLD_SECONDS',
           ];
           payload[key] = numericKeys.includes(key) ? Number(value) : value;
         }
@@ -191,6 +195,8 @@ export default function SettingsPanel() {
           {input('ALERT_EMAIL_TO', 'Destinatario(s) de alertas')}
           {input('SLACK_WEBHOOK_URL', `Slack webhook (${sensitiveHint('SLACK_WEBHOOK_URL')})`, 'password')}
           {input('WEBHOOK_URL', `Webhook genérico (${sensitiveHint('WEBHOOK_URL')})`, 'password')}
+          {input('TELEGRAM_BOT_TOKEN', `Telegram bot token (${sensitiveHint('TELEGRAM_BOT_TOKEN')})`, 'password')}
+          {input('TELEGRAM_CHAT_ID', 'Telegram chat ID')}
           <select
             value={form.NOTIFY_MIN_SEVERITY as string}
             onChange={(e) => set('NOTIFY_MIN_SEVERITY', e.target.value)}
@@ -214,9 +220,16 @@ export default function SettingsPanel() {
             'ALERT_EMAIL_TO',
             'SLACK_WEBHOOK_URL',
             'WEBHOOK_URL',
+            'TELEGRAM_BOT_TOKEN',
+            'TELEGRAM_CHAT_ID',
             'NOTIFY_MIN_SEVERITY',
           ])}
         </div>
+        <p className="mt-2 text-[11px] text-gray-500">
+          Telegram: creá un bot con @BotFather (gratis, sin aprobación) y agregalo al grupo/chat a notificar para
+          obtener el chat ID. Alternativa a WhatsApp Business (requiere cuenta Meta verificada) para equipos que
+          prefieren notificarse ahí.
+        </p>
       </div>
 
       <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
@@ -250,12 +263,22 @@ export default function SettingsPanel() {
           {input('JWT_EXPIRES_IN', 'Duración de sesión (8h)')}
           {input('AGENT_ENROLLMENT_SECRET', `Secreto de auto-enrolamiento (${sensitiveHint('AGENT_ENROLLMENT_SECRET')})`, 'password')}
           {input('AGENT_LATEST_VERSION', 'Última versión de agente publicada (ej: 1.1.0)')}
+          {input('AGENT_STALE_THRESHOLD_SECONDS', 'Segundos sin telemetría antes de marcar OFFLINE (240)')}
         </div>
         <p className="mt-2 text-[11px] text-gray-500">
           Publicar una versión nueva acá hace que todos los agentes con una versión anterior se auto-actualicen en su
-          próximo ciclo (bajan el .exe publicado en /downloads y se reinician solos).
+          próximo ciclo (bajan el .exe publicado en /downloads y se reinician solos). El umbral de watchdog controla
+          cuánto tiempo sin telemetría tolera antes de marcar un servidor OFFLINE y alertar (Admin → Reportes muestra
+          la última corrida).
         </p>
-        <div className="mt-3">{saveBtn('sesión y agentes', ['JWT_EXPIRES_IN', 'AGENT_ENROLLMENT_SECRET', 'AGENT_LATEST_VERSION'])}</div>
+        <div className="mt-3">
+          {saveBtn('sesión y agentes', [
+            'JWT_EXPIRES_IN',
+            'AGENT_ENROLLMENT_SECRET',
+            'AGENT_LATEST_VERSION',
+            'AGENT_STALE_THRESHOLD_SECONDS',
+          ])}
+        </div>
       </div>
 
       <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">

@@ -6,14 +6,15 @@ import TabNav from './TabNav';
 import GeneralTab from './tabs/GeneralTab';
 import MonitoreoTab from './tabs/MonitoreoTab';
 import TopologiaTab from './tabs/TopologiaTab';
+import MapaTab from './tabs/MapaTab';
 import LogsRegexTab from './tabs/LogsRegexTab';
+import GuardiaTab from './tabs/GuardiaTab';
 import AdminTab from './tabs/AdminTab';
 import AccountSettingsModal from './AccountSettingsModal';
 import AssistantPanel from './AssistantPanel';
 import FortiTab from './tabs/FortiTab';
 import { getHealthStatus } from '../lib/health';
 import type {
-  BackupInfo,
   ConnectionStatus,
   CurrentUser,
   DashboardSummary,
@@ -31,23 +32,9 @@ const MAX_ALERTS = 100;
 const RECONNECT_DELAY_MS = 3000;
 const SUMMARY_DEBOUNCE_MS = 800;
 
-type ServerApiItem = {
-  id: string;
-  name: string;
-  status: string;
-  lastSeenAt: string | null;
-  tags: string[];
-  agentVersion: string | null;
-  healthStatus: ServerSummary['healthStatus'];
-  cpuUsage: number | null;
-  memoryUsage: number | null;
-  diskUsage: number | null;
-  recordedAt: string | null;
-  thresholds: ServerSummary['thresholds'];
-  maintenanceUntil: string | null;
-  inMaintenance: boolean;
-  backup: BackupInfo | null;
-};
+// La respuesta de GET /api/servers ya trae exactamente los mismos campos
+// que ServerSummary (ver server.js) -- un alias en vez de repetir la lista.
+type ServerApiItem = ServerSummary;
 
 const EMPTY_THRESHOLDS: ServerSummary['thresholds'] = {
   cpuThresholdHigh: null,
@@ -57,6 +44,36 @@ const EMPTY_THRESHOLDS: ServerSummary['thresholds'] = {
   diskThresholdHigh: null,
   diskThresholdMedium: null,
 };
+
+// Campos que solo llegan por REST (GET /api/servers), no por los mensajes
+// de WebSocket de telemetria/backup -- se preservan del estado anterior
+// cuando llega un update parcial por WS (ver TELEMETRY/BACKUP_STATUS abajo).
+const EMPTY_SITE_INFO = {
+  latitude: null,
+  longitude: null,
+  ispPrimaryName: null,
+  ispPrimaryContact: null,
+  ispSecondaryName: null,
+  ispSecondaryContact: null,
+  siteContactName: null,
+  siteContactPhone: null,
+  hasFortinet: null,
+  siteNotes: null,
+  syntheticCheckPort: null,
+} satisfies Pick<
+  ServerSummary,
+  | 'latitude'
+  | 'longitude'
+  | 'ispPrimaryName'
+  | 'ispPrimaryContact'
+  | 'ispSecondaryName'
+  | 'ispSecondaryContact'
+  | 'siteContactName'
+  | 'siteContactPhone'
+  | 'hasFortinet'
+  | 'siteNotes'
+  | 'syntheticCheckPort'
+>;
 
 type TelemetryApiPoint = {
   cpuUsage: number;
@@ -111,30 +128,7 @@ export default function Dashboard({
       return null;
     }
     const data: ServerApiItem[] = await res.json();
-    setServers(
-      Object.fromEntries(
-        data.map((s) => [
-          s.id,
-          {
-            id: s.id,
-            name: s.name,
-            status: s.status,
-            lastSeenAt: s.lastSeenAt,
-            tags: s.tags,
-            agentVersion: s.agentVersion,
-            healthStatus: s.healthStatus,
-            cpuUsage: s.cpuUsage,
-            memoryUsage: s.memoryUsage,
-            diskUsage: s.diskUsage,
-            recordedAt: s.recordedAt,
-            thresholds: s.thresholds,
-            maintenanceUntil: s.maintenanceUntil,
-            inMaintenance: s.inMaintenance,
-            backup: s.backup,
-          },
-        ])
-      )
-    );
+    setServers(Object.fromEntries(data.map((s) => [s.id, s])));
     return data;
   }, [handleAuthFailure]);
 
@@ -261,6 +255,7 @@ export default function Dashboard({
               return {
                 ...prev,
                 [d.serverId]: {
+                  ...(existing ?? EMPTY_SITE_INFO),
                   backup: existing?.backup ?? null,
                   thresholds: existing?.thresholds ?? EMPTY_THRESHOLDS,
                   maintenanceUntil: existing?.maintenanceUntil ?? null,
@@ -304,6 +299,7 @@ export default function Dashboard({
               return {
                 ...prev,
                 [d.serverId]: {
+                  ...(existing ?? EMPTY_SITE_INFO),
                   status: existing?.status ?? 'OFFLINE',
                   lastSeenAt: existing?.lastSeenAt ?? null,
                   healthStatus: existing?.healthStatus ?? 'UNKNOWN',
@@ -333,6 +329,25 @@ export default function Dashboard({
             });
 
             setLastSync(recordedAt);
+            scheduleSummaryRefresh();
+          }
+
+          // El heartbeat (backend) manda esto cuando marca un servidor
+          // OFFLINE por falta de telemetria -- sin esto, el dashboard no se
+          // entera hasta el proximo fetch periodico de /api/servers.
+          if (message.type === 'SERVER_STATUS') {
+            setServers((prev) => {
+              const existing = prev[message.serverId];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [message.serverId]: {
+                  ...existing,
+                  status: message.status,
+                  healthStatus: message.status === 'OFFLINE' ? 'CRITICAL' : existing.healthStatus,
+                },
+              };
+            });
             scheduleSummaryRefresh();
           }
 
@@ -423,8 +438,10 @@ export default function Dashboard({
         />
       )}
       {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
+      {activeTab === 'mapa' && <MapaTab servers={serverList} />}
       {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
       {activeTab === 'fortinet' && <FortiTab events={fortiEvents} onRefresh={fetchFortiEvents} />}
+      {activeTab === 'guardia' && <GuardiaTab servers={serverList} alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
       {activeTab === 'admin' && role === 'ADMIN' && (
         <AdminTab currentUserEmail={user.email} servers={serverList} onServersChanged={fetchServers} />
       )}

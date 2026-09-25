@@ -30,6 +30,15 @@ enum EventType {
   BACKUP_FAILED
   BACKUP_WARNING
   CUSTOM
+  // Watchdog (services/heartbeat.js): el agente dejo de reportar telemetria.
+  AGENT_OFFLINE
+  // Deteccion de anomalias estadistica (services/anomalyDetection.js): un
+  // valor se sale del patron normal de ESE servidor a ESA hora, aunque no
+  // cruce ningun umbral fijo.
+  ANOMALY_DETECTED
+  // Synthetic monitoring (services/syntheticMonitor.js): no se pudo
+  // establecer una conexion TCP al puerto configurado del servidor.
+  NETWORK_UNREACHABLE
 }
 
 enum BackupResult {
@@ -246,6 +255,29 @@ model Server {
   // este servidor se siguen guardando normalmente pero no generan alertas.
   maintenanceUntil DateTime?
 
+  // Ubicacion real de la sucursal (Mapa, Admin -> Servidores -> Configurar).
+  // Null hasta que un ADMIN la cargue a mano -- no se adivinan coordenadas.
+  latitude  Float?
+  longitude Float?
+
+  // Mini-CMDB: datos operativos del sitio que hoy solo viven "en la cabeza"
+  // de alguien. Todo opcional y de solo lectura para el motor de alertas.
+  ispPrimaryName      String?
+  ispPrimaryContact   String?
+  ispSecondaryName    String?
+  ispSecondaryContact String?
+  siteContactName     String?
+  siteContactPhone    String?
+  hasFortinet         Boolean?
+  siteNotes           String?
+
+  // Synthetic monitoring (services/syntheticMonitor.js): puerto TCP a
+  // chequear activamente cada pocos minutos. Null = chequeo desactivado para
+  // este servidor (opt-in: no todos los sitios van a tener ese puerto
+  // alcanzable desde el VPS, y un check ruidoso genera mas desconfianza que
+  // valor).
+  syntheticCheckPort Int?
+
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
   telemetry Telemetry[]
@@ -318,6 +350,11 @@ model SecurityEvent {
   description      String
   sourceIp         String?
   metadata         Json?
+  // Triage generado por Claude (services/claude.js: triageEvent) -- causa
+  // probable + accion sugerida, usando el playbook del tipo como contexto.
+  // Null si el asistente no esta configurado o la llamada fallo; nunca
+  // bloquea la creacion del evento (se completa async despues).
+  aiTriage         String?
   acknowledgedById String?
   acknowledgedBy   User?         @relation("AcknowledgedBy", fields: [acknowledgedById], references: [id])
   createdAt        DateTime      @default(now())

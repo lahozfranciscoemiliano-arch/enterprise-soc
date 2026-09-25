@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'topologia' | 'logs' | 'fortinet' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'topologia' | 'mapa' | 'logs' | 'fortinet' | 'guardia' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {
@@ -43,6 +43,7 @@ export type SecurityAlert = {
   serverId?: string;
   serverName?: string;
   acknowledgedByName?: string | null;
+  aiTriage?: string | null;
   createdAt: string;
   resolvedAt?: string | null;
 };
@@ -83,6 +84,17 @@ export type ServerSummary = {
   maintenanceUntil: string | null;
   inMaintenance: boolean;
   backup: BackupInfo | null;
+  latitude: number | null;
+  longitude: number | null;
+  ispPrimaryName: string | null;
+  ispPrimaryContact: string | null;
+  ispSecondaryName: string | null;
+  ispSecondaryContact: string | null;
+  siteContactName: string | null;
+  siteContactPhone: string | null;
+  hasFortinet: boolean | null;
+  siteNotes: string | null;
+  syntheticCheckPort: number | null;
 };
 
 export type FortiEventType =
@@ -183,6 +195,9 @@ export type SystemSettings = {
   REPORT_FREQUENCY: PlainSetting<'daily' | 'weekly'>;
   REPORT_HOUR: PlainSetting<number>;
   REPORT_EMAIL_TO: PlainSetting<string>;
+  AGENT_STALE_THRESHOLD_SECONDS: PlainSetting<number>;
+  TELEGRAM_BOT_TOKEN: SensitiveSetting;
+  TELEGRAM_CHAT_ID: PlainSetting<string>;
 };
 
 export type Playbook = {
@@ -206,6 +221,31 @@ export type ReportMeta = {
   sizeBytes: number;
   sizeLabel: string;
   createdAt: string;
+};
+
+export type HeartbeatRun = {
+  checkedAt: string;
+  markedOffline: { id: string; name: string }[];
+  error: string | null;
+};
+
+export type SyntheticMonitorRun = {
+  checkedAt: string;
+  checked: number;
+  unreachable: { id: string; name: string }[];
+};
+
+export type AnomalyBaselineStatus = {
+  lastRefreshAt: string | null;
+  serversWithBaseline: number;
+};
+
+export type FortiScreenshotEvent = {
+  type: FortiEventType;
+  severity: Severity;
+  description: string;
+  sourceIp: string | null;
+  destIp: string | null;
 };
 
 export type TelemetryPoint = {

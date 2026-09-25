@@ -135,6 +135,13 @@ function broadcastFortiEvent(event) {
   broadcast({ type: 'FORTI_EVENT', event });
 }
 
+// Usado por el watchdog de heartbeat (services/heartbeat.js) para que el
+// dashboard pase un servidor a OFFLINE al instante, sin esperar al proximo
+// fetch de /api/servers.
+function broadcastServerStatus(serverId, status) {
+  broadcast({ type: 'SERVER_STATUS', serverId, status });
+}
+
 module.exports = {
   createSocketServer,
   broadcastAlert,
@@ -142,4 +149,5 @@ module.exports = {
   broadcastTelemetry,
   broadcastBackupStatus,
   broadcastFortiEvent,
+  broadcastServerStatus,
 };
