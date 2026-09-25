@@ -134,20 +134,30 @@ app.use('/api/', apiLimiter);
 // disparadas desde un origen distinto al del propio dashboard.
 app.use('/api/', csrfGuard);
 
-function setSessionCookie(res, token, expiresAt) {
+// "Secure" tiene que reflejar si ESTA request en particular llego por HTTPS,
+// no si NODE_ENV es "production" -- son cosas distintas. Con NODE_ENV fijo
+// en "production" (docker-compose.yml) pero el VPS sirviendo todavia por
+// HTTP plano (sin dominio/TLS configurado aun), una cookie marcada Secure
+// nunca la guarda el navegador y el login queda en loop infinito.
+// req.secure ya refleja esto bien: Express lo calcula solo a partir del
+// header X-Forwarded-Proto que Nginx manda ($scheme, ver deploy/nginx.conf),
+// confiando en el proxy por "trust proxy" (arriba). Asi que esto se
+// autocorrige solo el dia que se agregue el dominio + certbot, sin tocar
+// nada aca.
+function setSessionCookie(req, res, token, expiresAt) {
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: req.secure,
     sameSite: 'strict',
     path: '/',
     expires: expiresAt,
   });
 }
 
-function clearSessionCookie(res) {
+function clearSessionCookie(req, res) {
   res.clearCookie(SESSION_COOKIE_NAME, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: req.secure,
     sameSite: 'strict',
     path: '/',
   });
@@ -166,7 +176,7 @@ async function issueSession(req, res, user) {
     { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
   );
 
-  setSessionCookie(res, token, expiresAt);
+  setSessionCookie(req, res, token, expiresAt);
 
   return {
     id: user.id,
@@ -290,13 +300,13 @@ app.post('/api/auth/login/2fa', twoFaLimiter, async (req, res) => {
 
 app.post('/api/auth/logout', authUser, async (req, res) => {
   await revokeSession(req.user.jti);
-  clearSessionCookie(res);
+  clearSessionCookie(req, res);
   return res.status(204).send();
 });
 
 app.post('/api/auth/logout-all', authUser, async (req, res) => {
   await revokeAllUserSessions(req.user.sub);
-  clearSessionCookie(res);
+  clearSessionCookie(req, res);
   logAudit({ userId: req.user.sub, action: 'LOGOUT_ALL_DEVICES', targetType: 'User', targetId: req.user.sub });
   return res.status(204).send();
 });
