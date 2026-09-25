@@ -174,6 +174,38 @@ export type SystemSettings = {
   ANTHROPIC_API_KEY: SensitiveSetting;
   ANTHROPIC_MODEL: PlainSetting<string>;
   REMOTE_ACCESS_ENABLED: PlainSetting<boolean>;
+  TELEMETRY_RETENTION_DAYS: PlainSetting<number>;
+  SECURITY_EVENT_RETENTION_DAYS: PlainSetting<number>;
+  BACKUP_STATUS_RETENTION_DAYS: PlainSetting<number>;
+  FORTI_EVENT_RETENTION_DAYS: PlainSetting<number>;
+  AUDIT_LOG_RETENTION_DAYS: PlainSetting<number>;
+  REPORT_ENABLED: PlainSetting<boolean>;
+  REPORT_FREQUENCY: PlainSetting<'daily' | 'weekly'>;
+  REPORT_HOUR: PlainSetting<number>;
+  REPORT_EMAIL_TO: PlainSetting<string>;
+};
+
+export type Playbook = {
+  key: string;
+  title: string;
+  content: string;
+  updatedAt: string;
+  updatedById: string | null;
+};
+
+export type HousekeepingRun = {
+  startedAt: string;
+  finishedAt: string;
+  deleted: Record<string, number>;
+  retention: Record<string, number>;
+  error: string | null;
+};
+
+export type ReportMeta = {
+  filename: string;
+  sizeBytes: number;
+  sizeLabel: string;
+  createdAt: string;
 };
 
 export type TelemetryPoint = {

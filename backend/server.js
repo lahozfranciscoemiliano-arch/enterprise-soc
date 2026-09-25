@@ -35,6 +35,7 @@ const {
   updateServerTagsSchema,
   assistantChatSchema,
   createRemoteSessionSchema,
+  playbookSchema,
 } = require('./src/validators');
 const {
   evaluateTelemetry,
@@ -44,7 +45,7 @@ const {
   getEffectiveDefaultThresholds,
 } = require('./src/services/alertEngine');
 const { logAudit } = require('./src/services/auditLog');
-const { notifyAlert, notifyGeneric } = require('./src/services/notifications');
+const { notifyAlert, notifyGeneric, sendReportEmail } = require('./src/services/notifications');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
 const { ingestFortiEvent } = require('./src/services/fortinet');
 const { askClaude } = require('./src/services/claude');
@@ -72,6 +73,8 @@ const {
   closeSession,
 } = require('./src/services/remoteBroker');
 const { startFortiSyslogListener } = require('./src/services/fortiSyslog');
+const { runHousekeeping, getLastRun: getHousekeepingLastRun, scheduleHousekeeping } = require('./src/services/housekeeping');
+const { generateAndStoreReport, listReports, getReportPath, scheduleReports } = require('./src/services/reports');
 
 const REQUIRED_ENV = ['DATABASE_URL', 'JWT_SECRET'];
 for (const key of REQUIRED_ENV) {
@@ -793,10 +796,9 @@ app.patch('/api/events/:id', authUser, requireRole('ADMIN', 'ANALYST'), async (r
   }
 });
 
-// ---------------------------------------------------------------------------
-// Administracion: usuarios y servidores (solo ADMIN)
-// ---------------------------------------------------------------------------
-
+// El limiter de escrituras administrativas se usa desde aca en adelante (lo
+// reutiliza tambien la seccion de Administracion mas abajo, con el mismo
+// criterio: pocas operaciones de configuracion por ventana de 15 minutos).
 const adminWriteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -804,6 +806,60 @@ const adminWriteLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Demasiadas operaciones administrativas, intenta más tarde' },
 });
+
+// ---------------------------------------------------------------------------
+// Playbooks de resolucion: pasos sugeridos por tipo de alerta (interno o de
+// Fortinet -- EventType y FortiEventType no se solapan, asi que comparten
+// tabla). Lectura para cualquier usuario logueado (son ayuda operativa, no
+// informacion sensible); edicion solo ADMIN.
+// ---------------------------------------------------------------------------
+
+app.get('/api/playbooks', authUser, async (req, res) => {
+  try {
+    const playbooks = await prisma.playbook.findMany({ orderBy: { key: 'asc' } });
+    return res.json(playbooks);
+  } catch (err) {
+    console.error('Error listando playbooks', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/playbooks/:key', authUser, async (req, res) => {
+  try {
+    const playbook = await prisma.playbook.findUnique({ where: { key: req.params.key } });
+    if (!playbook) return res.status(404).json({ error: 'No hay un playbook cargado para este tipo de evento' });
+    return res.json(playbook);
+  } catch (err) {
+    console.error('Error obteniendo playbook', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.patch('/api/admin/playbooks/:key', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const parsed = playbookSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Datos de playbook inválidos', details: parsed.error.flatten() });
+  }
+
+  try {
+    const playbook = await prisma.playbook.upsert({
+      where: { key: req.params.key },
+      update: { title: parsed.data.title, content: parsed.data.content, updatedById: req.user.sub },
+      create: { key: req.params.key, title: parsed.data.title, content: parsed.data.content, updatedById: req.user.sub },
+    });
+
+    logAudit({ userId: req.user.sub, action: 'PLAYBOOK_UPDATE', targetType: 'Playbook', targetId: playbook.key });
+
+    return res.json(playbook);
+  } catch (err) {
+    console.error('Error guardando playbook', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Administracion: usuarios y servidores (solo ADMIN)
+// ---------------------------------------------------------------------------
 
 app.get('/api/admin/users', authUser, requireRole('ADMIN'), async (req, res) => {
   try {
@@ -943,7 +999,7 @@ app.post('/api/admin/servers', adminWriteLimiter, authUser, requireRole('ADMIN')
     return res.status(400).json({ error: 'Datos de servidor inválidos', details: parsed.error.flatten() });
   }
 
-  const { name, hostname, ipAddress } = parsed.data;
+  const { name, hostname, ipAddress, tags } = parsed.data;
 
   try {
     const existing = await prisma.server.findUnique({ where: { name } });
@@ -955,7 +1011,7 @@ app.post('/api/admin/servers', adminWriteLimiter, authUser, requireRole('ADMIN')
     const apiKeyHash = await bcrypt.hash(apiKey, 12);
 
     const server = await prisma.server.create({
-      data: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE' },
+      data: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE', tags: tags ?? [] },
     });
 
     logAudit({ userId: req.user.sub, action: 'SERVER_CREATE', targetType: 'Server', targetId: server.id, metadata: { name } });
@@ -1301,6 +1357,85 @@ app.patch('/api/admin/settings', adminWriteLimiter, authUser, requireRole('ADMIN
 });
 
 // ---------------------------------------------------------------------------
+// Housekeeping (retencion de datos): purga programada de telemetria/eventos/
+// backups/auditoria vieja segun Admin -> Configuracion -> Retencion de datos
+// (ver src/services/housekeeping.js). Corre sola cada 24hs; estos endpoints
+// son solo para ver el resultado de la ultima corrida y para forzar una
+// corrida manual (util recien configurado, para no esperar hasta el otro dia).
+// ---------------------------------------------------------------------------
+
+app.get('/api/admin/housekeeping', authUser, requireRole('ADMIN'), (req, res) => {
+  return res.json({ lastRun: getHousekeepingLastRun() });
+});
+
+app.post('/api/admin/housekeeping/run', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    const result = await runHousekeeping();
+    return res.json(result);
+  } catch (err) {
+    console.error('Error corriendo housekeeping manual', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reportes ejecutivos: PDF con SLA, incidentes y estado de backups del
+// periodo, generados a demanda o automaticamente segun Admin -> Configuracion
+// -> Reportes ejecutivos (ver src/services/reports.js).
+// ---------------------------------------------------------------------------
+
+app.get('/api/admin/reports', authUser, requireRole('ADMIN'), (req, res) => {
+  try {
+    return res.json(listReports());
+  } catch (err) {
+    console.error('Error listando reportes', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+const reportGenerateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados reportes generados, intenta más tarde' },
+});
+
+app.post('/api/admin/reports/generate', reportGenerateLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const periodDays = Math.min(Math.max(Number(req.body?.periodDays) || 7, 1), 90);
+
+  try {
+    const { filename, buffer, data } = await generateAndStoreReport({ periodDays });
+
+    if (req.body?.email) {
+      const emailTo = await getSetting('REPORT_EMAIL_TO');
+      if (emailTo) {
+        await sendReportEmail({ to: emailTo, filename, buffer });
+      }
+    }
+
+    logAudit({
+      userId: req.user.sub,
+      action: 'REPORT_GENERATE',
+      targetType: 'Report',
+      targetId: filename,
+      metadata: { periodDays, slaPercentage: data.slaPercentage },
+    });
+
+    return res.status(201).json({ filename, periodDays, generatedAt: data.generatedAt });
+  } catch (err) {
+    console.error('Error generando reporte', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/admin/reports/:filename', authUser, requireRole('ADMIN'), (req, res) => {
+  const filePath = getReportPath(req.params.filename);
+  if (!filePath) return res.status(404).json({ error: 'Reporte no encontrado' });
+  return res.download(filePath, req.params.filename);
+});
+
+// ---------------------------------------------------------------------------
 // Monitor Fortinet: dispositivos FortiGate registrados y sus eventos. Dos
 // vias de ingesta posibles (ver src/services/fortiSyslog.js y el comentario
 // en fortinet.js): push por API con una API key propia por dispositivo
@@ -1529,16 +1664,19 @@ app.post('/api/servers/enroll', enrollLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Datos de enrolamiento inválidos', details: parsed.error.flatten() });
   }
 
-  const { name, hostname, ipAddress } = parsed.data;
+  const { name, hostname, ipAddress, tags } = parsed.data;
 
   try {
     const apiKey = generateApiKey();
     const apiKeyHash = await bcrypt.hash(apiKey, 12);
 
+    // Las tags solo se fijan al crear: un re-enrolamiento (misma maquina,
+    // rota la API key) no debe pisar tags que un ADMIN ya haya ajustado a
+    // mano despues del alta inicial.
     const server = await prisma.server.upsert({
       where: { name },
       update: { hostname, ipAddress, apiKeyHash },
-      create: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE' },
+      create: { name, hostname, ipAddress, apiKeyHash, status: 'OFFLINE', tags: tags ?? [] },
     });
 
     logAudit({
@@ -1582,6 +1720,8 @@ httpServer.listen(PORT, () => {
 });
 
 startFortiSyslogListener().catch((err) => console.error('No se pudo iniciar el listener de syslog Forti', err));
+scheduleHousekeeping();
+scheduleReports();
 
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();

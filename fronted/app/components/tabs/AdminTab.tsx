@@ -4,18 +4,22 @@ import AuditLogPanel from '../AuditLogPanel';
 import SettingsPanel from '../SettingsPanel';
 import FortiDeviceAdmin from '../FortiDeviceAdmin';
 import RemoteAccessModal from '../RemoteAccessModal';
+import PlaybooksAdmin from '../PlaybooksAdmin';
+import ReportsPanel from '../ReportsPanel';
 import type { AdminUser, Role, ServerSummary } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 type RevealedCredential = { label: string; serverId: string; apiKey: string };
-type AdminSection = 'usuarios' | 'servidores' | 'fortinet' | 'configuracion' | 'auditoria';
+type AdminSection = 'usuarios' | 'servidores' | 'fortinet' | 'configuracion' | 'playbooks' | 'reportes' | 'auditoria';
 
 const SECTIONS: { id: AdminSection; label: string }[] = [
   { id: 'usuarios', label: '👤 Usuarios' },
   { id: 'servidores', label: '🖧 Servidores' },
   { id: 'fortinet', label: '🧱 Fortinet' },
   { id: 'configuracion', label: '⚙️ Configuración' },
+  { id: 'playbooks', label: '📘 Playbooks' },
+  { id: 'reportes', label: '📄 Reportes' },
   { id: 'auditoria', label: '📋 Auditoría' },
 ];
 
@@ -461,6 +465,10 @@ export default function AdminTab({
       {section === 'fortinet' && <FortiDeviceAdmin />}
 
       {section === 'configuracion' && <SettingsPanel />}
+
+      {section === 'playbooks' && <PlaybooksAdmin />}
+
+      {section === 'reportes' && <ReportsPanel />}
 
       {section === 'auditoria' && <AuditLogPanel />}
 

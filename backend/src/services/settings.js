@@ -43,6 +43,20 @@ const SETTING_DEFS = {
 
   // Acceso remoto
   REMOTE_ACCESS_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
+
+  // Retencion de datos (housekeeping) -- ver services/housekeeping.js. Todos
+  // en dias; 0 = conservar para siempre (no recomendado con 30GB de disco).
+  TELEMETRY_RETENTION_DAYS: { envFallback: null, type: 'number', sensitive: false },
+  SECURITY_EVENT_RETENTION_DAYS: { envFallback: null, type: 'number', sensitive: false },
+  BACKUP_STATUS_RETENTION_DAYS: { envFallback: null, type: 'number', sensitive: false },
+  FORTI_EVENT_RETENTION_DAYS: { envFallback: null, type: 'number', sensitive: false },
+  AUDIT_LOG_RETENTION_DAYS: { envFallback: null, type: 'number', sensitive: false },
+
+  // Reportes ejecutivos automaticos -- ver services/reports.js
+  REPORT_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
+  REPORT_FREQUENCY: { envFallback: null, type: 'string', sensitive: false }, // 'daily' | 'weekly'
+  REPORT_HOUR: { envFallback: null, type: 'number', sensitive: false }, // 0-23, hora local del servidor (UTC)
+  REPORT_EMAIL_TO: { envFallback: null, type: 'string', sensitive: false },
 };
 
 function cast(rawValue, type) {

@@ -49,6 +49,10 @@ const createServerSchema = z
     name: z.string().min(1).max(200),
     hostname: z.string().min(1).max(255),
     ipAddress: z.string().min(1).max(100),
+    // Opcional: permite que install-agent.ps1/host-monitor.sh etiqueten el
+    // servidor (ej. "infra-vps") ya en el alta, sin un paso manual aparte en
+    // Admin -> Servidores -> Configurar.
+    tags: z.array(z.string().min(1).max(50)).max(20).optional(),
   })
   .strict();
 
@@ -124,6 +128,22 @@ const settingsSchema = z
     ANTHROPIC_API_KEY: z.string().max(500).optional(),
     ANTHROPIC_MODEL: z.string().max(100).optional(),
     REMOTE_ACCESS_ENABLED: z.boolean().optional(),
+    TELEMETRY_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
+    SECURITY_EVENT_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
+    BACKUP_STATUS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
+    FORTI_EVENT_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
+    AUDIT_LOG_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
+    REPORT_ENABLED: z.boolean().optional(),
+    REPORT_FREQUENCY: z.enum(['daily', 'weekly']).optional(),
+    REPORT_HOUR: z.coerce.number().int().min(0).max(23).optional(),
+    REPORT_EMAIL_TO: z.string().max(1000).optional(),
+  })
+  .strict();
+
+const playbookSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    content: z.string().min(1).max(20000),
   })
   .strict();
 
@@ -204,4 +224,5 @@ module.exports = {
   updateServerTagsSchema,
   assistantChatSchema,
   createRemoteSessionSchema,
+  playbookSchema,
 };

@@ -56,6 +56,15 @@ export default function SettingsPanel() {
         ANTHROPIC_API_KEY: '',
         ANTHROPIC_MODEL: plainField(data, 'ANTHROPIC_MODEL') || 'claude-sonnet-4-5',
         REMOTE_ACCESS_ENABLED: boolField(data, 'REMOTE_ACCESS_ENABLED'),
+        TELEMETRY_RETENTION_DAYS: plainField(data, 'TELEMETRY_RETENTION_DAYS') || '30',
+        SECURITY_EVENT_RETENTION_DAYS: plainField(data, 'SECURITY_EVENT_RETENTION_DAYS') || '365',
+        BACKUP_STATUS_RETENTION_DAYS: plainField(data, 'BACKUP_STATUS_RETENTION_DAYS') || '180',
+        FORTI_EVENT_RETENTION_DAYS: plainField(data, 'FORTI_EVENT_RETENTION_DAYS') || '180',
+        AUDIT_LOG_RETENTION_DAYS: plainField(data, 'AUDIT_LOG_RETENTION_DAYS') || '365',
+        REPORT_ENABLED: boolField(data, 'REPORT_ENABLED'),
+        REPORT_FREQUENCY: plainField(data, 'REPORT_FREQUENCY') || 'daily',
+        REPORT_HOUR: plainField(data, 'REPORT_HOUR') || '8',
+        REPORT_EMAIL_TO: plainField(data, 'REPORT_EMAIL_TO'),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -89,6 +98,12 @@ export default function SettingsPanel() {
             'DEFAULT_DISK_HIGH',
             'DEFAULT_DISK_MEDIUM',
             'FORTI_SYSLOG_PORT',
+            'TELEMETRY_RETENTION_DAYS',
+            'SECURITY_EVENT_RETENTION_DAYS',
+            'BACKUP_STATUS_RETENTION_DAYS',
+            'FORTI_EVENT_RETENTION_DAYS',
+            'AUDIT_LOG_RETENTION_DAYS',
+            'REPORT_HOUR',
           ];
           payload[key] = numericKeys.includes(key) ? Number(value) : value;
         }
@@ -270,6 +285,52 @@ export default function SettingsPanel() {
           (se factura por uso, es distinta de una suscripción Claude Pro).
         </p>
         <div className="mt-3">{saveBtn('asistente', ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL'])}</div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">🧹 Retención de datos</h3>
+        <p className="mb-2 text-[11px] text-gray-500">
+          Cuántos días se conservan antes de purgarse automáticamente (todos los días, ver Admin → Housekeeping).
+          0 = conservar para siempre — no recomendado en un disco chico.
+        </p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          {input('TELEMETRY_RETENTION_DAYS', 'Telemetría (30)', 'number')}
+          {input('SECURITY_EVENT_RETENTION_DAYS', 'Alertas resueltas (365)', 'number')}
+          {input('BACKUP_STATUS_RETENTION_DAYS', 'Backups (180)', 'number')}
+          {input('FORTI_EVENT_RETENTION_DAYS', 'Eventos Fortinet (180)', 'number')}
+          {input('AUDIT_LOG_RETENTION_DAYS', 'Auditoría (365)', 'number')}
+        </div>
+        <div className="mt-3">
+          {saveBtn('retención', [
+            'TELEMETRY_RETENTION_DAYS',
+            'SECURITY_EVENT_RETENTION_DAYS',
+            'BACKUP_STATUS_RETENTION_DAYS',
+            'FORTI_EVENT_RETENTION_DAYS',
+            'AUDIT_LOG_RETENTION_DAYS',
+          ])}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-gray-200">📄 Reportes ejecutivos</h3>
+        <div className="flex flex-wrap items-center gap-4">
+          {checkbox('REPORT_ENABLED', 'Enviar automáticamente por email')}
+          <select
+            value={form.REPORT_FREQUENCY as string}
+            onChange={(e) => set('REPORT_FREQUENCY', e.target.value)}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+          >
+            <option value="daily">Frecuencia: diaria</option>
+            <option value="weekly">Frecuencia: semanal (lunes)</option>
+          </select>
+          <div className="w-36">{input('REPORT_HOUR', 'Hora UTC (0-23)', 'number')}</div>
+        </div>
+        <div className="mt-2">{input('REPORT_EMAIL_TO', 'Destinatario(s) del reporte')}</div>
+        <p className="mt-2 text-[11px] text-gray-500">
+          Requiere SMTP configurado (sección de Notificaciones externas, arriba). Los reportes generados quedan
+          disponibles también en Admin → Reportes, con descarga bajo demanda.
+        </p>
+        <div className="mt-3">{saveBtn('reportes', ['REPORT_ENABLED', 'REPORT_FREQUENCY', 'REPORT_HOUR', 'REPORT_EMAIL_TO'])}</div>
       </div>
 
       <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">

@@ -296,6 +296,89 @@ Con eso alcanza: descarga el agente si hace falta, se auto-registra en el NOC, y
 corriendo como tarea programada — sin tocar la base de datos ni el dashboard a mano. Ver
 `agent/install-agent.ps1` para los detalles.
 
+## 18. Retención de datos (housekeeping)
+
+Con 30GB de disco en el VPS y 21 servidores reportando telemetría cada minuto, sin límite
+esa tabla sola llenaría el disco en meses. Un job interno corre automáticamente **una vez
+por día** (empieza 2 minutos después de arrancar el backend) y purga:
+
+- Telemetría más vieja que `TELEMETRY_RETENTION_DAYS` (default: 30 días)
+- Backups reportados más viejos que `BACKUP_STATUS_RETENTION_DAYS` (default: 180 días)
+- Alertas **ya resueltas** más viejas que `SECURITY_EVENT_RETENTION_DAYS` (default: 365
+  días) — una alerta abierta o reconocida nunca se borra por antigüedad, solo por antigüedad
+  *después de* resolverse
+- Eventos Fortinet más viejos que `FORTI_EVENT_RETENTION_DAYS` (default: 180 días)
+- Auditoría más vieja que `AUDIT_LOG_RETENTION_DAYS` (default: 365 días)
+- Sesiones vencidas/revocadas y sesiones de acceso remoto cerradas de más de 30 días
+  (no configurable, es pura limpieza operativa)
+
+Los días se ajustan en **Admin → Configuración → Retención de datos**; poner `0` en
+cualquiera desactiva la purga de esa tabla (no recomendado con este disco). Después de
+purgar, corre `VACUUM (ANALYZE)` sobre las tablas afectadas para que Postgres devuelva el
+espacio libre al sistema de archivos antes de esperar al autovacuum.
+
+**Admin → Reportes** muestra el resultado de la última corrida y tiene un botón para forzar
+una corrida manual (útil recién configurado, para no esperar hasta el otro día).
+
+## 19. Auto-monitoreo del VPS anfitrión
+
+Hoy nadie vigila el CPU/RAM/disco del propio Ubuntu del VPS ni el estado de sus contenedores
+Docker — si el disco se llena o un contenedor se cae, te enterás cuando el NOC ya dejó de
+funcionar. `deploy/host-monitor.sh` resuelve esto reusando el mismo mecanismo que un agente
+Windows: corre **en el host** (no dentro de Docker), se auto-registra como un servidor más
+via `/api/servers/enroll`, y manda telemetría real por `/api/telemetry` — así aparece en el
+dashboard, dispara alertas por los mismos umbrales, y no necesitó ningún endpoint nuevo del
+lado del backend.
+
+Primera corrida (registra el host y guarda las credenciales en `/etc/enterprise-soc/`):
+
+```bash
+sudo mkdir -p /opt/enterprise-soc/deploy
+sudo cp deploy/host-monitor.sh /opt/enterprise-soc/deploy/
+sudo bash /opt/enterprise-soc/deploy/host-monitor.sh \
+  --backend http://localhost:3000 \
+  --enrollment-secret "<el AGENT_ENROLLMENT_SECRET del .env o de Admin -> Configuracion>"
+```
+
+Queda registrado con el tag `infra-vps` y con nombre `<hostname>-vps`. Para que corra solo
+cada minuto, instalar el timer de systemd:
+
+```bash
+sudo cp deploy/host-monitor.service deploy/host-monitor.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now host-monitor.timer
+sudo systemctl status host-monitor.timer
+```
+
+Si Docker está instalado, además reporta qué contenedores del stack (`enterprise-soc-*`) no
+están corriendo o su healthcheck los marca `unhealthy` — eso dispara automáticamente una
+alerta `CUSTOM` de severidad HIGH (ver `alertEngine.js`, campo `metadata.unhealthyContainers`
+de la telemetría). Sin Docker instalado, simplemente omite esa parte y sigue reportando
+CPU/RAM/disco con normalidad.
+
+## 20. Reportes ejecutivos automáticos
+
+**Admin → Reportes** genera un PDF con SLA, incidentes del período, tiempo promedio de
+resolución, estado de backups y detalle por servidor — pensado para mandarle a gerencia sin
+que entren al panel. Se puede generar a demanda (elegís el período en días) o programar el
+envío automático:
+
+**Admin → Configuración → Reportes ejecutivos**: activar, elegir frecuencia (diaria o
+semanal, los lunes), hora UTC de envío, y el/los destinatario(s). Requiere SMTP configurado
+(sección 9) — reusa la misma configuración de las notificaciones de alertas.
+
+Los últimos 60 reportes generados quedan disponibles para descarga en el propio panel
+(persisten en el volumen `report_files`, sobreviven a un rebuild).
+
+## 21. Playbooks de resolución
+
+**Admin → Playbooks** tiene un procedimiento sugerido por cada tipo de alerta (interno:
+`CPU_THRESHOLD`, `BACKUP_FAILED`, etc.; y de Fortinet: `IPS_ATTACK`, `HA_FAILOVER`, etc.),
+precargado con contenido por defecto al correr el seed y editable en cualquier momento.
+Se muestra directamente junto a cada alerta en **Logs Regex** (botón "📘 Playbook"), así el
+equipo no depende de acordarse el procedimiento de memoria. Volver a correr
+`node prisma/seed.js` nunca pisa un playbook que ya fue editado — solo crea los que falten.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real
@@ -315,3 +398,8 @@ corriendo como tarea programada — sin tocar la base de datos ni el dashboard a
       vs. Docker de la sección 13 antes de exponer el puerto UDP
 - [ ] Si vas a usar el acceso remoto (sección 14), el equipo entiende que es la función de
       mayor privilegio del sistema y quién puede usarla (solo ADMIN)
+- [ ] Instalaste `host-monitor.sh` + su timer de systemd (sección 19) — con 30GB de disco,
+      es la única forma de enterarte si el propio VPS se está quedando sin espacio
+- [ ] Revisaste que los valores de retención (sección 18) tengan sentido para tu disco; el
+      default (30 días de telemetría) ya está pensado para 30GB pero conviene confirmarlo
+      después de la primera semana real con los 21 servidores reportando

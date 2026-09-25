@@ -96,6 +96,7 @@ model User {
   sessions             Session[]
   remoteSessions       RemoteSession[]
   assistantLogs        AssistantLog[]
+  playbooksUpdated     Playbook[]
 
   @@map("users")
 }
@@ -288,6 +289,23 @@ model BackupStatus {
 
   @@index([serverId, recordedAt])
   @@map("backup_status")
+}
+
+// Playbook de resolucion por tipo de evento (clave = valor del enum EventType
+// o FortiEventType, ej. "BACKUP_FAILED", "IPS_ATTACK" -- ninguno de los dos
+// enums se solapa, asi que una sola tabla les sirve a ambos). Contenido en
+// markdown, editable desde Admin -> Playbooks; se muestra junto a cada alerta
+// de ese tipo para estandarizar como se resuelve sin depender de que alguien
+// se acuerde el procedimiento.
+model Playbook {
+  key         String   @id
+  title       String
+  content     String
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+  updatedBy   User?    @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("playbooks")
 }
 
 model SecurityEvent {

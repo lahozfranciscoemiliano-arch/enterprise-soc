@@ -1,0 +1,15 @@
+[Unit]
+Description=Enterprise SOC - Auto-monitoreo del VPS anfitrion (un solo ciclo)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# host-monitor.sh ya tiene las credenciales guardadas en /etc/enterprise-soc
+# despues de la primera corrida manual (ver DEPLOY.md, seccion "Auto-
+# monitoreo del VPS anfitrion") -- este servicio no necesita argumentos.
+ExecStart=/usr/bin/env bash /opt/enterprise-soc/deploy/host-monitor.sh
+# root: hace falta para leer /proc/net/dev de todas las interfaces sin
+# restricciones y para poder correr "docker ps" sin depender de que el
+# usuario este en el grupo docker.
+User=root

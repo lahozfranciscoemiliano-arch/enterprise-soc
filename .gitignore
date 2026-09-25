@@ -26,6 +26,10 @@ _backups/
 # o via CI, no se versiona en git)
 backend/downloads/*.exe
 
+# Reportes ejecutivos generados en runtime (ver src/services/reports.js) --
+# persisten en el volumen Docker "report_files", no en git.
+backend/reports/*.pdf
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

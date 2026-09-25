@@ -94,6 +94,21 @@ function evaluateTelemetry(server, telemetry, defaults = DEFAULT_THRESHOLDS) {
     }
   }
 
+  // Senal opcional que manda el script de auto-monitoreo del propio VPS
+  // (deploy/host-monitor.sh): lista de contenedores Docker que dejaron de
+  // estar "healthy"/"running". No es una metrica generica de ningun agente
+  // Windows, por eso vive aca como un campo suelto en metadata en vez de un
+  // umbral mas en resolveThresholds.
+  const unhealthy = telemetry.metadata?.unhealthyContainers;
+  if (Array.isArray(unhealthy) && unhealthy.length > 0) {
+    alerts.push({
+      type: 'CUSTOM',
+      severity: 'HIGH',
+      description: `${server.name}: ${unhealthy.length} contenedor(es) Docker caído(s) o degradado(s): ${unhealthy.join(', ')}`,
+      metadata: { unhealthyContainers: unhealthy, serverId: server.id },
+    });
+  }
+
   return alerts;
 }
 

@@ -26,6 +26,33 @@ async function sendEmailAlert(cfg, notif) {
   }
 }
 
+// Reusa la config SMTP de notificaciones de alertas (Admin -> Configuracion
+// -> Notificaciones externas): no hay un SMTP separado solo para reportes.
+// A diferencia de sendEmailAlert, el destinatario lo elige quien llama (el
+// campo REPORT_EMAIL_TO puede ser distinto de ALERT_EMAIL_TO), y no pasa por
+// el umbral de severidad de dispatch() porque un reporte no es una alerta.
+async function sendReportEmail({ to, filename, buffer }) {
+  const cfg = await getSettings(['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);
+  if (!cfg.SMTP_HOST) {
+    throw new Error('No se puede enviar el reporte por email: falta configurar SMTP (Admin -> Configuración)');
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: cfg.SMTP_HOST,
+    port: cfg.SMTP_PORT || 587,
+    secure: Boolean(cfg.SMTP_SECURE),
+    auth: cfg.SMTP_USER ? { user: cfg.SMTP_USER, pass: cfg.SMTP_PASS } : undefined,
+  });
+
+  await transporter.sendMail({
+    from: cfg.SMTP_FROM || 'noc@enterprise-soc.local',
+    to,
+    subject: `Reporte Ejecutivo Enterprise SOC — ${new Date().toLocaleDateString('es-AR')}`,
+    text: 'Se adjunta el reporte ejecutivo generado automáticamente por Enterprise SOC.',
+    attachments: [{ filename, content: buffer, contentType: 'application/pdf' }],
+  });
+}
+
 async function sendSlackAlert(cfg, notif) {
   if (!cfg.SLACK_WEBHOOK_URL) return;
 
@@ -107,4 +134,4 @@ async function notifyGeneric({ severity, subject, text, source, metadata }) {
   });
 }
 
-module.exports = { notifyAlert, notifyGeneric };
+module.exports = { notifyAlert, notifyGeneric, sendReportEmail };

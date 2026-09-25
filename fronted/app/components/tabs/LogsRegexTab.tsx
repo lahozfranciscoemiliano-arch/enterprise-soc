@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useCallback, useMemo, useState } from 'react';
 import { EVENT_STATUS_STYLES, SEVERITY_STYLES } from '../../lib/health';
-import type { EventStatus, SecurityAlert } from '../../types';
+import type { EventStatus, Playbook, SecurityAlert } from '../../types';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 const STATUS_FILTERS: { id: EventStatus | 'ALL'; label: string }[] = [
   { id: 'ALL', label: 'Todas' },
@@ -19,6 +21,32 @@ export default function LogsRegexTab({
   const [pattern, setPattern] = useState('');
   const [regexError, setRegexError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<EventStatus | 'ALL'>('ALL');
+  const [openPlaybookFor, setOpenPlaybookFor] = useState<string | null>(null);
+  const [playbookCache, setPlaybookCache] = useState<Record<string, Playbook | 'NOT_FOUND'>>({});
+  const [loadingPlaybook, setLoadingPlaybook] = useState<string | null>(null);
+
+  const togglePlaybook = useCallback(
+    async (alertId: string, eventType: string) => {
+      if (openPlaybookFor === alertId) {
+        setOpenPlaybookFor(null);
+        return;
+      }
+      setOpenPlaybookFor(alertId);
+      if (playbookCache[eventType]) return;
+
+      setLoadingPlaybook(eventType);
+      try {
+        const res = await fetch(`${API_URL}/api/playbooks/${encodeURIComponent(eventType)}`, { credentials: 'include' });
+        const value: Playbook | 'NOT_FOUND' = res.ok ? await res.json() : 'NOT_FOUND';
+        setPlaybookCache((prev) => ({ ...prev, [eventType]: value }));
+      } catch {
+        setPlaybookCache((prev) => ({ ...prev, [eventType]: 'NOT_FOUND' }));
+      } finally {
+        setLoadingPlaybook(null);
+      }
+    },
+    [openPlaybookFor, playbookCache]
+  );
 
   const filtered = useMemo(() => {
     const byStatus = statusFilter === 'ALL' ? alerts : alerts.filter((a) => a.status === statusFilter);
@@ -96,46 +124,71 @@ export default function LogsRegexTab({
               )}
               {filtered.map((a) => {
                 const statusStyle = EVENT_STATUS_STYLES[a.status] ?? EVENT_STATUS_STYLES.OPEN;
+                const playbook = playbookCache[a.type];
                 return (
-                  <tr key={a.id} className="border-b border-gray-800/60 transition-colors hover:bg-gray-800/30">
-                    <td className="py-2 pr-4 text-gray-400">{new Date(a.createdAt).toLocaleString('es-ES')}</td>
-                    <td className="py-2 pr-4 text-gray-300">{a.serverName ?? '—'}</td>
-                    <td className="py-2 pr-4 text-gray-300">{a.type}</td>
-                    <td className="py-2 pr-4">
-                      <span className={`rounded-full border px-2 py-0.5 text-[11px] ${SEVERITY_STYLES[a.severity]}`}>
-                        {a.severity}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-4">
-                      <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusStyle.badge}`}>
-                        {statusStyle.label}
-                      </span>
-                      {a.acknowledgedByName && (
-                        <p className="mt-0.5 text-[10px] text-gray-600">por {a.acknowledgedByName}</p>
-                      )}
-                    </td>
-                    <td className="py-2 pr-4 text-gray-400">{a.description}</td>
-                    <td className="py-2 pr-4">
-                      <div className="flex gap-1">
-                        {a.status === 'OPEN' && (
-                          <button
-                            onClick={() => onUpdateStatus(a.id, 'ACKNOWLEDGED')}
-                            className="rounded-lg border border-amber-500/30 px-2 py-1 text-[11px] text-amber-400 transition-colors hover:bg-amber-500/10"
-                          >
-                            Reconocer
-                          </button>
+                  <Fragment key={a.id}>
+                    <tr className="border-b border-gray-800/60 transition-colors hover:bg-gray-800/30">
+                      <td className="py-2 pr-4 text-gray-400">{new Date(a.createdAt).toLocaleString('es-ES')}</td>
+                      <td className="py-2 pr-4 text-gray-300">{a.serverName ?? '—'}</td>
+                      <td className="py-2 pr-4 text-gray-300">{a.type}</td>
+                      <td className="py-2 pr-4">
+                        <span className={`rounded-full border px-2 py-0.5 text-[11px] ${SEVERITY_STYLES[a.severity]}`}>
+                          {a.severity}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-4">
+                        <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusStyle.badge}`}>
+                          {statusStyle.label}
+                        </span>
+                        {a.acknowledgedByName && (
+                          <p className="mt-0.5 text-[10px] text-gray-600">por {a.acknowledgedByName}</p>
                         )}
-                        {a.status !== 'RESOLVED' && (
+                      </td>
+                      <td className="py-2 pr-4 text-gray-400">{a.description}</td>
+                      <td className="py-2 pr-4">
+                        <div className="flex gap-1">
                           <button
-                            onClick={() => onUpdateStatus(a.id, 'RESOLVED')}
-                            className="rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-400 transition-colors hover:bg-emerald-500/10"
+                            onClick={() => togglePlaybook(a.id, a.type)}
+                            className="rounded-lg border border-sky-500/30 px-2 py-1 text-[11px] text-sky-300 transition-colors hover:bg-sky-500/10"
                           >
-                            Resolver
+                            📘 Playbook
                           </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
+                          {a.status === 'OPEN' && (
+                            <button
+                              onClick={() => onUpdateStatus(a.id, 'ACKNOWLEDGED')}
+                              className="rounded-lg border border-amber-500/30 px-2 py-1 text-[11px] text-amber-400 transition-colors hover:bg-amber-500/10"
+                            >
+                              Reconocer
+                            </button>
+                          )}
+                          {a.status !== 'RESOLVED' && (
+                            <button
+                              onClick={() => onUpdateStatus(a.id, 'RESOLVED')}
+                              className="rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-400 transition-colors hover:bg-emerald-500/10"
+                            >
+                              Resolver
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {openPlaybookFor === a.id && (
+                      <tr className="border-b border-gray-800/60 bg-gray-950/70">
+                        <td colSpan={7} className="px-4 py-3">
+                          {loadingPlaybook === a.type && <p className="text-xs text-gray-500">Cargando playbook...</p>}
+                          {loadingPlaybook !== a.type && playbook === 'NOT_FOUND' && (
+                            <p className="text-xs text-gray-500">No hay un playbook cargado para el tipo &quot;{a.type}&quot;.</p>
+                          )}
+                          {loadingPlaybook !== a.type && playbook && playbook !== 'NOT_FOUND' && (
+                            <div>
+                              <p className="mb-1 text-xs font-semibold text-sky-300">{playbook.title}</p>
+                              <pre className="whitespace-pre-wrap font-sans text-xs text-gray-300">{playbook.content}</pre>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

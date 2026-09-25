@@ -1,0 +1,11 @@
+[Unit]
+Description=Enterprise SOC - Correr host-monitor.sh cada 60 segundos
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=host-monitor.service
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

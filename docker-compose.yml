@@ -55,6 +55,8 @@ services:
     volumes:
       # El .exe del agente publicado sobrevive a un "docker compose up --build"
       - agent_downloads:/app/downloads
+      # Reportes ejecutivos generados (PDF); mismo motivo que agent_downloads.
+      - report_files:/app/reports
     ports:
       - "127.0.0.1:3000:3000"
       # Si activas el receptor de syslog de Fortinet (Admin -> Configuracion
@@ -84,3 +86,4 @@ services:
 volumes:
   postgres_data:
   agent_downloads:
+  report_files:
