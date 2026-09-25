@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bot } from 'lucide-react';
+import { useToast } from './Toast';
 import Header from './Header';
 import TabNav from './TabNav';
 import GeneralTab from './tabs/GeneralTab';
@@ -103,6 +104,7 @@ export default function Dashboard({
   onLogout: () => void;
 }) {
   const { role } = user;
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [servers, setServers] = useState<Record<string, ServerSummary>>({});
@@ -201,10 +203,10 @@ export default function Dashboard({
         if (!res.ok) throw new Error(updated.error || 'No se pudo actualizar la alerta');
         setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updated } : a)));
       } catch (err) {
-        alert(err instanceof Error ? err.message : 'Error desconocido');
+        toast.error(err instanceof Error ? err.message : 'Error desconocido');
       }
     },
-    [handleAuthFailure]
+    [handleAuthFailure, toast]
   );
 
   const fetchFortiEvents = useCallback(async () => {
@@ -447,8 +449,8 @@ export default function Dashboard({
               refreshing={refreshing}
             />
           )}
-          {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
-          {activeTab === 'mapa' && <MapaTab servers={serverList} />}
+          {activeTab === 'topologia' && <TopologiaTab servers={serverList} alerts={alerts} />}
+          {activeTab === 'mapa' && <MapaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
           {activeTab === 'fortinet' && <FortiTab events={fortiEvents} onRefresh={fetchFortiEvents} />}
           {activeTab === 'guardia' && (

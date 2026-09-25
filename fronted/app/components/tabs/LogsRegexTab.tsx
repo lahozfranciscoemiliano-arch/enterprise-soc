@@ -1,15 +1,16 @@
 import { Fragment, useCallback, useMemo, useState } from 'react';
-import { Bot, BookOpen } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Bot, BookOpen, CircleDot, CheckCircle2, Eye, ListFilter, Regex, Sparkles, X } from 'lucide-react';
 import { EVENT_STATUS_STYLES, SEVERITY_STYLES } from '../../lib/health';
 import type { EventStatus, Playbook, SecurityAlert } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
-const STATUS_FILTERS: { id: EventStatus | 'ALL'; label: string }[] = [
-  { id: 'ALL', label: 'Todas' },
-  { id: 'OPEN', label: 'Abiertas' },
-  { id: 'ACKNOWLEDGED', label: 'Reconocidas' },
-  { id: 'RESOLVED', label: 'Resueltas' },
+const STATUS_FILTERS: { id: EventStatus | 'ALL'; label: string; icon: typeof ListFilter }[] = [
+  { id: 'ALL', label: 'Todas', icon: ListFilter },
+  { id: 'OPEN', label: 'Abiertas', icon: CircleDot },
+  { id: 'ACKNOWLEDGED', label: 'Reconocidas', icon: Eye },
+  { id: 'RESOLVED', label: 'Resueltas', icon: CheckCircle2 },
 ];
 
 export default function LogsRegexTab({
@@ -119,62 +120,89 @@ export default function LogsRegexTab({
     <div className="px-6 py-6">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-slate-800">
-            ⌥ Historial de Logs Críticos{' '}
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
+            <Regex className="h-4 w-4 text-slate-400" />
+            Historial de Logs Críticos{' '}
             <span className="font-normal text-slate-400">(búsqueda por expresiones regulares)</span>
           </h2>
           <div className="flex gap-1">
             {STATUS_FILTERS.map((f) => (
-              <button
+              <motion.button
                 key={f.id}
+                whileTap={{ scale: 0.96 }}
                 onClick={() => setStatusFilter(f.id)}
-                className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs transition-colors ${
                   statusFilter === f.id ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-slate-100'
                 }`}
               >
+                <f.icon className="h-3.5 w-3.5" />
                 {f.label}
-              </button>
+              </motion.button>
             ))}
           </div>
         </div>
 
-        <input
-          type="text"
-          placeholder="Ej: CRITICAL|MEMORY|web-server..."
-          value={pattern}
-          onChange={(e) => setPattern(e.target.value)}
-          className="mb-2 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
-        />
-
-        <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="relative mb-2">
+          <Regex className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="🤖 O preguntá en lenguaje natural: ej. 'problemas de backup de Kansas este mes'"
-            value={nlQuery}
-            onChange={(e) => setNlQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleNlSearch()}
-            className="min-w-[280px] flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
+            placeholder="Ej: CRITICAL|MEMORY|web-server..."
+            value={pattern}
+            onChange={(e) => setPattern(e.target.value)}
+            className="w-full rounded-lg border border-slate-300 bg-slate-50 py-2 pl-8 pr-3 font-mono text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
-          <button
+        </div>
+
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[280px] flex-1">
+            <Sparkles className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="O preguntá en lenguaje natural: ej. 'problemas de backup de Kansas este mes'"
+              value={nlQuery}
+              onChange={(e) => setNlQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleNlSearch()}
+              className="w-full rounded-lg border border-slate-300 bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
+            />
+          </div>
+          <motion.button
+            whileTap={{ scale: 0.97 }}
             onClick={handleNlSearch}
             disabled={nlLoading || !nlQuery.trim()}
-            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
           >
+            {nlLoading ? (
+              <motion.span animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}>
+                <Sparkles className="h-3.5 w-3.5" />
+              </motion.span>
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
             {nlLoading ? 'Buscando...' : 'Buscar con IA'}
-          </button>
-          {nlResultIds && (
-            <button
-              onClick={clearNlSearch}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
-            >
-              Limpiar búsqueda IA
-            </button>
-          )}
+          </motion.button>
+          <AnimatePresence>
+            {nlResultIds && (
+              <motion.button
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                onClick={clearNlSearch}
+                className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+              >
+                <X className="h-3 w-3" />
+                Limpiar búsqueda IA
+              </motion.button>
+            )}
+          </AnimatePresence>
         </div>
         {nlError && <p className="mb-2 text-xs text-red-700">{nlError}</p>}
 
         {regexError && <p className="mb-3 text-xs text-red-700">{regexError}</p>}
-        {!regexError && <p className="mb-3 text-xs text-slate-500">{filtered.length} resultado(s)</p>}
+        {!regexError && (
+          <p className="mb-3 text-xs text-slate-500">
+            <span className="font-semibold text-slate-700">{filtered.length}</span> resultado(s)
+          </p>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
@@ -197,12 +225,17 @@ export default function LogsRegexTab({
                   </td>
                 </tr>
               )}
-              {filtered.map((a) => {
+              {filtered.map((a, i) => {
                 const statusStyle = EVENT_STATUS_STYLES[a.status] ?? EVENT_STATUS_STYLES.OPEN;
                 const playbook = playbookCache[a.type];
                 return (
                   <Fragment key={a.id}>
-                    <tr className="border-b border-slate-200 transition-colors hover:bg-slate-100/30">
+                    <motion.tr
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: Math.min(i * 0.015, 0.3) }}
+                      className="border-b border-slate-200 transition-colors hover:bg-slate-100/30"
+                    >
                       <td className="py-2 pr-4 text-slate-500">{new Date(a.createdAt).toLocaleString('es-ES')}</td>
                       <td className="py-2 pr-4 text-slate-600">{a.serverName ?? '—'}</td>
                       <td className="py-2 pr-4 text-slate-600">{a.type}</td>
@@ -255,23 +288,35 @@ export default function LogsRegexTab({
                           )}
                         </div>
                       </td>
-                    </tr>
-                    {openPlaybookFor === a.id && (
-                      <tr className="border-b border-slate-200 bg-slate-50">
-                        <td colSpan={7} className="px-4 py-3">
-                          {loadingPlaybook === a.type && <p className="text-xs text-slate-400">Cargando playbook...</p>}
-                          {loadingPlaybook !== a.type && playbook === 'NOT_FOUND' && (
-                            <p className="text-xs text-slate-400">No hay un playbook cargado para el tipo &quot;{a.type}&quot;.</p>
-                          )}
-                          {loadingPlaybook !== a.type && playbook && playbook !== 'NOT_FOUND' && (
-                            <div>
-                              <p className="mb-1 text-xs font-semibold text-sky-700">{playbook.title}</p>
-                              <pre className="whitespace-pre-wrap font-sans text-xs text-slate-600">{playbook.content}</pre>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    )}
+                    </motion.tr>
+                    <AnimatePresence initial={false}>
+                      {openPlaybookFor === a.id && (
+                        <tr className="border-b border-slate-200 bg-slate-50">
+                          <td colSpan={7} className="p-0">
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="px-4 py-3">
+                                {loadingPlaybook === a.type && <p className="text-xs text-slate-400">Cargando playbook...</p>}
+                                {loadingPlaybook !== a.type && playbook === 'NOT_FOUND' && (
+                                  <p className="text-xs text-slate-400">No hay un playbook cargado para el tipo &quot;{a.type}&quot;.</p>
+                                )}
+                                {loadingPlaybook !== a.type && playbook && playbook !== 'NOT_FOUND' && (
+                                  <div>
+                                    <p className="mb-1 text-xs font-semibold text-sky-700">{playbook.title}</p>
+                                    <pre className="whitespace-pre-wrap font-sans text-xs text-slate-600">{playbook.content}</pre>
+                                  </div>
+                                )}
+                              </div>
+                            </motion.div>
+                          </td>
+                        </tr>
+                      )}
+                    </AnimatePresence>
                   </Fragment>
                 );
               })}

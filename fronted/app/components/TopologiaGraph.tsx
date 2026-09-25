@@ -14,11 +14,21 @@ const STATUS_COLOR: Record<string, string> = {
 
 const HUB_ID = '__hub__';
 
-export default function TopologiaGraph({ servers }: { servers: ServerSummary[] }) {
+export default function TopologiaGraph({
+  servers,
+  focusServerId,
+  onSelectNode,
+}: {
+  servers: ServerSummary[];
+  focusServerId?: string | null;
+  onSelectNode?: (serverId: string) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<Network | null>(null);
   const nodesRef = useRef<DataSet<Record<string, unknown>> | null>(null);
   const edgesRef = useRef<DataSet<Record<string, unknown>> | null>(null);
+  const onSelectNodeRef = useRef(onSelectNode);
+  onSelectNodeRef.current = onSelectNode;
 
   // Crea la red vis.js una sola vez; las actualizaciones posteriores hacen
   // upsert sobre el DataSet en vez de recrear la red, para no reiniciar la
@@ -59,6 +69,11 @@ export default function TopologiaGraph({ servers }: { servers: ServerSummary[] }
       network.setOptions({ physics: false });
     });
 
+    network.on('click', (params) => {
+      const nodeId = params.nodes?.[0];
+      if (nodeId && nodeId !== HUB_ID) onSelectNodeRef.current?.(String(nodeId));
+    });
+
     networkRef.current = network;
 
     return () => {
@@ -95,5 +110,13 @@ export default function TopologiaGraph({ servers }: { servers: ServerSummary[] }
     if (staleNodeIds.length > 0) nodes.remove(staleNodeIds);
   }, [servers]);
 
-  return <div ref={containerRef} className="h-[500px] w-full rounded-lg bg-slate-50" />;
+  // Buscador de nodos (TopologiaTab): centra y resalta el nodo elegido.
+  useEffect(() => {
+    const network = networkRef.current;
+    if (!network || !focusServerId) return;
+    network.selectNodes([focusServerId]);
+    network.focus(focusServerId, { scale: 1.2, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+  }, [focusServerId]);
+
+  return <div ref={containerRef} className="h-[500px] w-full cursor-grab rounded-lg bg-slate-50 active:cursor-grabbing" />;
 }

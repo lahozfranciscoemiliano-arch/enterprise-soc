@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   ClipboardList,
   KeyRound,
@@ -19,6 +20,7 @@ import FortiDeviceAdmin from '../FortiDeviceAdmin';
 import RemoteAccessModal from '../RemoteAccessModal';
 import PlaybooksAdmin from '../PlaybooksAdmin';
 import ReportsPanel from '../ReportsPanel';
+import { useToast } from '../Toast';
 import type { AdminUser, Role, ServerSummary } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -46,6 +48,7 @@ export default function AdminTab({
   onServersChanged: () => void;
 }) {
   const jsonHeaders = { 'Content-Type': 'application/json' };
+  const toast = useToast();
 
   const [section, setSection] = useState<AdminSection>('usuarios');
 
@@ -128,9 +131,9 @@ export default function AdminTab({
       }
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Error desconocido');
+      toast.error(err instanceof Error ? err.message : 'Error desconocido');
     }
-  }, []);
+  }, [toast]);
 
   const handleRevokeSessions = useCallback(async (user: AdminUser) => {
     if (!window.confirm(`¿Cerrar todas las sesiones activas de ${user.email}?`)) return;
@@ -144,9 +147,9 @@ export default function AdminTab({
         throw new Error((await res.json()).error || 'No se pudieron revocar las sesiones');
       }
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Error desconocido');
+      toast.error(err instanceof Error ? err.message : 'Error desconocido');
     }
-  }, []);
+  }, [toast]);
 
   const handleReset2fa = useCallback(
     async (user: AdminUser) => {
@@ -167,10 +170,10 @@ export default function AdminTab({
         }
         setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, twoFactorEnabled: false } : u)));
       } catch (err) {
-        alert(err instanceof Error ? err.message : 'Error desconocido');
+        toast.error(err instanceof Error ? err.message : 'Error desconocido');
       }
     },
-    []
+    [toast]
   );
 
   const handleCreateServer = useCallback(
@@ -214,9 +217,9 @@ export default function AdminTab({
       if (!res.ok) throw new Error(body.error || 'No se pudo rotar la API key');
       setRevealed({ label: body.name, serverId: body.id, apiKey: body.apiKey });
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Error desconocido');
+      toast.error(err instanceof Error ? err.message : 'Error desconocido');
     }
-  }, []);
+  }, [toast]);
 
   const handleDeleteServer = useCallback(
     async (server: ServerSummary) => {
@@ -238,10 +241,10 @@ export default function AdminTab({
         }
         onServersChanged();
       } catch (err) {
-        alert(err instanceof Error ? err.message : 'Error desconocido');
+        toast.error(err instanceof Error ? err.message : 'Error desconocido');
       }
     },
-    [onServersChanged]
+    [onServersChanged, toast]
   );
 
   return (
@@ -251,12 +254,19 @@ export default function AdminTab({
           <button
             key={s.id}
             onClick={() => setSection(s.id)}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-              section === s.id ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+            className={`relative flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+              section === s.id ? 'text-white' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
             }`}
           >
-            <s.icon className="h-3.5 w-3.5" />
-            {s.label}
+            {section === s.id && (
+              <motion.span
+                layoutId="admin-section-active"
+                className="absolute inset-0 rounded-lg bg-brand-600"
+                transition={{ type: 'spring', bounce: 0.2, duration: 0.5 }}
+              />
+            )}
+            <s.icon className="relative z-10 h-3.5 w-3.5" />
+            <span className="relative z-10">{s.label}</span>
           </button>
         ))}
       </div>
@@ -280,6 +290,8 @@ export default function AdminTab({
         </div>
       )}
 
+      <AnimatePresence mode="wait">
+      <motion.div key={section} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
       {section === 'usuarios' && (
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <h2 className="mb-4 flex items-center gap-1.5 text-sm font-semibold text-slate-800">
@@ -494,6 +506,8 @@ export default function AdminTab({
       {section === 'reportes' && <ReportsPanel />}
 
       {section === 'auditoria' && <AuditLogPanel />}
+      </motion.div>
+      </AnimatePresence>
 
       {remoteAccessServer && (
         <RemoteAccessModal server={remoteAccessServer} onClose={() => setRemoteAccessServer(null)} />
