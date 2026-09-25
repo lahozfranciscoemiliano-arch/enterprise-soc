@@ -181,15 +181,18 @@ Nueva pestaña **Fortinet** en el dashboard, con dos formas de alimentarla (eleg
 dos, se configuran en Admin → Configuración → Fortinet y Admin → Fortinet):
 
 - **Ingesta por API (recomendado):** Admin → Fortinet → "+ Nuevo dispositivo" genera una API
-  key propia del dispositivo. Un script propio (corriendo en la misma red que el FortiGate,
-  ya que su interfaz de management normalmente no es accesible desde internet) hace polling
-  contra la API del FortiGate y reenvía los eventos relevantes con:
+  key propia del dispositivo. `fortinet-poller/` (en la raíz del repo) es el script listo
+  para usar: corre en la misma red que el FortiGate (su interfaz de management normalmente
+  no es accesible desde internet), hace polling contra la API REST del FortiGate, clasifica
+  cada log con la misma lógica que usa el backend para syslog (ver más abajo), y lo manda a:
   ```bash
   curl -X POST https://noc.tudominio.com/api/forti/events \
     -H "X-Device-Id: <id del dispositivo>" -H "X-Api-Key: <api key>" \
     -H "Content-Type: application/json" \
     -d '{"type":"IPS_ATTACK","severity":"HIGH","description":"...","sourceIp":"1.2.3.4"}'
   ```
+  Instrucciones completas (configuración del token en el FortiGate, Linux/systemd y
+  Windows) en `fortinet-poller/README.md`.
 - **Syslog UDP:** si el FortiGate puede mandar syslog pero no se puede escribir un script,
   activá el receptor en Admin → Configuración → Fortinet (requiere reiniciar el backend) y
   configurá el FortiGate para mandar sus logs a la IP del VPS. El backend matchea el evento

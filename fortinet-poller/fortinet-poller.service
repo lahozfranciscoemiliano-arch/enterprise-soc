@@ -1,0 +1,16 @@
+[Unit]
+Description=Enterprise SOC - Poller de eventos FortiGate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Ajusta esta ruta a donde hayas clonado/copiado esta carpeta.
+WorkingDirectory=/opt/fortinet-poller
+ExecStart=/usr/bin/python3 /opt/fortinet-poller/fortinet_poller.py
+Restart=always
+RestartSec=10
+User=nobody
+
+[Install]
+WantedBy=multi-user.target
