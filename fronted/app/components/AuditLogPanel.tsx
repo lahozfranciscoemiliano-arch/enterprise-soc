@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { ClipboardList } from 'lucide-react';
 import type { AuditLogEntry } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -48,25 +49,25 @@ export default function AuditLogPanel() {
   }, [fetchLog]);
 
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-200">📋 Auditoría</h2>
+        <h2 className="text-sm font-semibold text-slate-800"><ClipboardList className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Auditoría</h2>
         <button
           onClick={fetchLog}
-          className="rounded-lg border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+          className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
         >
           Actualizar
         </button>
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
-      {loading && !error && <p className="text-sm text-gray-500">Cargando...</p>}
+      {error && <p className="text-sm text-red-700">{error}</p>}
+      {loading && !error && <p className="text-sm text-slate-400">Cargando...</p>}
 
       {!loading && !error && (
         <div className="max-h-96 overflow-y-auto">
           <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-gray-900">
-              <tr className="border-b border-gray-800 text-gray-500">
+            <thead className="sticky top-0 bg-white">
+              <tr className="border-b border-slate-200 text-slate-400">
                 <th className="py-2 pr-4 font-medium">Fecha</th>
                 <th className="py-2 pr-4 font-medium">Usuario</th>
                 <th className="py-2 pr-4 font-medium">Acción</th>
@@ -76,17 +77,17 @@ export default function AuditLogPanel() {
             <tbody>
               {entries.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="py-6 text-center text-gray-500">
+                  <td colSpan={4} className="py-6 text-center text-slate-400">
                     Sin actividad registrada
                   </td>
                 </tr>
               )}
               {entries.map((e) => (
-                <tr key={e.id} className="border-b border-gray-800/60">
-                  <td className="py-2 pr-4 text-gray-400">{new Date(e.createdAt).toLocaleString('es-ES')}</td>
-                  <td className="py-2 pr-4 text-gray-300">{e.userName}</td>
-                  <td className="py-2 pr-4 text-gray-200">{ACTION_LABELS[e.action] ?? e.action}</td>
-                  <td className="py-2 pr-4 text-gray-500">{e.targetType}</td>
+                <tr key={e.id} className="border-b border-slate-200">
+                  <td className="py-2 pr-4 text-slate-500">{new Date(e.createdAt).toLocaleString('es-ES')}</td>
+                  <td className="py-2 pr-4 text-slate-600">{e.userName}</td>
+                  <td className="py-2 pr-4 text-slate-800">{ACTION_LABELS[e.action] ?? e.action}</td>
+                  <td className="py-2 pr-4 text-slate-400">{e.targetType}</td>
                 </tr>
               ))}
             </tbody>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { FileText, HeartPulse, Radio, Trash2, TrendingUp } from 'lucide-react';
 import type { AnomalyBaselineStatus, HeartbeatRun, HousekeepingRun, ReportMeta, SyntheticMonitorRun } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -113,34 +114,34 @@ export default function ReportsPanel() {
 
   const totalDeleted = housekeeping ? Object.values(housekeeping.deleted).reduce((a, b) => a + b, 0) : null;
 
-  if (loading) return <p className="text-sm text-gray-500">Cargando...</p>;
+  if (loading) return <p className="text-sm text-slate-400">Cargando...</p>;
 
   return (
     <div className="space-y-4">
-      {error && <p className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-xs text-red-400">{error}</p>}
+      {error && <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{error}</p>}
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h2 className="mb-1 text-sm font-semibold text-gray-200">📄 Reportes ejecutivos</h2>
-        <p className="mb-4 text-[11px] text-gray-500">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h2 className="mb-1 text-sm font-semibold text-slate-800"><FileText className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Reportes ejecutivos</h2>
+        <p className="mb-4 text-[11px] text-slate-400">
           PDF con SLA, incidentes y estado de backups del período (incluye un resumen redactado por IA si el
           asistente está configurado). Se pueden generar a demanda acá, o programar el envío automático por email en
           Admin → Configuración → Reportes ejecutivos.
         </p>
 
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <label className="text-xs text-gray-400">Período (días)</label>
+          <label className="text-xs text-slate-500">Período (días)</label>
           <input
             type="number"
             min={1}
             max={90}
             value={periodDays}
             onChange={(e) => setPeriodDays(e.target.value)}
-            className="w-20 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="w-20 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <button
             onClick={handleGenerate}
             disabled={generating}
-            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
           >
             {generating ? 'Generando...' : '+ Generar PDF'}
           </button>
@@ -148,27 +149,27 @@ export default function ReportsPanel() {
             href={`${API_URL}/api/admin/reports/export.csv?periodDays=${Number(periodDays) || 7}`}
             target="_blank"
             rel="noreferrer"
-            className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-800"
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-100"
           >
             ⬇ Exportar CSV
           </a>
         </div>
 
         <div className="space-y-1">
-          {reports.length === 0 && <p className="text-xs text-gray-500">Todavía no se generó ningún reporte</p>}
+          {reports.length === 0 && <p className="text-xs text-slate-400">Todavía no se generó ningún reporte</p>}
           {reports.map((r) => (
             <div
               key={r.filename}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-2 text-xs"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs"
             >
-              <span className="font-mono text-gray-300">{r.filename}</span>
-              <span className="text-gray-500">{new Date(r.createdAt).toLocaleString('es-ES')}</span>
-              <span className="text-gray-600">{r.sizeLabel}</span>
+              <span className="font-mono text-slate-600">{r.filename}</span>
+              <span className="text-slate-400">{new Date(r.createdAt).toLocaleString('es-ES')}</span>
+              <span className="text-slate-500">{r.sizeLabel}</span>
               <a
                 href={`${API_URL}/api/admin/reports/${encodeURIComponent(r.filename)}`}
                 target="_blank"
                 rel="noreferrer"
-                className="rounded-lg border border-gray-700 px-2 py-1 text-gray-300 transition-colors hover:bg-gray-800"
+                className="rounded-lg border border-slate-300 px-2 py-1 text-slate-600 transition-colors hover:bg-slate-100"
               >
                 Descargar
               </a>
@@ -178,88 +179,88 @@ export default function ReportsPanel() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-          <h2 className="mb-1 text-sm font-semibold text-gray-200">💓 Heartbeat (agentes caídos)</h2>
-          <p className="mb-3 text-[11px] text-gray-500">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800"><HeartPulse className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Heartbeat (agentes caídos)</h2>
+          <p className="mb-3 text-[11px] text-slate-400">
             Corre cada minuto. Marca OFFLINE y alerta CRITICAL a cualquier servidor sin telemetría por más del umbral
             configurado (Admin → Configuración → Sesión y agentes).
           </p>
           <button
             onClick={handleRunHeartbeat}
             disabled={runningHeartbeat}
-            className="mb-3 rounded-lg border border-amber-500/30 px-3 py-1.5 text-xs text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
+            className="mb-3 rounded-lg border border-amber-200 px-3 py-1.5 text-xs text-amber-700 transition-colors hover:bg-amber-50 disabled:opacity-50"
           >
             {runningHeartbeat ? 'Corriendo...' : '▶ Correr ahora'}
           </button>
           {heartbeat ? (
-            <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3 text-xs text-gray-300">
-              <p className="mb-1 text-gray-500">Última corrida: {new Date(heartbeat.checkedAt).toLocaleString('es-ES')}</p>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+              <p className="mb-1 text-slate-400">Última corrida: {new Date(heartbeat.checkedAt).toLocaleString('es-ES')}</p>
               {heartbeat.markedOffline.length === 0 ? (
-                <p className="text-emerald-400">Todos los servidores reportando con normalidad</p>
+                <p className="text-emerald-700">Todos los servidores reportando con normalidad</p>
               ) : (
-                <p className="text-red-400">
+                <p className="text-red-700">
                   Marcados OFFLINE: {heartbeat.markedOffline.map((s) => s.name).join(', ')}
                 </p>
               )}
             </div>
           ) : (
-            <p className="text-xs text-gray-500">Todavía no corrió (corre solo a los 30s de arrancar el backend)</p>
+            <p className="text-xs text-slate-400">Todavía no corrió (corre solo a los 30s de arrancar el backend)</p>
           )}
         </div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-          <h2 className="mb-1 text-sm font-semibold text-gray-200">📡 Synthetic monitoring (red)</h2>
-          <p className="mb-3 text-[11px] text-gray-500">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+          <h2 className="mb-1 text-sm font-semibold text-slate-800"><Radio className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Synthetic monitoring (red)</h2>
+          <p className="mb-3 text-[11px] text-slate-400">
             Chequeo TCP activo cada 2 minutos a los servidores con puerto configurado (Admin → Servidores →
             Configurar). Distingue un sitio caído de red de un agente que dejó de responder.
           </p>
           <button
             onClick={handleRunSynthetic}
             disabled={runningSynthetic}
-            className="mb-3 rounded-lg border border-amber-500/30 px-3 py-1.5 text-xs text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
+            className="mb-3 rounded-lg border border-amber-200 px-3 py-1.5 text-xs text-amber-700 transition-colors hover:bg-amber-50 disabled:opacity-50"
           >
             {runningSynthetic ? 'Corriendo...' : '▶ Correr ahora'}
           </button>
           {synthetic ? (
-            <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3 text-xs text-gray-300">
-              <p className="mb-1 text-gray-500">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+              <p className="mb-1 text-slate-400">
                 Última corrida: {new Date(synthetic.checkedAt).toLocaleString('es-ES')} ({synthetic.checked} servidor(es) con chequeo activo)
               </p>
               {synthetic.unreachable.length === 0 ? (
-                <p className="text-emerald-400">Todos los puertos chequeados responden</p>
+                <p className="text-emerald-700">Todos los puertos chequeados responden</p>
               ) : (
-                <p className="text-red-400">Inalcanzables: {synthetic.unreachable.map((s) => s.name).join(', ')}</p>
+                <p className="text-red-700">Inalcanzables: {synthetic.unreachable.map((s) => s.name).join(', ')}</p>
               )}
             </div>
           ) : (
-            <p className="text-xs text-gray-500">Todavía no corrió, o ningún servidor tiene puerto configurado</p>
+            <p className="text-xs text-slate-400">Todavía no corrió, o ningún servidor tiene puerto configurado</p>
           )}
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h2 className="mb-1 text-sm font-semibold text-gray-200">📈 Detección de anomalías</h2>
-        <p className="mb-3 text-[11px] text-gray-500">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h2 className="mb-1 text-sm font-semibold text-slate-800"><TrendingUp className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Detección de anomalías</h2>
+        <p className="mb-3 text-[11px] text-slate-400">
           Baseline estadístico (media + desvío por servidor, métrica y hora del día) recalculado cada hora sobre los
           últimos 14 días. Detecta picos raros para ESE servidor aunque no crucen ningún umbral fijo.
         </p>
         {anomaly ? (
-          <p className="text-xs text-gray-300">
+          <p className="text-xs text-slate-600">
             {anomaly.serversWithBaseline > 0
               ? `${anomaly.serversWithBaseline} servidor(es) con historial suficiente para tener baseline propio.`
               : 'Todavía no hay suficiente historial (se necesitan al menos ~20 muestras por hora en los últimos 14 días).'}
             {anomaly.lastRefreshAt && (
-              <span className="text-gray-500"> Última actualización: {new Date(anomaly.lastRefreshAt).toLocaleString('es-ES')}</span>
+              <span className="text-slate-400"> Última actualización: {new Date(anomaly.lastRefreshAt).toLocaleString('es-ES')}</span>
             )}
           </p>
         ) : (
-          <p className="text-xs text-gray-500">Sin datos todavía.</p>
+          <p className="text-xs text-slate-400">Sin datos todavía.</p>
         )}
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h2 className="mb-1 text-sm font-semibold text-gray-200">🧹 Housekeeping (retención de datos)</h2>
-        <p className="mb-4 text-[11px] text-gray-500">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h2 className="mb-1 text-sm font-semibold text-slate-800"><Trash2 className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Housekeeping (retención de datos)</h2>
+        <p className="mb-4 text-[11px] text-slate-400">
           Corre solo una vez por día y purga telemetría/alertas resueltas/backups/auditoría viejos según los días
           configurados en Admin → Configuración → Retención de datos.
         </p>
@@ -267,24 +268,24 @@ export default function ReportsPanel() {
         <button
           onClick={handleRunHousekeeping}
           disabled={runningHousekeeping}
-          className="mb-3 rounded-lg border border-amber-500/30 px-3 py-1.5 text-xs text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
+          className="mb-3 rounded-lg border border-amber-200 px-3 py-1.5 text-xs text-amber-700 transition-colors hover:bg-amber-50 disabled:opacity-50"
         >
           {runningHousekeeping ? 'Corriendo...' : '▶ Correr ahora'}
         </button>
 
         {housekeeping ? (
-          <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-3 text-xs text-gray-300">
-            <p className="mb-1 text-gray-500">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+            <p className="mb-1 text-slate-400">
               Última corrida: {new Date(housekeeping.finishedAt).toLocaleString('es-ES')}
-              {housekeeping.error && <span className="text-red-400"> — Error: {housekeeping.error}</span>}
+              {housekeeping.error && <span className="text-red-700"> — Error: {housekeeping.error}</span>}
             </p>
             {!housekeeping.error && (
               <>
-                <p className="mb-2 font-medium text-gray-200">{totalDeleted} fila(s) borrada(s) en total</p>
+                <p className="mb-2 font-medium text-slate-800">{totalDeleted} fila(s) borrada(s) en total</p>
                 <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
                   {Object.entries(housekeeping.deleted).map(([key, count]) => (
-                    <span key={key} className="text-[11px] text-gray-500">
-                      {key}: <span className="text-gray-300">{count}</span>
+                    <span key={key} className="text-[11px] text-slate-400">
+                      {key}: <span className="text-slate-600">{count}</span>
                     </span>
                   ))}
                 </div>
@@ -292,7 +293,7 @@ export default function ReportsPanel() {
             )}
           </div>
         ) : (
-          <p className="text-xs text-gray-500">Todavía no corrió (corre automáticamente a los 2 minutos de arrancar el backend)</p>
+          <p className="text-xs text-slate-400">Todavía no corrió (corre automáticamente a los 2 minutos de arrancar el backend)</p>
         )}
       </div>
     </div>

@@ -1,15 +1,19 @@
-const BORDER_COLORS: Record<string, string> = {
-  emerald: 'border-emerald-500/60',
-  blue: 'border-blue-500/60',
-  red: 'border-red-500/60',
-  amber: 'border-amber-500/60',
-};
+'use client';
+
+import { motion } from 'framer-motion';
 
 const ICON_BG: Record<string, string> = {
-  emerald: 'bg-emerald-500/10 text-emerald-400',
-  blue: 'bg-blue-500/10 text-blue-400',
-  red: 'bg-red-500/10 text-red-400',
-  amber: 'bg-amber-500/10 text-amber-400',
+  emerald: 'bg-emerald-50 text-emerald-600',
+  blue: 'bg-blue-50 text-blue-600',
+  red: 'bg-red-50 text-red-600',
+  amber: 'bg-amber-50 text-amber-600',
+};
+
+const VALUE_COLOR: Record<string, string> = {
+  emerald: 'text-emerald-700',
+  blue: 'text-slate-900',
+  red: 'text-red-700',
+  amber: 'text-amber-700',
 };
 
 export default function StatCard({
@@ -24,16 +28,18 @@ export default function StatCard({
   icon: React.ReactNode;
 }) {
   return (
-    <div
-      className={`flex items-center gap-4 rounded-xl border-l-4 bg-gray-900/50 p-4 transition-transform hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30 ${BORDER_COLORS[color]}`}
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -2 }}
+      transition={{ duration: 0.25 }}
+      className="flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-card transition-shadow hover:shadow-card-hover"
     >
-      <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-xl ${ICON_BG[color]}`}>
-        {icon}
-      </div>
+      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${ICON_BG[color]}`}>{icon}</div>
       <div>
-        <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>
-        <p className="mt-1 text-2xl font-semibold text-gray-100">{value}</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
+        <p className={`mt-0.5 text-2xl font-semibold ${VALUE_COLOR[color]}`}>{value}</p>
       </div>
-    </div>
+    </motion.div>
   );
 }

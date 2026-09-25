@@ -1,4 +1,6 @@
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { motion } from 'framer-motion';
+import { AlertTriangle, CheckCircle2, DatabaseBackup, Gauge, Server } from 'lucide-react';
 import StatCard from '../StatCard';
 import type { DashboardSummary, ServerSummary } from '../../types';
 
@@ -7,9 +9,12 @@ const BACKUP_COLORS = {
   SUCCESS: '#10b981',
   WARNING: '#f59e0b',
   FAILED: '#ef4444',
-  NOT_CONFIGURED: '#475569',
+  NOT_CONFIGURED: '#cbd5e1',
   UNKNOWN: '#94a3b8',
 };
+const TOOLTIP_STYLE = { background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 12, boxShadow: '0 4px 12px -2px rgb(15 23 42 / 0.08)' };
+
+const panel = 'rounded-xl border border-slate-200 bg-white p-4 shadow-card';
 
 export default function GeneralTab({
   summary,
@@ -44,28 +49,43 @@ export default function GeneralTab({
   const hasBackupData = backupDonutData.some((d) => d.value > 0);
 
   return (
-    <div className="animate-fade-in space-y-4 px-6 py-6">
+    <div className="space-y-4 px-6 py-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <StatCard label="SLA Confiabilidad" value={summary ? `${summary.slaPercentage.toFixed(2)}%` : '—'} color="emerald" icon="📊" />
-        <StatCard label="Total Nodos" value={summary ? summary.totalServers.toString() : '—'} color="blue" icon="🖧" />
-        <StatCard label="Servidores Saludables" value={summary ? summary.healthyServers.toString() : '—'} color="emerald" icon="✅" />
+        <StatCard
+          label="SLA Confiabilidad"
+          value={summary ? `${summary.slaPercentage.toFixed(2)}%` : '—'}
+          color="emerald"
+          icon={<Gauge className="h-5 w-5" />}
+        />
+        <StatCard
+          label="Total Nodos"
+          value={summary ? summary.totalServers.toString() : '—'}
+          color="blue"
+          icon={<Server className="h-5 w-5" />}
+        />
+        <StatCard
+          label="Servidores Saludables"
+          value={summary ? summary.healthyServers.toString() : '—'}
+          color="emerald"
+          icon={<CheckCircle2 className="h-5 w-5" />}
+        />
         <StatCard
           label="Backups Exitosos"
           value={summary ? `${summary.backupBreakdown.SUCCESS}/${summary.totalServers}` : '—'}
           color={summary && summary.backupBreakdown.FAILED > 0 ? 'red' : 'emerald'}
-          icon="🗄️"
+          icon={<DatabaseBackup className="h-5 w-5" />}
         />
         <StatCard
           label="Alertas / Críticos"
           value={summary ? `${summary.openAlerts} / ${summary.criticalAlerts}` : '—'}
           color={summary && summary.criticalAlerts > 0 ? 'red' : 'blue'}
-          icon="⚠️"
+          icon={<AlertTriangle className="h-5 w-5" />}
         />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-          <h2 className="mb-2 text-sm font-semibold text-gray-200">Health Status</h2>
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className={panel}>
+          <h2 className="mb-2 text-sm font-semibold text-slate-700">Health Status</h2>
           <div className="h-64">
             {hasHealthData ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -76,17 +96,17 @@ export default function GeneralTab({
                     ))}
                   </Pie>
                   <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                  <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 12 }} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">Sin datos aún</div>
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">Sin datos aún</div>
             )}
           </div>
-        </div>
+        </motion.div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-          <h2 className="mb-2 text-sm font-semibold text-gray-200">Estado de Backups</h2>
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className={panel}>
+          <h2 className="mb-2 text-sm font-semibold text-slate-700">Estado de Backups</h2>
           <div className="h-64">
             {hasBackupData ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -97,35 +117,35 @@ export default function GeneralTab({
                     ))}
                   </Pie>
                   <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 12 }} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">Sin datos aún</div>
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">Sin datos aún</div>
             )}
           </div>
-        </div>
+        </motion.div>
 
-        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-          <h2 className="mb-2 text-sm font-semibold text-gray-200">Uso de Recursos por Nodo</h2>
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className={panel}>
+          <h2 className="mb-2 text-sm font-semibold text-slate-700">Uso de Recursos por Nodo</h2>
           <div className="h-64">
             {barData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={barData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                  <XAxis dataKey="name" stroke="#6b7280" fontSize={11} />
-                  <YAxis stroke="#6b7280" fontSize={11} unit="%" domain={[0, 100]} />
-                  <Tooltip contentStyle={{ background: '#111827', border: '1px solid #1f2937', fontSize: 12 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} />
+                  <YAxis stroke="#94a3b8" fontSize={11} unit="%" domain={[0, 100]} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="CPU" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="RAM" fill="#a855f7" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="CPU" fill="#c2632d" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="RAM" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">Sin datos aún</div>
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">Sin datos aún</div>
             )}
           </div>
-        </div>
+        </motion.div>
       </div>
     </div>
   );

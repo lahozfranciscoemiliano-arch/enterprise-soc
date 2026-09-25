@@ -102,5 +102,5 @@ export default function MapaTabInner({ servers }: { servers: ServerSummary[] }) 
     }
   }, [servers]);
 
-  return <div ref={containerRef} className="h-[600px] w-full overflow-hidden rounded-xl border border-gray-800" />;
+  return <div ref={containerRef} className="h-[600px] w-full overflow-hidden rounded-xl border border-slate-200" />;
 }

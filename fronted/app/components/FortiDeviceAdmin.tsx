@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Bot, Check, ShieldHalf } from 'lucide-react';
 import type { FortiDevice, FortiScreenshotEvent } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -150,25 +151,25 @@ export default function FortiDeviceAdmin() {
 
   return (
     <div className="space-y-4">
-    <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-      <h2 className="mb-4 text-sm font-semibold text-gray-200">🧱 Dispositivos Fortinet</h2>
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+      <h2 className="mb-4 text-sm font-semibold text-slate-800"><ShieldHalf className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Dispositivos Fortinet</h2>
 
-      {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
+      {error && <p className="mb-3 text-xs text-red-700">{error}</p>}
 
       {revealed && (
-        <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-          <p className="mb-1 text-xs font-semibold text-amber-400">
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <p className="mb-1 text-xs font-semibold text-amber-700">
             API key de &quot;{revealed.name}&quot; — copiála ahora, no se vuelve a mostrar
           </p>
-          <p className="break-all font-mono text-[11px] text-gray-200">{revealed.apiKey}</p>
-          <p className="mt-1 text-[10px] text-gray-500">
+          <p className="break-all font-mono text-[11px] text-slate-800">{revealed.apiKey}</p>
+          <p className="mt-1 text-[10px] text-slate-400">
             Usala como header X-Api-Key (junto con X-Device-Id: {'<id del dispositivo>'}) desde el script que haga
             POST a {API_URL}/api/forti/events, o configurá el FortiGate para mandar syslog a este servidor si
             elegiste el método SYSLOG (ver Admin → Configuración → Fortinet).
           </p>
           <button
             onClick={() => setRevealed(null)}
-            className="mt-2 rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-300 hover:bg-amber-500/10"
+            className="mt-2 rounded-lg border border-amber-200 px-2 py-1 text-[11px] text-amber-700 hover:bg-amber-50"
           >
             Cerrar
           </button>
@@ -176,30 +177,30 @@ export default function FortiDeviceAdmin() {
       )}
 
       <div className="mb-4 space-y-2">
-        {devices.length === 0 && <p className="text-sm text-gray-500">Sin dispositivos registrados aún</p>}
+        {devices.length === 0 && <p className="text-sm text-slate-400">Sin dispositivos registrados aún</p>}
         {devices.map((d) => (
           <div
             key={d.id}
-            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-2 text-xs"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs"
           >
-            <span className="font-medium text-gray-200">{d.name}</span>
-            <span className="text-gray-500">{d.host}</span>
-            <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-blue-400">
+            <span className="font-medium text-slate-800">{d.name}</span>
+            <span className="text-slate-400">{d.host}</span>
+            <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-blue-700">
               {d.method}
             </span>
-            <span className="text-gray-600">
+            <span className="text-slate-500">
               {d.lastSeenAt ? `Último evento: ${new Date(d.lastSeenAt).toLocaleString('es-ES')}` : 'Sin eventos aún'}
             </span>
             <div className="flex gap-2">
               <button
                 onClick={() => handleRotate(d)}
-                className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                className="rounded-lg border border-amber-200 px-2 py-1 text-amber-700 transition-colors hover:bg-amber-50"
               >
                 Rotar API key
               </button>
               <button
                 onClick={() => handleDelete(d)}
-                className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10"
+                className="rounded-lg border border-red-200 px-2 py-1 text-red-700 transition-colors hover:bg-red-50"
               >
                 Eliminar
               </button>
@@ -215,7 +216,7 @@ export default function FortiDeviceAdmin() {
           placeholder="Nombre (único, ej: FGT-Sucursal-Centro)"
           value={newDevice.name}
           onChange={(e) => setNewDevice((p) => ({ ...p, name: e.target.value }))}
-          className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+          className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
         />
         <input
           type="text"
@@ -223,12 +224,12 @@ export default function FortiDeviceAdmin() {
           placeholder="IP de management"
           value={newDevice.host}
           onChange={(e) => setNewDevice((p) => ({ ...p, host: e.target.value }))}
-          className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+          className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
         />
         <select
           value={newDevice.method}
           onChange={(e) => setNewDevice((p) => ({ ...p, method: e.target.value as 'API' | 'SYSLOG' }))}
-          className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+          className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
         >
           <option value="API">Ingesta por API</option>
           <option value="SYSLOG">Syslog UDP</option>
@@ -236,20 +237,20 @@ export default function FortiDeviceAdmin() {
         <button
           type="submit"
           disabled={creating}
-          className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+          className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
         >
           {creating ? 'Creando...' : '+ Nuevo dispositivo'}
         </button>
       </form>
-      <p className="mt-3 text-xs text-gray-600">
+      <p className="mt-3 text-xs text-slate-500">
         Si elegís SYSLOG, el campo IP se usa para matchear el origen de los paquetes UDP entrantes — necesitás activar
         el receptor en Admin → Configuración → Fortinet.
       </p>
     </div>
 
-    <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-      <h2 className="mb-1 text-sm font-semibold text-gray-200">🤖 Analizar captura de pantalla (vision)</h2>
-      <p className="mb-4 text-[11px] text-gray-500">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+      <h2 className="mb-1 text-sm font-semibold text-slate-800"><Bot className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Analizar captura de pantalla (vision)</h2>
+      <p className="mb-4 text-[11px] text-slate-400">
         Para los sitios sin API key ni syslog configurado todavía: subí una captura del panel del FortiGate y Claude
         extrae los eventos visibles. Nunca se ingesta nada automático — revisás y confirmás cuáles cargar.
       </p>
@@ -258,7 +259,7 @@ export default function FortiDeviceAdmin() {
         <select
           value={screenshotDeviceId}
           onChange={(e) => setScreenshotDeviceId(e.target.value)}
-          className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+          className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
         >
           <option value="">Elegí el dispositivo destino...</option>
           {devices.map((d) => (
@@ -273,24 +274,24 @@ export default function FortiDeviceAdmin() {
           accept="image/png,image/jpeg,image/webp"
           disabled={!screenshotDeviceId || analyzing}
           onChange={(e) => e.target.files?.[0] && handleFileSelected(e.target.files[0])}
-          className="text-xs text-gray-300 file:mr-2 file:rounded-lg file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:text-white hover:file:bg-blue-500"
+          className="text-xs text-slate-600 file:mr-2 file:rounded-lg file:border-0 file:bg-brand-600 file:px-3 file:py-1.5 file:text-xs file:text-white hover:file:bg-blue-500"
         />
       </div>
 
-      {!screenshotDeviceId && <p className="text-xs text-gray-600">Elegí primero a qué dispositivo pertenece la captura.</p>}
-      {analyzing && <p className="text-xs text-gray-500">Analizando imagen...</p>}
-      {analyzeError && <p className="text-xs text-red-400">{analyzeError}</p>}
-      {ingestOk !== null && <p className="text-xs text-emerald-400">✓ {ingestOk} evento(s) ingresado(s) correctamente</p>}
+      {!screenshotDeviceId && <p className="text-xs text-slate-500">Elegí primero a qué dispositivo pertenece la captura.</p>}
+      {analyzing && <p className="text-xs text-slate-400">Analizando imagen...</p>}
+      {analyzeError && <p className="text-xs text-red-700">{analyzeError}</p>}
+      {ingestOk !== null && <p className="flex items-center gap-1.5 text-xs text-emerald-700"><Check className="h-3.5 w-3.5" />{ingestOk} evento(s) ingresado(s) correctamente</p>}
 
       {proposedEvents.length > 0 && (
         <div className="mt-3 space-y-2">
-          <p className="text-[11px] text-gray-500">
+          <p className="text-[11px] text-slate-400">
             {proposedEvents.length} evento(s) detectado(s) — desmarcá los que no quieras cargar:
           </p>
           {proposedEvents.map((ev, i) => (
             <label
               key={i}
-              className="flex items-start gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2 text-xs"
+              className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
             >
               <input
                 type="checkbox"
@@ -299,17 +300,17 @@ export default function FortiDeviceAdmin() {
                 className="mt-0.5 h-3.5 w-3.5"
               />
               <span>
-                <span className="rounded-full border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">{ev.type}</span>{' '}
-                <span className="rounded-full border border-gray-700 px-1.5 py-0.5 text-[10px] text-gray-400">{ev.severity}</span>{' '}
+                <span className="rounded-full border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500">{ev.type}</span>{' '}
+                <span className="rounded-full border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500">{ev.severity}</span>{' '}
                 {ev.description}
-                {ev.sourceIp && <span className="text-gray-500"> · origen: {ev.sourceIp}</span>}
+                {ev.sourceIp && <span className="text-slate-400"> · origen: {ev.sourceIp}</span>}
               </span>
             </label>
           ))}
           <button
             onClick={handleIngestSelected}
             disabled={ingesting || selectedEvents.size === 0}
-            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
           >
             {ingesting ? 'Cargando...' : `Cargar ${selectedEvents.size} evento(s) seleccionado(s)`}
           </button>

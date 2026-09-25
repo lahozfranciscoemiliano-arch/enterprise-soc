@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { BarChart3, Bot, Check, FileText, Lock, Mail, Monitor, ShieldHalf, Trash2 } from 'lucide-react';
 import type { SystemSettings } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -142,17 +143,17 @@ export default function SettingsPanel() {
       value={form[key] as string}
       onChange={(e) => set(key, e.target.value)}
       placeholder={placeholder}
-      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+      className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
     />
   );
 
   const checkbox = (key: string, label: string) => (
-    <label className="flex items-center gap-2 text-xs text-gray-300">
+    <label className="flex items-center gap-2 text-xs text-slate-600">
       <input
         type="checkbox"
         checked={form[key] as boolean}
         onChange={(e) => set(key, e.target.checked)}
-        className="h-4 w-4 rounded border-gray-700 bg-gray-800"
+        className="h-4 w-4 rounded border-slate-300 bg-slate-50"
       />
       {label}
     </label>
@@ -167,25 +168,26 @@ export default function SettingsPanel() {
     <button
       onClick={() => save(section, keys)}
       disabled={saving === section}
-      className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+      className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
     >
       {saving === section ? 'Guardando...' : 'Guardar'}
     </button>
   );
 
-  if (loading) return <p className="text-sm text-gray-500">Cargando configuración...</p>;
+  if (loading) return <p className="text-sm text-slate-400">Cargando configuración...</p>;
 
   return (
     <div className="space-y-4">
-      {error && <p className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-xs text-red-400">{error}</p>}
+      {error && <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{error}</p>}
       {savedMessage && (
-        <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-400">
-          ✓ {savedMessage}
+        <p className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
+          <Check className="h-3.5 w-3.5" />
+          {savedMessage}
         </p>
       )}
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">📧 Notificaciones externas</h3>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Mail className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Notificaciones externas</h3>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {input('SMTP_HOST', 'SMTP_HOST (ej: smtp.gmail.com)')}
           {input('SMTP_PORT', 'Puerto (587)')}
@@ -200,7 +202,7 @@ export default function SettingsPanel() {
           <select
             value={form.NOTIFY_MIN_SEVERITY as string}
             onChange={(e) => set('NOTIFY_MIN_SEVERITY', e.target.value)}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
           >
             <option value="LOW">Notificar desde: LOW</option>
             <option value="MEDIUM">Notificar desde: MEDIUM</option>
@@ -225,16 +227,16 @@ export default function SettingsPanel() {
             'NOTIFY_MIN_SEVERITY',
           ])}
         </div>
-        <p className="mt-2 text-[11px] text-gray-500">
+        <p className="mt-2 text-[11px] text-slate-400">
           Telegram: creá un bot con @BotFather (gratis, sin aprobación) y agregalo al grupo/chat a notificar para
           obtener el chat ID. Alternativa a WhatsApp Business (requiere cuenta Meta verificada) para equipos que
           prefieren notificarse ahí.
         </p>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">📊 Umbrales globales por defecto</h3>
-        <p className="mb-2 text-[11px] text-gray-500">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><BarChart3 className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Umbrales globales por defecto</h3>
+        <p className="mb-2 text-[11px] text-slate-400">
           Se usan cuando un servidor no tiene sus propios umbrales configurados (Admin → Servidores → Configurar).
         </p>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
@@ -257,15 +259,15 @@ export default function SettingsPanel() {
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">🔐 Sesión y agentes</h3>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Lock className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Sesión y agentes</h3>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           {input('JWT_EXPIRES_IN', 'Duración de sesión (8h)')}
           {input('AGENT_ENROLLMENT_SECRET', `Secreto de auto-enrolamiento (${sensitiveHint('AGENT_ENROLLMENT_SECRET')})`, 'password')}
           {input('AGENT_LATEST_VERSION', 'Última versión de agente publicada (ej: 1.1.0)')}
           {input('AGENT_STALE_THRESHOLD_SECONDS', 'Segundos sin telemetría antes de marcar OFFLINE (240)')}
         </div>
-        <p className="mt-2 text-[11px] text-gray-500">
+        <p className="mt-2 text-[11px] text-slate-400">
           Publicar una versión nueva acá hace que todos los agentes con una versión anterior se auto-actualicen en su
           próximo ciclo (bajan el .exe publicado en /downloads y se reinician solos). El umbral de watchdog controla
           cuánto tiempo sin telemetría tolera antes de marcar un servidor OFFLINE y alertar (Admin → Reportes muestra
@@ -281,28 +283,28 @@ export default function SettingsPanel() {
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">🧱 Fortinet</h3>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><ShieldHalf className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Fortinet</h3>
         <div className="flex flex-wrap items-center gap-4">
           {checkbox('FORTI_SYSLOG_ENABLED', 'Activar receptor de syslog UDP (requiere reiniciar el backend)')}
           <div className="w-40">{input('FORTI_SYSLOG_PORT', 'Puerto UDP (5514)')}</div>
         </div>
-        <p className="mt-2 text-[11px] text-gray-500">
+        <p className="mt-2 text-[11px] text-slate-400">
           Alternativa sin syslog: usar la ingesta por API con la API key de cada dispositivo (ver sección de
           dispositivos Fortinet más abajo).
         </p>
         <div className="mt-3">{saveBtn('fortinet', ['FORTI_SYSLOG_ENABLED', 'FORTI_SYSLOG_PORT'])}</div>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">🤖 Asistente (Claude)</h3>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Bot className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Asistente (Claude)</h3>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {input('ANTHROPIC_API_KEY', `API key de Anthropic (${sensitiveHint('ANTHROPIC_API_KEY')})`, 'password')}
           {input('ANTHROPIC_MODEL', 'Modelo (claude-sonnet-4-5)')}
         </div>
-        <p className="mt-2 text-[11px] text-gray-500">
+        <p className="mt-2 text-[11px] text-slate-400">
           Requiere una API key de{' '}
-          <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-blue-400 underline">
+          <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-brand-600 underline hover:text-brand-700">
             console.anthropic.com
           </a>{' '}
           (se factura por uso, es distinta de una suscripción Claude Pro).
@@ -310,9 +312,9 @@ export default function SettingsPanel() {
         <div className="mt-3">{saveBtn('asistente', ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL'])}</div>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">🧹 Retención de datos</h3>
-        <p className="mb-2 text-[11px] text-gray-500">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Trash2 className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Retención de datos</h3>
+        <p className="mb-2 text-[11px] text-slate-400">
           Cuántos días se conservan antes de purgarse automáticamente (todos los días, ver Admin → Housekeeping).
           0 = conservar para siempre — no recomendado en un disco chico.
         </p>
@@ -334,14 +336,14 @@ export default function SettingsPanel() {
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">📄 Reportes ejecutivos</h3>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><FileText className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Reportes ejecutivos</h3>
         <div className="flex flex-wrap items-center gap-4">
           {checkbox('REPORT_ENABLED', 'Enviar automáticamente por email')}
           <select
             value={form.REPORT_FREQUENCY as string}
             onChange={(e) => set('REPORT_FREQUENCY', e.target.value)}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
           >
             <option value="daily">Frecuencia: diaria</option>
             <option value="weekly">Frecuencia: semanal (lunes)</option>
@@ -349,17 +351,17 @@ export default function SettingsPanel() {
           <div className="w-36">{input('REPORT_HOUR', 'Hora UTC (0-23)', 'number')}</div>
         </div>
         <div className="mt-2">{input('REPORT_EMAIL_TO', 'Destinatario(s) del reporte')}</div>
-        <p className="mt-2 text-[11px] text-gray-500">
+        <p className="mt-2 text-[11px] text-slate-400">
           Requiere SMTP configurado (sección de Notificaciones externas, arriba). Los reportes generados quedan
           disponibles también en Admin → Reportes, con descarga bajo demanda.
         </p>
         <div className="mt-3">{saveBtn('reportes', ['REPORT_ENABLED', 'REPORT_FREQUENCY', 'REPORT_HOUR', 'REPORT_EMAIL_TO'])}</div>
       </div>
 
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h3 className="mb-3 text-sm font-semibold text-gray-200">🖥️ Acceso remoto</h3>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Monitor className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Acceso remoto</h3>
         {checkbox('REMOTE_ACCESS_ENABLED', 'Mostrar el botón "Conectar" (RDP/VNC) en la ficha de cada servidor')}
-        <p className="mt-2 text-[11px] text-gray-500">
+        <p className="mt-2 text-[11px] text-slate-400">
           El túnel en sí siempre está disponible en el backend; este interruptor solo controla si el botón aparece en
           el panel, para no tentar a usarlo hasta que el equipo esté cómodo con la función.
         </p>

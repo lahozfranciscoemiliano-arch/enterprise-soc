@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Bot } from 'lucide-react';
 import Header from './Header';
 import TabNav from './TabNav';
 import GeneralTab from './tabs/GeneralTab';
@@ -417,7 +419,7 @@ export default function Dashboard({
   const serverList = Object.values(servers).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100">
+    <div className="min-h-screen bg-slate-50 text-slate-900">
       <Header
         status={status}
         lastSync={lastSync}
@@ -427,24 +429,36 @@ export default function Dashboard({
       />
       <TabNav active={activeTab} onChange={setActiveTab} showAdmin={role === 'ADMIN'} />
 
-      {activeTab === 'general' && <GeneralTab summary={summary} servers={serverList} />}
-      {activeTab === 'monitoreo' && (
-        <MonitoreoTab
-          servers={serverList}
-          history={history}
-          alerts={alerts}
-          onRefresh={handleManualRefresh}
-          refreshing={refreshing}
-        />
-      )}
-      {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
-      {activeTab === 'mapa' && <MapaTab servers={serverList} />}
-      {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
-      {activeTab === 'fortinet' && <FortiTab events={fortiEvents} onRefresh={fetchFortiEvents} />}
-      {activeTab === 'guardia' && <GuardiaTab servers={serverList} alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
-      {activeTab === 'admin' && role === 'ADMIN' && (
-        <AdminTab currentUserEmail={user.email} servers={serverList} onServersChanged={fetchServers} />
-      )}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={activeTab}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18 }}
+        >
+          {activeTab === 'general' && <GeneralTab summary={summary} servers={serverList} />}
+          {activeTab === 'monitoreo' && (
+            <MonitoreoTab
+              servers={serverList}
+              history={history}
+              alerts={alerts}
+              onRefresh={handleManualRefresh}
+              refreshing={refreshing}
+            />
+          )}
+          {activeTab === 'topologia' && <TopologiaTab servers={serverList} />}
+          {activeTab === 'mapa' && <MapaTab servers={serverList} />}
+          {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
+          {activeTab === 'fortinet' && <FortiTab events={fortiEvents} onRefresh={fetchFortiEvents} />}
+          {activeTab === 'guardia' && (
+            <GuardiaTab servers={serverList} alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />
+          )}
+          {activeTab === 'admin' && role === 'ADMIN' && (
+            <AdminTab currentUserEmail={user.email} servers={serverList} onServersChanged={fetchServers} />
+          )}
+        </motion.div>
+      </AnimatePresence>
 
       {showAccountModal && (
         <AccountSettingsModal
@@ -455,17 +469,25 @@ export default function Dashboard({
         />
       )}
 
-      {showAssistant ? (
-        <AssistantPanel onClose={() => setShowAssistant(false)} />
-      ) : (
-        <button
-          onClick={() => setShowAssistant(true)}
-          className="fixed bottom-4 right-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-xl shadow-lg shadow-blue-900/40 transition-transform hover:scale-105"
-          title="Abrir asistente"
-        >
-          🤖
-        </button>
-      )}
+      <AnimatePresence>
+        {showAssistant ? (
+          <AssistantPanel key="assistant-panel" onClose={() => setShowAssistant(false)} />
+        ) : (
+          <motion.button
+            key="assistant-fab"
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            whileHover={{ scale: 1.06 }}
+            whileTap={{ scale: 0.96 }}
+            onClick={() => setShowAssistant(true)}
+            className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-brand-600 text-white shadow-lg shadow-brand-900/20"
+            title="Abrir asistente"
+          >
+            <Bot className="h-5 w-5" />
+          </motion.button>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

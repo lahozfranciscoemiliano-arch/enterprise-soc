@@ -26,18 +26,18 @@ export function getHealthStatus(
 }
 
 export const HEALTH_STYLES: Record<HealthStatus, { dot: string; text: string; badge: string; label: string }> = {
-  OK: { dot: 'bg-emerald-500', text: 'text-emerald-400', badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', label: 'OK' },
-  WARNING: { dot: 'bg-amber-500', text: 'text-amber-400', badge: 'bg-amber-500/10 text-amber-400 border-amber-500/30', label: 'ADVERTENCIA' },
-  CRITICAL: { dot: 'bg-red-500', text: 'text-red-400', badge: 'bg-red-500/10 text-red-400 border-red-500/30', label: 'CRÍTICO' },
-  UNKNOWN: { dot: 'bg-slate-600', text: 'text-slate-400', badge: 'bg-slate-500/10 text-slate-400 border-slate-500/30', label: 'SIN DATOS' },
+  OK: { dot: 'bg-emerald-500', text: 'text-emerald-600', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'OK' },
+  WARNING: { dot: 'bg-amber-500', text: 'text-amber-600', badge: 'bg-amber-50 text-amber-700 border-amber-200', label: 'ADVERTENCIA' },
+  CRITICAL: { dot: 'bg-red-500', text: 'text-red-600', badge: 'bg-red-50 text-red-700 border-red-200', label: 'CRÍTICO' },
+  UNKNOWN: { dot: 'bg-slate-400', text: 'text-slate-500', badge: 'bg-slate-100 text-slate-500 border-slate-200', label: 'SIN DATOS' },
 };
 
 export const BACKUP_STYLES: Record<BackupResult, { badge: string; label: string }> = {
-  SUCCESS: { badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', label: 'ÉXITO' },
-  WARNING: { badge: 'bg-amber-500/10 text-amber-400 border-amber-500/30', label: 'ADVERTENCIA' },
-  FAILED: { badge: 'bg-red-500/10 text-red-400 border-red-500/30', label: 'FALLIDO' },
-  NOT_CONFIGURED: { badge: 'bg-slate-500/10 text-slate-400 border-slate-500/30', label: 'NO CONFIGURADO' },
-  UNKNOWN: { badge: 'bg-slate-500/10 text-slate-400 border-slate-500/30', label: 'SIN DATOS' },
+  SUCCESS: { badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'ÉXITO' },
+  WARNING: { badge: 'bg-amber-50 text-amber-700 border-amber-200', label: 'ADVERTENCIA' },
+  FAILED: { badge: 'bg-red-50 text-red-700 border-red-200', label: 'FALLIDO' },
+  NOT_CONFIGURED: { badge: 'bg-slate-100 text-slate-500 border-slate-200', label: 'NO CONFIGURADO' },
+  UNKNOWN: { badge: 'bg-slate-100 text-slate-500 border-slate-200', label: 'SIN DATOS' },
 };
 
 export const BACKUP_METHOD_LABELS: Record<string, string> = {
@@ -47,16 +47,16 @@ export const BACKUP_METHOD_LABELS: Record<string, string> = {
 };
 
 export const SEVERITY_STYLES: Record<Severity, string> = {
-  LOW: 'bg-slate-500/10 text-slate-300 border-slate-500/30',
-  MEDIUM: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30',
-  HIGH: 'bg-orange-500/10 text-orange-400 border-orange-500/30',
-  CRITICAL: 'bg-red-500/10 text-red-400 border-red-500/30',
+  LOW: 'bg-slate-100 text-slate-600 border-slate-200',
+  MEDIUM: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+  HIGH: 'bg-orange-50 text-orange-700 border-orange-200',
+  CRITICAL: 'bg-red-50 text-red-700 border-red-200',
 };
 
 export const EVENT_STATUS_STYLES: Record<EventStatus, { badge: string; label: string }> = {
-  OPEN: { badge: 'bg-red-500/10 text-red-400 border-red-500/30', label: 'ABIERTA' },
-  ACKNOWLEDGED: { badge: 'bg-amber-500/10 text-amber-400 border-amber-500/30', label: 'RECONOCIDA' },
-  RESOLVED: { badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', label: 'RESUELTA' },
+  OPEN: { badge: 'bg-red-50 text-red-700 border-red-200', label: 'ABIERTA' },
+  ACKNOWLEDGED: { badge: 'bg-amber-50 text-amber-700 border-amber-200', label: 'RECONOCIDA' },
+  RESOLVED: { badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'RESUELTA' },
 };
 
-export const MAINTENANCE_BADGE = 'bg-sky-500/10 text-sky-400 border-sky-500/30';
+export const MAINTENANCE_BADGE = 'bg-sky-50 text-sky-700 border-sky-200';

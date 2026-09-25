@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ShieldHalf } from 'lucide-react';
 import { SEVERITY_STYLES } from '../../lib/health';
 import type { FortiEvent } from '../../types';
 
@@ -33,21 +34,24 @@ export default function FortiTab({ events, onRefresh }: { events: FortiEvent[]; 
   };
 
   return (
-    <div className="animate-fade-in px-6 py-6">
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+    <div className="px-6 py-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-200">🧱 Monitor Fortinet</h2>
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
+            <ShieldHalf className="h-4 w-4 text-slate-400" />
+            Monitor Fortinet
+          </h2>
           <button
             onClick={handleRefresh}
             disabled={loading}
-            className="rounded-lg border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+            className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
           >
             {loading ? 'Actualizando...' : 'Actualizar'}
           </button>
         </div>
 
         {events.length === 0 && (
-          <p className="py-6 text-center text-sm text-gray-500">
+          <p className="py-6 text-center text-sm text-slate-400">
             Sin eventos registrados todavía. Configurá un dispositivo Fortinet en Admin → Configuración → Fortinet.
           </p>
         )}
@@ -56,7 +60,7 @@ export default function FortiTab({ events, onRefresh }: { events: FortiEvent[]; 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
-                <tr className="border-b border-gray-800 text-gray-500">
+                <tr className="border-b border-slate-200 text-slate-400">
                   <th className="py-2 pr-4 font-medium">Timestamp</th>
                   <th className="py-2 pr-4 font-medium">Dispositivo</th>
                   <th className="py-2 pr-4 font-medium">Tipo</th>
@@ -68,18 +72,18 @@ export default function FortiTab({ events, onRefresh }: { events: FortiEvent[]; 
               </thead>
               <tbody>
                 {events.map((e) => (
-                  <tr key={e.id} className="border-b border-gray-800/60 transition-colors hover:bg-gray-800/30">
-                    <td className="py-2 pr-4 text-gray-400">{new Date(e.createdAt).toLocaleString('es-ES')}</td>
-                    <td className="py-2 pr-4 text-gray-300">{e.deviceName}</td>
-                    <td className="py-2 pr-4 text-gray-300">{TYPE_LABELS[e.type] ?? e.type}</td>
+                  <tr key={e.id} className="border-b border-slate-200 transition-colors hover:bg-slate-100/30">
+                    <td className="py-2 pr-4 text-slate-500">{new Date(e.createdAt).toLocaleString('es-ES')}</td>
+                    <td className="py-2 pr-4 text-slate-600">{e.deviceName}</td>
+                    <td className="py-2 pr-4 text-slate-600">{TYPE_LABELS[e.type] ?? e.type}</td>
                     <td className="py-2 pr-4">
                       <span className={`rounded-full border px-2 py-0.5 text-[11px] ${SEVERITY_STYLES[e.severity]}`}>
                         {e.severity}
                       </span>
                     </td>
-                    <td className="py-2 pr-4 font-mono text-gray-500">{e.sourceIp ?? '—'}</td>
-                    <td className="py-2 pr-4 font-mono text-gray-500">{e.destIp ?? '—'}</td>
-                    <td className="py-2 pr-4 text-gray-400">{e.description}</td>
+                    <td className="py-2 pr-4 font-mono text-slate-400">{e.sourceIp ?? '—'}</td>
+                    <td className="py-2 pr-4 font-mono text-slate-400">{e.destIp ?? '—'}</td>
+                    <td className="py-2 pr-4 text-slate-500">{e.description}</td>
                   </tr>
                 ))}
               </tbody>

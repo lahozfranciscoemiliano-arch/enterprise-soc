@@ -46,10 +46,10 @@ export default function TopologiaGraph({ servers }: { servers: ServerSummary[] }
           margin: { top: 10, right: 14, bottom: 10, left: 14 },
           borderWidth: 2,
           shapeProperties: { borderRadius: 8 },
-          font: { color: '#e5e7eb', size: 12, face: 'ui-sans-serif' },
+          font: { color: '#ffffff', size: 12, face: 'ui-sans-serif' },
         },
         edges: {
-          color: { color: '#334155', highlight: '#3b82f6' },
+          color: { color: '#cbd5e1', highlight: '#c2632d' },
           smooth: { enabled: true, type: 'continuous', roundness: 0.4 },
         },
       }
@@ -76,7 +76,7 @@ export default function TopologiaGraph({ servers }: { servers: ServerSummary[] }
     nodes.update({
       id: HUB_ID,
       label: 'Enterprise\nSOC',
-      color: { background: '#2563eb', border: '#60a5fa' },
+      color: { background: '#c2632d', border: '#dfa067' },
       font: { color: '#fff', size: 13, bold: true as unknown as string },
       shape: 'box',
     });
@@ -95,5 +95,5 @@ export default function TopologiaGraph({ servers }: { servers: ServerSummary[] }
     if (staleNodeIds.length > 0) nodes.remove(staleNodeIds);
   }, [servers]);
 
-  return <div ref={containerRef} className="h-[500px] w-full rounded-lg bg-gray-950/50" />;
+  return <div ref={containerRef} className="h-[500px] w-full rounded-lg bg-slate-50" />;
 }

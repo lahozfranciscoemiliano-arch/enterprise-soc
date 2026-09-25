@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { motion } from 'framer-motion';
+import { AlertTriangle, Check, ShieldCheck, X } from 'lucide-react';
 import type { CurrentUser } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -96,50 +98,60 @@ export default function AccountSettingsModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-      <div className="w-full max-w-md rounded-xl border border-gray-800 bg-gray-900 p-6 shadow-2xl">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.15 }}
+        className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-2xl"
+      >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-100">Mi cuenta</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-300">
-            ✕
+          <h2 className="text-sm font-semibold text-slate-900">Mi cuenta</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+            <X className="h-4 w-4" />
           </button>
         </div>
 
-        <p className="mb-4 text-xs text-gray-400">
-          {user.name} <span className="text-gray-600">({user.email})</span>
+        <p className="mb-4 text-xs text-slate-500">
+          {user.name} <span className="text-slate-500">({user.email})</span>
         </p>
 
         {backupCodes ? (
-          <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
-            <p className="mb-2 text-sm font-semibold text-amber-400">
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-amber-700">
+              <AlertTriangle className="h-4 w-4" />
               2FA activado — guardá estos códigos de respaldo ahora
             </p>
-            <p className="mb-2 text-xs text-gray-400">
+            <p className="mb-2 text-xs text-slate-500">
               Cada uno sirve una sola vez, para entrar si perdés el dispositivo con la app de autenticación. No se
               van a volver a mostrar.
             </p>
-            <div className="grid grid-cols-2 gap-1 font-mono text-xs text-gray-200">
+            <div className="grid grid-cols-2 gap-1 font-mono text-xs text-slate-800">
               {backupCodes.map((c) => (
                 <span key={c}>{c}</span>
               ))}
             </div>
             <button
               onClick={() => setBackupCodes(null)}
-              className="mt-3 rounded-lg border border-amber-500/40 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/10"
+              className="mt-3 rounded-lg border border-amber-200 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50"
             >
               Ya los guardé
             </button>
           </div>
         ) : (
-          <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950/50 p-4">
+          <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-medium text-gray-300">Verificación en dos pasos (2FA)</span>
+              <span className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+                <ShieldCheck className="h-3.5 w-3.5 text-slate-400" />
+                Verificación en dos pasos (2FA)
+              </span>
               <span
-                className={`rounded-full px-2 py-0.5 text-[10px] ${
+                className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] ${
                   user.twoFactorEnabled
-                    ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                    : 'border border-gray-700 bg-gray-800 text-gray-400'
+                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border border-slate-300 bg-slate-50 text-slate-500'
                 }`}
               >
+                {user.twoFactorEnabled && <Check className="h-2.5 w-2.5" />}
                 {user.twoFactorEnabled ? 'Activado' : 'Desactivado'}
               </span>
             </div>
@@ -148,7 +160,7 @@ export default function AccountSettingsModal({
               <button
                 onClick={startSetup}
                 disabled={busy}
-                className="w-full rounded-lg bg-blue-600 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+                className="w-full rounded-lg bg-brand-600 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
               >
                 Activar 2FA
               </button>
@@ -156,24 +168,24 @@ export default function AccountSettingsModal({
 
             {setup && (
               <div className="space-y-2">
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-slate-500">
                   Escaneá este código con Google Authenticator, Authy, etc., o ingresá el secreto a mano:
                 </p>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={setup.qrCodeDataUrl} alt="Código QR de 2FA" className="mx-auto rounded-lg bg-white p-2" />
-                <p className="break-all text-center font-mono text-[11px] text-gray-500">{setup.secret}</p>
+                <p className="break-all text-center font-mono text-[11px] text-slate-400">{setup.secret}</p>
                 <input
                   type="text"
                   inputMode="numeric"
                   placeholder="Código de 6 dígitos"
                   value={setupCode}
                   onChange={(e) => setSetupCode(e.target.value)}
-                  className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-center text-sm tracking-widest text-gray-100 outline-none focus:border-blue-500"
+                  className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-center text-sm tracking-widest text-slate-900 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
                 />
                 <button
                   onClick={confirmSetup}
                   disabled={busy || setupCode.length < 6}
-                  className="w-full rounded-lg bg-blue-600 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+                  className="w-full rounded-lg bg-brand-600 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
                 >
                   Confirmar y activar
                 </button>
@@ -183,7 +195,7 @@ export default function AccountSettingsModal({
             {user.twoFactorEnabled && !showDisableForm && (
               <button
                 onClick={() => setShowDisableForm(true)}
-                className="w-full rounded-lg border border-red-500/30 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/10"
+                className="w-full rounded-lg border border-red-200 py-2 text-xs text-red-700 transition-colors hover:bg-red-50"
               >
                 Desactivar 2FA
               </button>
@@ -196,7 +208,7 @@ export default function AccountSettingsModal({
                   placeholder="Contraseña actual"
                   value={disablePassword}
                   onChange={(e) => setDisablePassword(e.target.value)}
-                  className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+                  className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
                 />
                 <input
                   type="text"
@@ -204,12 +216,12 @@ export default function AccountSettingsModal({
                   placeholder="Código 2FA o de respaldo"
                   value={disableCode}
                   onChange={(e) => setDisableCode(e.target.value)}
-                  className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+                  className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
                 />
                 <button
                   onClick={handleDisable}
                   disabled={busy}
-                  className="w-full rounded-lg border border-red-500/30 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+                  className="w-full rounded-lg border border-red-200 py-2 text-xs text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
                 >
                   Confirmar desactivación
                 </button>
@@ -218,15 +230,15 @@ export default function AccountSettingsModal({
           </div>
         )}
 
-        {error && <p className="mb-4 text-xs text-red-400">{error}</p>}
+        {error && <p className="mb-4 text-xs text-red-700">{error}</p>}
 
         <button
           onClick={handleLogoutAll}
-          className="w-full rounded-lg border border-gray-700 py-2 text-xs text-gray-300 transition-colors hover:bg-gray-800"
+          className="w-full rounded-lg border border-slate-300 py-2 text-xs text-slate-600 transition-colors hover:bg-slate-100"
         >
           Cerrar sesión en todos los dispositivos
         </button>
-      </div>
+      </motion.div>
     </div>
   );
 }

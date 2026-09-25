@@ -1,4 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
+import {
+  ClipboardList,
+  KeyRound,
+  Monitor,
+  Settings,
+  ShieldHalf,
+  BookOpen,
+  FileText,
+  UserRound,
+  Server,
+  Wrench,
+  type LucideIcon,
+} from 'lucide-react';
 import ServerConfigPanel from '../ServerConfigPanel';
 import AuditLogPanel from '../AuditLogPanel';
 import SettingsPanel from '../SettingsPanel';
@@ -13,14 +26,14 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 type RevealedCredential = { label: string; serverId: string; apiKey: string };
 type AdminSection = 'usuarios' | 'servidores' | 'fortinet' | 'configuracion' | 'playbooks' | 'reportes' | 'auditoria';
 
-const SECTIONS: { id: AdminSection; label: string }[] = [
-  { id: 'usuarios', label: '👤 Usuarios' },
-  { id: 'servidores', label: '🖧 Servidores' },
-  { id: 'fortinet', label: '🧱 Fortinet' },
-  { id: 'configuracion', label: '⚙️ Configuración' },
-  { id: 'playbooks', label: '📘 Playbooks' },
-  { id: 'reportes', label: '📄 Reportes' },
-  { id: 'auditoria', label: '📋 Auditoría' },
+const SECTIONS: { id: AdminSection; label: string; icon: LucideIcon }[] = [
+  { id: 'usuarios', label: 'Usuarios', icon: UserRound },
+  { id: 'servidores', label: 'Servidores', icon: Server },
+  { id: 'fortinet', label: 'Fortinet', icon: ShieldHalf },
+  { id: 'configuracion', label: 'Configuración', icon: Settings },
+  { id: 'playbooks', label: 'Playbooks', icon: BookOpen },
+  { id: 'reportes', label: 'Reportes', icon: FileText },
+  { id: 'auditoria', label: 'Auditoría', icon: ClipboardList },
 ];
 
 export default function AdminTab({
@@ -232,33 +245,35 @@ export default function AdminTab({
   );
 
   return (
-    <div className="animate-fade-in space-y-6 px-6 py-6">
-      <div className="flex flex-wrap gap-1 rounded-xl border border-gray-800 bg-gray-900/40 p-1.5">
+    <div className="space-y-6 px-6 py-6">
+      <div className="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1.5">
         {SECTIONS.map((s) => (
           <button
             key={s.id}
             onClick={() => setSection(s.id)}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-              section === s.id ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+              section === s.id ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
             }`}
           >
+            <s.icon className="h-3.5 w-3.5" />
             {s.label}
           </button>
         ))}
       </div>
 
       {revealed && (
-        <div className="animate-fade-in-scale rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
-          <p className="mb-2 text-sm font-semibold text-amber-400">
-            🔑 Credenciales de &quot;{revealed.label}&quot; — copiálas ahora, no se van a volver a mostrar
+        <div className="animate-fade-in-scale rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-amber-700">
+            <KeyRound className="h-4 w-4" />
+            Credenciales de &quot;{revealed.label}&quot; — copiálas ahora, no se van a volver a mostrar
           </p>
-          <div className="space-y-1 font-mono text-xs text-gray-200">
+          <div className="space-y-1 font-mono text-xs text-slate-800">
             <p>SERVER_ID={revealed.serverId}</p>
             <p className="break-all">API_KEY={revealed.apiKey}</p>
           </div>
           <button
             onClick={() => setRevealed(null)}
-            className="mt-3 rounded-lg border border-amber-500/40 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/10"
+            className="mt-3 rounded-lg border border-amber-200 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50"
           >
             Ya las copié, cerrar
           </button>
@@ -266,27 +281,30 @@ export default function AdminTab({
       )}
 
       {section === 'usuarios' && (
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h2 className="mb-4 text-sm font-semibold text-gray-200">👤 Usuarios del dashboard</h2>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h2 className="mb-4 flex items-center gap-1.5 text-sm font-semibold text-slate-800">
+          <UserRound className="h-4 w-4 text-slate-400" />
+          Usuarios del dashboard
+        </h2>
 
         <div className="mb-4 space-y-2">
-          {usersError && <p className="text-sm text-red-400">{usersError}</p>}
+          {usersError && <p className="text-sm text-red-700">{usersError}</p>}
           {users.map((u) => (
             <div
               key={u.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-2 text-xs"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs"
             >
-              <span className="font-medium text-gray-200">
-                {u.name} <span className="text-gray-500">({u.email})</span>
+              <span className="font-medium text-slate-800">
+                {u.name} <span className="text-slate-400">({u.email})</span>
               </span>
-              <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-blue-400">
+              <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-blue-700">
                 {u.role}
               </span>
               <span
                 className={`rounded-full px-2 py-0.5 ${
                   u.twoFactorEnabled
-                    ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                    : 'border border-gray-700 bg-gray-800 text-gray-500'
+                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border border-slate-300 bg-slate-50 text-slate-400'
                 }`}
               >
                 {u.twoFactorEnabled ? '2FA activo' : '2FA off'}
@@ -294,14 +312,14 @@ export default function AdminTab({
               <div className="flex gap-2">
                 <button
                   onClick={() => handleRevokeSessions(u)}
-                  className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                  className="rounded-lg border border-amber-200 px-2 py-1 text-amber-700 transition-colors hover:bg-amber-50"
                 >
                   Cerrar sesiones
                 </button>
                 {u.twoFactorEnabled && (
                   <button
                     onClick={() => handleReset2fa(u)}
-                    className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                    className="rounded-lg border border-amber-200 px-2 py-1 text-amber-700 transition-colors hover:bg-amber-50"
                   >
                     Restablecer 2FA
                   </button>
@@ -309,7 +327,7 @@ export default function AdminTab({
                 <button
                   onClick={() => handleDeleteUser(u)}
                   disabled={u.email === currentUserEmail}
-                  className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-30"
+                  className="rounded-lg border border-red-200 px-2 py-1 text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30"
                 >
                   Eliminar
                 </button>
@@ -325,7 +343,7 @@ export default function AdminTab({
             placeholder="Nombre"
             value={newUser.name}
             onChange={(e) => setNewUser((p) => ({ ...p, name: e.target.value }))}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <input
             type="email"
@@ -333,7 +351,7 @@ export default function AdminTab({
             placeholder="Email"
             value={newUser.email}
             onChange={(e) => setNewUser((p) => ({ ...p, email: e.target.value }))}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <input
             type="password"
@@ -342,12 +360,12 @@ export default function AdminTab({
             placeholder="Contraseña (mín. 8)"
             value={newUser.password}
             onChange={(e) => setNewUser((p) => ({ ...p, password: e.target.value }))}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <select
             value={newUser.role}
             onChange={(e) => setNewUser((p) => ({ ...p, role: e.target.value as Role }))}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
           >
             <option value="VIEWER">VIEWER</option>
             <option value="ANALYST">ANALYST</option>
@@ -356,61 +374,66 @@ export default function AdminTab({
           <button
             type="submit"
             disabled={creatingUser}
-            className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
           >
             {creatingUser ? 'Creando...' : '+ Nuevo usuario'}
           </button>
         </form>
-        {userFormError && <p className="mt-2 text-xs text-red-400">{userFormError}</p>}
+        {userFormError && <p className="mt-2 text-xs text-red-700">{userFormError}</p>}
       </div>
       )}
 
       {section === 'servidores' && (
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-        <h2 className="mb-4 text-sm font-semibold text-gray-200">🖧 Servidores registrados</h2>
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h2 className="mb-4 flex items-center gap-1.5 text-sm font-semibold text-slate-800">
+          <Server className="h-4 w-4 text-slate-400" />
+          Servidores registrados
+        </h2>
 
         <div className="mb-4 space-y-2">
-          {servers.length === 0 && <p className="text-sm text-gray-500">Sin servidores registrados aún</p>}
+          {servers.length === 0 && <p className="text-sm text-slate-400">Sin servidores registrados aún</p>}
           {servers.map((s) => (
             <div key={s.id}>
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-2 text-xs">
-                <span className="font-medium text-gray-200">{s.name}</span>
-                <span className="text-gray-500">{s.status}</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs">
+                <span className="font-medium text-slate-800">{s.name}</span>
+                <span className="text-slate-400">{s.status}</span>
                 {s.tags.map((tag) => (
-                  <span key={tag} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-violet-300">
+                  <span key={tag} className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-violet-700">
                     {tag}
                   </span>
                 ))}
-                {s.agentVersion && <span className="font-mono text-gray-600">agente v{s.agentVersion}</span>}
+                {s.agentVersion && <span className="font-mono text-slate-500">agente v{s.agentVersion}</span>}
                 {s.inMaintenance && (
-                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-sky-300">
-                    🔧 Mantenimiento
+                  <span className="flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-sky-700">
+                    <Wrench className="h-3 w-3" />
+                    Mantenimiento
                   </span>
                 )}
                 <div className="flex gap-2">
                   <button
                     onClick={() => setExpandedServerId((prev) => (prev === s.id ? null : s.id))}
-                    className="rounded-lg border border-gray-700 px-2 py-1 text-gray-300 transition-colors hover:bg-gray-800"
+                    className="rounded-lg border border-slate-300 px-2 py-1 text-slate-600 transition-colors hover:bg-slate-100"
                   >
                     {expandedServerId === s.id ? 'Cerrar' : 'Configurar'}
                   </button>
                   <button
                     onClick={() => handleRotateKey(s)}
-                    className="rounded-lg border border-amber-500/30 px-2 py-1 text-amber-400 transition-colors hover:bg-amber-500/10"
+                    className="rounded-lg border border-amber-200 px-2 py-1 text-amber-700 transition-colors hover:bg-amber-50"
                   >
                     Rotar API key
                   </button>
                   {remoteAccessEnabled && (
                     <button
                       onClick={() => setRemoteAccessServer(s)}
-                      className="rounded-lg border border-sky-500/30 px-2 py-1 text-sky-300 transition-colors hover:bg-sky-500/10"
+                      className="flex items-center gap-1 rounded-lg border border-sky-200 px-2 py-1 text-sky-700 transition-colors hover:bg-sky-50"
                     >
-                      🖥️ Conectar
+                      <Monitor className="h-3 w-3" />
+                      Conectar
                     </button>
                   )}
                   <button
                     onClick={() => handleDeleteServer(s)}
-                    className="rounded-lg border border-red-500/30 px-2 py-1 text-red-400 transition-colors hover:bg-red-500/10"
+                    className="rounded-lg border border-red-200 px-2 py-1 text-red-700 transition-colors hover:bg-red-50"
                   >
                     Eliminar
                   </button>
@@ -428,7 +451,7 @@ export default function AdminTab({
             placeholder="Nombre (único)"
             value={newServer.name}
             onChange={(e) => setNewServer((p) => ({ ...p, name: e.target.value }))}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <input
             type="text"
@@ -436,7 +459,7 @@ export default function AdminTab({
             placeholder="Hostname"
             value={newServer.hostname}
             onChange={(e) => setNewServer((p) => ({ ...p, hostname: e.target.value }))}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <input
             type="text"
@@ -444,18 +467,18 @@ export default function AdminTab({
             placeholder="IP"
             value={newServer.ipAddress}
             onChange={(e) => setNewServer((p) => ({ ...p, ipAddress: e.target.value }))}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <button
             type="submit"
             disabled={creatingServer}
-            className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
           >
             {creatingServer ? 'Creando...' : '+ Nuevo servidor'}
           </button>
         </form>
-        {serverFormError && <p className="mt-2 text-xs text-red-400">{serverFormError}</p>}
-        <p className="mt-3 text-xs text-gray-600">
+        {serverFormError && <p className="mt-2 text-xs text-red-700">{serverFormError}</p>}
+        <p className="mt-3 text-xs text-slate-500">
           Alternativa: si configuraste AGENT_ENROLLMENT_SECRET en el backend, podés usar el instalador del agente
           para que un servidor nuevo se registre solo, sin pasar por este formulario.
         </p>

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useMemo, useState } from 'react';
+import { Bot, BookOpen } from 'lucide-react';
 import { EVENT_STATUS_STYLES, SEVERITY_STYLES } from '../../lib/health';
 import type { EventStatus, Playbook, SecurityAlert } from '../../types';
 
@@ -115,12 +116,12 @@ export default function LogsRegexTab({
   };
 
   return (
-    <div className="animate-fade-in px-6 py-6">
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+    <div className="px-6 py-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-gray-200">
+          <h2 className="text-sm font-semibold text-slate-800">
             ⌥ Historial de Logs Críticos{' '}
-            <span className="font-normal text-gray-500">(búsqueda por expresiones regulares)</span>
+            <span className="font-normal text-slate-400">(búsqueda por expresiones regulares)</span>
           </h2>
           <div className="flex gap-1">
             {STATUS_FILTERS.map((f) => (
@@ -128,7 +129,7 @@ export default function LogsRegexTab({
                 key={f.id}
                 onClick={() => setStatusFilter(f.id)}
                 className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-                  statusFilter === f.id ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-800'
+                  statusFilter === f.id ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-slate-100'
                 }`}
               >
                 {f.label}
@@ -142,7 +143,7 @@ export default function LogsRegexTab({
           placeholder="Ej: CRITICAL|MEMORY|web-server..."
           value={pattern}
           onChange={(e) => setPattern(e.target.value)}
-          className="mb-2 w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 font-mono text-xs text-gray-200 outline-none focus:border-blue-500"
+          className="mb-2 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
         />
 
         <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -152,33 +153,33 @@ export default function LogsRegexTab({
             value={nlQuery}
             onChange={(e) => setNlQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleNlSearch()}
-            className="min-w-[280px] flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500"
+            className="min-w-[280px] flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <button
             onClick={handleNlSearch}
             disabled={nlLoading || !nlQuery.trim()}
-            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
           >
             {nlLoading ? 'Buscando...' : 'Buscar con IA'}
           </button>
           {nlResultIds && (
             <button
               onClick={clearNlSearch}
-              className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800"
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
             >
               Limpiar búsqueda IA
             </button>
           )}
         </div>
-        {nlError && <p className="mb-2 text-xs text-red-400">{nlError}</p>}
+        {nlError && <p className="mb-2 text-xs text-red-700">{nlError}</p>}
 
-        {regexError && <p className="mb-3 text-xs text-red-400">{regexError}</p>}
-        {!regexError && <p className="mb-3 text-xs text-gray-600">{filtered.length} resultado(s)</p>}
+        {regexError && <p className="mb-3 text-xs text-red-700">{regexError}</p>}
+        {!regexError && <p className="mb-3 text-xs text-slate-500">{filtered.length} resultado(s)</p>}
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-gray-800 text-gray-500">
+              <tr className="border-b border-slate-200 text-slate-400">
                 <th className="py-2 pr-4 font-medium">Timestamp</th>
                 <th className="py-2 pr-4 font-medium">Servidor</th>
                 <th className="py-2 pr-4 font-medium">Tipo</th>
@@ -191,7 +192,7 @@ export default function LogsRegexTab({
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-6 text-center text-gray-500">
+                  <td colSpan={7} className="py-6 text-center text-slate-400">
                     No hay coincidencias
                   </td>
                 </tr>
@@ -201,10 +202,10 @@ export default function LogsRegexTab({
                 const playbook = playbookCache[a.type];
                 return (
                   <Fragment key={a.id}>
-                    <tr className="border-b border-gray-800/60 transition-colors hover:bg-gray-800/30">
-                      <td className="py-2 pr-4 text-gray-400">{new Date(a.createdAt).toLocaleString('es-ES')}</td>
-                      <td className="py-2 pr-4 text-gray-300">{a.serverName ?? '—'}</td>
-                      <td className="py-2 pr-4 text-gray-300">{a.type}</td>
+                    <tr className="border-b border-slate-200 transition-colors hover:bg-slate-100/30">
+                      <td className="py-2 pr-4 text-slate-500">{new Date(a.createdAt).toLocaleString('es-ES')}</td>
+                      <td className="py-2 pr-4 text-slate-600">{a.serverName ?? '—'}</td>
+                      <td className="py-2 pr-4 text-slate-600">{a.type}</td>
                       <td className="py-2 pr-4">
                         <span className={`rounded-full border px-2 py-0.5 text-[11px] ${SEVERITY_STYLES[a.severity]}`}>
                           {a.severity}
@@ -215,14 +216,14 @@ export default function LogsRegexTab({
                           {statusStyle.label}
                         </span>
                         {a.acknowledgedByName && (
-                          <p className="mt-0.5 text-[10px] text-gray-600">por {a.acknowledgedByName}</p>
+                          <p className="mt-0.5 text-[10px] text-slate-500">por {a.acknowledgedByName}</p>
                         )}
                       </td>
-                      <td className="py-2 pr-4 text-gray-400">
+                      <td className="py-2 pr-4 text-slate-500">
                         {a.description}
                         {a.aiTriage && (
-                          <p className="mt-1 flex items-start gap-1 text-[11px] text-sky-300/90">
-                            <span>🤖</span>
+                          <p className="mt-1 flex items-start gap-1 text-[11px] text-sky-700/90">
+                            <Bot className="mt-0.5 h-3 w-3 shrink-0" />
                             <span>{a.aiTriage}</span>
                           </p>
                         )}
@@ -231,14 +232,15 @@ export default function LogsRegexTab({
                         <div className="flex gap-1">
                           <button
                             onClick={() => togglePlaybook(a.id, a.type)}
-                            className="rounded-lg border border-sky-500/30 px-2 py-1 text-[11px] text-sky-300 transition-colors hover:bg-sky-500/10"
+                            className="flex items-center gap-1 rounded-lg border border-sky-200 px-2 py-1 text-[11px] text-sky-700 transition-colors hover:bg-sky-50"
                           >
-                            📘 Playbook
+                            <BookOpen className="h-3 w-3" />
+                            Playbook
                           </button>
                           {a.status === 'OPEN' && (
                             <button
                               onClick={() => onUpdateStatus(a.id, 'ACKNOWLEDGED')}
-                              className="rounded-lg border border-amber-500/30 px-2 py-1 text-[11px] text-amber-400 transition-colors hover:bg-amber-500/10"
+                              className="rounded-lg border border-amber-200 px-2 py-1 text-[11px] text-amber-700 transition-colors hover:bg-amber-50"
                             >
                               Reconocer
                             </button>
@@ -246,7 +248,7 @@ export default function LogsRegexTab({
                           {a.status !== 'RESOLVED' && (
                             <button
                               onClick={() => onUpdateStatus(a.id, 'RESOLVED')}
-                              className="rounded-lg border border-emerald-500/30 px-2 py-1 text-[11px] text-emerald-400 transition-colors hover:bg-emerald-500/10"
+                              className="rounded-lg border border-emerald-200 px-2 py-1 text-[11px] text-emerald-700 transition-colors hover:bg-emerald-50"
                             >
                               Resolver
                             </button>
@@ -255,16 +257,16 @@ export default function LogsRegexTab({
                       </td>
                     </tr>
                     {openPlaybookFor === a.id && (
-                      <tr className="border-b border-gray-800/60 bg-gray-950/70">
+                      <tr className="border-b border-slate-200 bg-slate-50">
                         <td colSpan={7} className="px-4 py-3">
-                          {loadingPlaybook === a.type && <p className="text-xs text-gray-500">Cargando playbook...</p>}
+                          {loadingPlaybook === a.type && <p className="text-xs text-slate-400">Cargando playbook...</p>}
                           {loadingPlaybook !== a.type && playbook === 'NOT_FOUND' && (
-                            <p className="text-xs text-gray-500">No hay un playbook cargado para el tipo &quot;{a.type}&quot;.</p>
+                            <p className="text-xs text-slate-400">No hay un playbook cargado para el tipo &quot;{a.type}&quot;.</p>
                           )}
                           {loadingPlaybook !== a.type && playbook && playbook !== 'NOT_FOUND' && (
                             <div>
-                              <p className="mb-1 text-xs font-semibold text-sky-300">{playbook.title}</p>
-                              <pre className="whitespace-pre-wrap font-sans text-xs text-gray-300">{playbook.content}</pre>
+                              <p className="mb-1 text-xs font-semibold text-sky-700">{playbook.title}</p>
+                              <pre className="whitespace-pre-wrap font-sans text-xs text-slate-600">{playbook.content}</pre>
                             </div>
                           )}
                         </td>
