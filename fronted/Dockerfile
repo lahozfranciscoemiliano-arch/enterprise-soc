@@ -21,9 +21,13 @@ ENV NODE_ENV=production
 ENV PORT=3001
 
 # output: 'standalone' en next.config.js genera un server.js autonomo sin
-# necesitar node_modules completo en la imagen final.
+# necesitar node_modules completo en la imagen final -- pero a diferencia de
+# .next/static, Next.js NO copia "public/" (imagenes, favicon, etc.) dentro
+# del standalone solo: hay que copiarlo a mano o esos assets quedan 404 en
+# el contenedor aunque existan en el repo.
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 
 EXPOSE 3001
 CMD ["node", "server.js"]
