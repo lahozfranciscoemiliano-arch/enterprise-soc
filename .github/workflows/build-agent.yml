@@ -1,0 +1,58 @@
+name: Compilar agente Windows
+
+# Manual (Actions -> Compilar agente Windows -> Run workflow): no hace falta
+# una maquina Windows propia para generar el .exe -- lo compila un runner
+# windows-latest de GitHub y lo publica como Release, listo para bajar desde
+# la VPS y distribuir con install-agent.ps1.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Leer AGENT_VERSION de agent.py
+        id: version
+        shell: bash
+        run: |
+          v=$(grep -oP 'AGENT_VERSION\s*=\s*"\K[^"]+' agent.py)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # --hidden-import=win32timezone: PyInstaller no detecta esta dependencia
+      # interna de pywin32 sola; sin ella el .exe falla al iniciar con
+      # ImportError (ver nota al final de agent.py).
+      - name: Compilar con PyInstaller
+        run: >
+          pyinstaller --onefile --name enterprise-soc-agent
+          --hidden-import=win32timezone
+          --hidden-import=win32api
+          agent.py
+
+      - name: Publicar como Release (tag agent-latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-latest
+          name: "Agente Windows v${{ steps.version.outputs.version }}"
+          body: |
+            Compilado automaticamente desde agent/agent.py (version ${{ steps.version.outputs.version }}).
+            Esta Release se sobreescribe en cada corrida manual del workflow -- siempre
+            representa el ultimo build, no un historico por version.
+          make_latest: true
+          files: agent/dist/enterprise-soc-agent.exe
