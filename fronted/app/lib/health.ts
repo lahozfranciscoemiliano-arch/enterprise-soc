@@ -1,7 +1,7 @@
 import type { BackupResult, EventStatus, HealthStatus, Severity } from '../types';
 
 // Debe reflejar los mismos umbrales que enterprise-soc/backend/src/services/alertEngine.js
-const THRESHOLDS = {
+export const RESOURCE_THRESHOLDS = {
   cpuUsage: { high: 90, medium: 75 },
   memoryUsage: { high: 90, medium: 80 },
   diskUsage: { high: 95, medium: 85 },
@@ -16,14 +16,29 @@ export function getHealthStatus(
 
   let status: HealthStatus = 'OK';
 
-  for (const [field, rule] of Object.entries(THRESHOLDS)) {
-    const value = { cpuUsage, memoryUsage, diskUsage }[field as keyof typeof THRESHOLDS];
+  for (const [field, rule] of Object.entries(RESOURCE_THRESHOLDS)) {
+    const value = { cpuUsage, memoryUsage, diskUsage }[field as keyof typeof RESOURCE_THRESHOLDS];
     if (value >= rule.high) return 'CRITICAL';
     if (value >= rule.medium) status = 'WARNING';
   }
 
   return status;
 }
+
+export type ResourceLevel = 'ok' | 'warning' | 'critical';
+
+export function resourceLevel(value: number, kind: keyof typeof RESOURCE_THRESHOLDS): ResourceLevel {
+  const t = RESOURCE_THRESHOLDS[kind];
+  if (value >= t.high) return 'critical';
+  if (value >= t.medium) return 'warning';
+  return 'ok';
+}
+
+export const RESOURCE_LEVEL_COLOR: Record<ResourceLevel, { bar: string; track: string; text: string }> = {
+  ok: { bar: 'bg-emerald-500', track: 'bg-emerald-100', text: 'text-emerald-700' },
+  warning: { bar: 'bg-amber-500', track: 'bg-amber-100', text: 'text-amber-700' },
+  critical: { bar: 'bg-red-500', track: 'bg-red-100', text: 'text-red-700' },
+};
 
 export const HEALTH_STYLES: Record<HealthStatus, { dot: string; text: string; badge: string; label: string }> = {
   OK: { dot: 'bg-emerald-500', text: 'text-emerald-600', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'OK' },

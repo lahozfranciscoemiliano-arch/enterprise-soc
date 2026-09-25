@@ -1,8 +1,9 @@
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { motion } from 'framer-motion';
-import { AlertTriangle, CheckCircle2, DatabaseBackup, Gauge, Server } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, DatabaseBackup, Gauge, Server, ServerOff } from 'lucide-react';
 import StatCard from '../StatCard';
-import type { DashboardSummary, ServerSummary } from '../../types';
+import ResourceUsagePanel from '../ResourceUsagePanel';
+import type { DashboardSummary, SecurityAlert, ServerSummary } from '../../types';
 
 const HEALTH_COLORS = { OK: '#10b981', WARNING: '#f59e0b', CRITICAL: '#ef4444' };
 const BACKUP_COLORS = {
@@ -16,12 +17,23 @@ const TOOLTIP_STYLE = { background: '#ffffff', border: '1px solid #e2e8f0', bord
 
 const panel = 'rounded-xl border border-slate-200 bg-white p-4 shadow-card';
 
+function DonutCenter({ value, label }: { value: number; label: string }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+      <span className="text-2xl font-semibold text-slate-800">{value}</span>
+      <span className="text-[11px] text-slate-400">{label}</span>
+    </div>
+  );
+}
+
 export default function GeneralTab({
   summary,
   servers,
+  alerts,
 }: {
   summary: DashboardSummary | null;
   servers: ServerSummary[];
+  alerts: SecurityAlert[];
 }) {
   const donutData = summary
     ? [
@@ -30,11 +42,6 @@ export default function GeneralTab({
         { name: 'Críticos', value: summary.healthBreakdown.CRITICAL, color: HEALTH_COLORS.CRITICAL },
       ]
     : [];
-
-  const barData = servers
-    .filter((s) => s.cpuUsage !== null)
-    .map((s) => ({ name: s.name, CPU: s.cpuUsage, RAM: s.memoryUsage }));
-
   const hasHealthData = donutData.some((d) => d.value > 0);
 
   const backupDonutData = summary
@@ -48,9 +55,11 @@ export default function GeneralTab({
     : [];
   const hasBackupData = backupDonutData.some((d) => d.value > 0);
 
+  const offlineCount = servers.filter((s) => s.status === 'OFFLINE').length;
+
   return (
     <div className="space-y-4 px-6 py-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="SLA Confiabilidad"
           value={summary ? `${summary.slaPercentage.toFixed(2)}%` : '—'}
@@ -70,6 +79,12 @@ export default function GeneralTab({
           icon={<CheckCircle2 className="h-5 w-5" />}
         />
         <StatCard
+          label="Servidores Offline"
+          value={offlineCount.toString()}
+          color={offlineCount > 0 ? 'red' : 'emerald'}
+          icon={<ServerOff className="h-5 w-5" />}
+        />
+        <StatCard
           label="Backups Exitosos"
           value={summary ? `${summary.backupBreakdown.SUCCESS}/${summary.totalServers}` : '—'}
           color={summary && summary.backupBreakdown.FAILED > 0 ? 'red' : 'emerald'}
@@ -83,22 +98,25 @@ export default function GeneralTab({
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className={panel}>
           <h2 className="mb-2 text-sm font-semibold text-slate-700">Health Status</h2>
-          <div className="h-64">
+          <div className="relative h-64">
             {hasHealthData ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={90} paddingAngle={2}>
-                    {donutData.map((d) => (
-                      <Cell key={d.name} fill={d.color} stroke="none" />
-                    ))}
-                  </Pie>
-                  <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                </PieChart>
-              </ResponsiveContainer>
+              <>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={90} paddingAngle={2}>
+                      {donutData.map((d) => (
+                        <Cell key={d.name} fill={d.color} stroke="none" />
+                      ))}
+                    </Pie>
+                    <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <DonutCenter value={summary?.totalServers ?? 0} label="nodos" />
+              </>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-slate-400">Sin datos aún</div>
             )}
@@ -107,46 +125,32 @@ export default function GeneralTab({
 
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className={panel}>
           <h2 className="mb-2 text-sm font-semibold text-slate-700">Estado de Backups</h2>
-          <div className="h-64">
+          <div className="relative h-64">
             {hasBackupData ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={backupDonutData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={90} paddingAngle={2}>
-                    {backupDonutData.map((d) => (
-                      <Cell key={d.name} fill={d.color} stroke="none" />
-                    ))}
-                  </Pie>
-                  <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex h-full items-center justify-center text-sm text-slate-400">Sin datos aún</div>
-            )}
-          </div>
-        </motion.div>
-
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className={panel}>
-          <h2 className="mb-2 text-sm font-semibold text-slate-700">Uso de Recursos por Nodo</h2>
-          <div className="h-64">
-            {barData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={barData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} />
-                  <YAxis stroke="#94a3b8" fontSize={11} unit="%" domain={[0, 100]} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="CPU" fill="#c2632d" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="RAM" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={backupDonutData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={90} paddingAngle={2}>
+                      {backupDonutData.map((d) => (
+                        <Cell key={d.name} fill={d.color} stroke="none" />
+                      ))}
+                    </Pie>
+                    <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <DonutCenter value={summary?.backupBreakdown.SUCCESS ?? 0} label="exitosos" />
+              </>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-slate-400">Sin datos aún</div>
             )}
           </div>
         </motion.div>
       </div>
+
+      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
+        <ResourceUsagePanel servers={servers} alerts={alerts} />
+      </motion.div>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldCheck, Lock, Mail, KeyRound, ArrowLeft, Activity, Radar, ServerCog } from 'lucide-react';
+import { ShieldCheck, Lock, Mail, KeyRound, ArrowLeft, Activity, Radar } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import type { CurrentUser } from './types';
 
@@ -11,7 +11,6 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 const FEATURES = [
   { icon: Activity, text: 'Telemetría en vivo de CPU, RAM, disco y red' },
   { icon: Radar, text: 'Detección de anomalías y triage de alertas con IA' },
-  { icon: ServerCog, text: '21 servidores, 4 sistemas de punto de venta, un solo panel' },
 ];
 
 export default function DashboardPage() {
@@ -191,14 +190,15 @@ export default function DashboardPage() {
             </ul>
           </motion.div>
 
-          <motion.p
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.6 }}
-            className="relative text-xs text-slate-500"
+            className="relative space-y-1 text-xs text-slate-500"
           >
-            Acceso restringido a personal autorizado de Grupo Bistro.
-          </motion.p>
+            <p>Acceso Restringido a cualquier Personal no autorizado de Grupo Bistro.</p>
+            <p className="text-slate-600">Desarrollado por: Francisco E. Lahoz F.</p>
+          </motion.div>
         </div>
 
         {/* Panel del formulario */}

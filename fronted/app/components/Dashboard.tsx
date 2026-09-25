@@ -437,7 +437,7 @@ export default function Dashboard({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.18 }}
         >
-          {activeTab === 'general' && <GeneralTab summary={summary} servers={serverList} />}
+          {activeTab === 'general' && <GeneralTab summary={summary} servers={serverList} alerts={alerts} />}
           {activeTab === 'monitoreo' && (
             <MonitoreoTab
               servers={serverList}
