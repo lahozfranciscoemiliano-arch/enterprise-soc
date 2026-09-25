@@ -459,6 +459,37 @@ guardia a la noche — solo alertas CRITICAL/HIGH abiertas, servidores caídos y
 fallidos, en texto grande. Además, **Admin → Reportes** ahora tiene un botón "Exportar CSV"
 junto al PDF, para quien prefiera abrir los números en Excel.
 
+## 32. Pestaña Backups (tamaño y detalle real por servidor)
+
+Nueva pestaña **Backups**: vista dedicada con el estado de backup de los 21 servidores en
+un solo lugar — tamaño total respaldado en la flota, tasa de éxito, resultado/método/última
+corrida/antigüedad/tamaño/estado de VSS por servidor, filtrable por resultado, y con un
+historial expandible (últimas 15 corridas) por servidor con un clic.
+
+El tamaño real (`sizeBytes`) y la ruta de destino (`targetPath`) del backup son nuevos:
+antes el agente nunca los completaba (siempre quedaban `null`). El agente (a partir de
+`AGENT_VERSION = "1.2.0"`) ahora:
+
+- Lee `LastBackupTargetPath` del WMI de Windows Server Backup cuando ese método está
+  disponible, o extrae la ruta con una expresión regular agnóstica al idioma de la salida
+  de `wbadmin get versions` (busca un patrón de ruta UNC o de unidad, no el texto de la
+  etiqueta que sí está localizado).
+- Con esa ruta, suma el tamaño de los archivos del backup (`os.walk` + `os.path.getsize`)
+  como aproximación honesta al tamaño real — best-effort, con límite de 20.000 archivos y
+  25 segundos para no colgarse en un recurso de red lento, y solo cuando el último
+  resultado fue `SUCCESS`.
+
+**Nota honesta:** ni `wbadmin` ni el WMI de Windows Server Backup exponen la *duración* de
+la corrida del backup (solo la hora de finalización) — no es algo que Windows guarde de
+forma nativa, así que no se inventó ese dato. El historial expandible de cada servidor
+(hora, resultado, tamaño, método de cada corrida reciente) es la señal más honesta
+disponible para ver la frecuencia y consistencia de los backups sin fabricar un número.
+
+Para que el tamaño/ruta empiecen a aparecer hace falta republicar el agente (sección 16) y
+que cada servidor lo actualice solo en su próximo ciclo (no hace falta reinstalar con
+`install-agent.ps1` a mano, siempre que `AGENT_LATEST_VERSION` esté seteado en Admin →
+Configuración).
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

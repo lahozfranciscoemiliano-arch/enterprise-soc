@@ -10,6 +10,7 @@ import GeneralTab from './tabs/GeneralTab';
 import MonitoreoTab from './tabs/MonitoreoTab';
 import TopologiaTab from './tabs/TopologiaTab';
 import MapaTab from './tabs/MapaTab';
+import BackupsTab from './tabs/BackupsTab';
 import LogsRegexTab from './tabs/LogsRegexTab';
 import GuardiaTab from './tabs/GuardiaTab';
 import AdminTab from './tabs/AdminTab';
@@ -451,6 +452,7 @@ export default function Dashboard({
           )}
           {activeTab === 'topologia' && <TopologiaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'mapa' && <MapaTab servers={serverList} alerts={alerts} />}
+          {activeTab === 'backups' && <BackupsTab servers={serverList} />}
           {activeTab === 'logs' && <LogsRegexTab alerts={alerts} onUpdateStatus={handleUpdateEventStatus} />}
           {activeTab === 'fortinet' && <FortiTab events={fortiEvents} onRefresh={fetchFortiEvents} />}
           {activeTab === 'guardia' && (

@@ -69,7 +69,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.2.0"
 
 
 def get_base_dir() -> Path:
@@ -290,18 +290,22 @@ def check_wmi_windows_backup() -> dict[str, Any] | None:
     last_result_hr = safe_get("LastBackupResultHR")
     last_backup_time = safe_get("LastBackupTime")
     last_successful_time = safe_get("LastSuccessfulBackupTime")
+    target_path = safe_get("LastBackupTargetPath")
 
     if last_result_hr is None and last_backup_time is None and last_successful_time is None:
         return None
 
     result = "SUCCESS" if last_result_hr in (0, None) else "FAILED"
 
-    return {
+    status: dict[str, Any] = {
         "result": result,
         "method": "WINDOWS_SERVER_BACKUP",
         "lastBackupAt": _wmi_datetime_to_iso(last_backup_time) or _wmi_datetime_to_iso(last_successful_time),
         "detail": f"LastBackupResultHR={last_result_hr}",
     }
+    if target_path:
+        status["targetPath"] = str(target_path)
+    return status
 
 
 def _decode_console_bytes(data: bytes) -> str:
@@ -382,11 +386,60 @@ def check_wbadmin() -> dict[str, Any]:
             "detail": output[-600:] or "No se encontraron versiones de backup.",
         }
 
-    return {
+    status: dict[str, Any] = {
         "result": "SUCCESS",
         "method": "WBADMIN",
         "detail": output[-600:],
     }
+    target = _extract_target_path(output)
+    if target:
+        status["targetPath"] = target
+    return status
+
+
+def _extract_target_path(output: str) -> str | None:
+    """Busca una ruta de Windows (UNC o de unidad) en la salida de wbadmin.
+
+    La etiqueta "Backup target:" esta en el idioma del sistema (no se puede
+    buscar por texto), pero la ruta en si sigue la sintaxis estandar de
+    Windows sin importar el idioma -- un patron agnostico al idioma, igual
+    que el heuristico de fechas de arriba.
+    """
+    match = re.search(r"\\\\[^\s\\]+(?:\\[^\s\\]+)+|[A-Za-z]:\\[^\s]*", output)
+    return match.group(0).rstrip(".,;") if match else None
+
+
+def estimate_backup_size(target_path: str) -> int | None:
+    """Suma el tamano de los archivos en target_path (ruta local o UNC del
+    backup) como aproximacion honesta al tamano real del backup -- ni
+    wbadmin ni el WMI de Windows Server Backup exponen ese dato
+    directamente. Best-effort: cualquier problema de acceso (ruta de red
+    caida, permisos, timeout) devuelve None en vez de fallar el ciclo
+    entero de reporte de backup.
+
+    Limitado a MAX_FILES / MAX_SECONDS para no colgarse escaneando un
+    recurso de red lento o con demasiados archivos.
+    """
+    MAX_FILES = 20_000
+    MAX_SECONDS = 25
+    start = time.monotonic()
+    total = 0
+    scanned = 0
+
+    try:
+        for root, _dirs, files in os.walk(target_path, onerror=lambda _e: None):
+            for name in files:
+                scanned += 1
+                if scanned > MAX_FILES or (time.monotonic() - start) > MAX_SECONDS:
+                    return total or None
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    continue
+    except Exception:
+        return None
+
+    return total or None
 
 
 def get_backup_status() -> dict[str, Any]:
@@ -424,6 +477,18 @@ def get_backup_status() -> dict[str, Any]:
             }
 
     status["vssServiceOk"] = vss_ok
+
+    # Tamano real del backup: best-effort, solo si se detecto una ruta de
+    # destino y el ultimo resultado fue exitoso (si fallo, el contenido
+    # puede estar incompleto/no ser representativo).
+    if status.get("result") == "SUCCESS" and status.get("targetPath"):
+        try:
+            size = estimate_backup_size(status["targetPath"])
+            if size is not None:
+                status["sizeBytes"] = size
+        except Exception as exc:
+            logger.warning("No se pudo estimar el tamano del backup en %s: %s", status.get("targetPath"), exc)
+
     return status
 
 

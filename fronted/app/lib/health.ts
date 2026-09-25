@@ -75,3 +75,26 @@ export const EVENT_STATUS_STYLES: Record<EventStatus, { badge: string; label: st
 };
 
 export const MAINTENANCE_BADGE = 'bg-sky-50 text-sky-700 border-sky-200';
+
+export function formatBytes(bytes: number | null): string {
+  if (bytes === null || bytes <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  return `${value.toFixed(value >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+// Antiguedad del ultimo backup exitoso -- ni wbadmin ni el WMI de Windows
+// Server Backup exponen la duracion de la corrida, asi que esta es la
+// señal honesta mas cercana a "hace cuanto que no hay un backup nuevo".
+export function backupAgeLevel(lastBackupAt: string | null): ResourceLevel | 'none' {
+  if (!lastBackupAt) return 'none';
+  const days = (Date.now() - new Date(lastBackupAt).getTime()) / 86_400_000;
+  if (days >= 3) return 'critical';
+  if (days >= 1.5) return 'warning';
+  return 'ok';
+}

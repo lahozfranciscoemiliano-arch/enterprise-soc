@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'topologia' | 'mapa' | 'logs' | 'fortinet' | 'guardia' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {
@@ -57,6 +57,19 @@ export type BackupInfo = {
   vssServiceOk: boolean;
   detail: string | null;
   recordedAt: string | null;
+};
+
+export type BackupHistoryEntry = {
+  id: string;
+  serverId: string;
+  result: BackupResult;
+  method: string;
+  lastBackupAt: string | null;
+  targetPath: string | null;
+  sizeBytes: number | null;
+  vssServiceOk: boolean;
+  detail: string | null;
+  recordedAt: string;
 };
 
 export type ServerThresholds = {
