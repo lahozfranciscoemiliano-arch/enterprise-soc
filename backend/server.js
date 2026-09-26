@@ -55,6 +55,8 @@ const { notifyGeneric, sendReportEmail } = require('./src/services/notifications
 const { buildBackupHistory } = require('./src/services/backupHistory');
 const { processAgentExtras, summarizeNetwork } = require('./src/services/preventiveChecks');
 const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
+const registerInventoryRoutes = require('./src/routes/inventory');
+const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
 const { runUnifiPoll, listUnifiDevices, getLastRun: getUnifiLastRun, scheduleUnifiPoll } = require('./src/services/unifi');
 const { createAndDispatchEvent, resolveCleared, defaultDedupKey, toClientEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
@@ -1713,6 +1715,10 @@ app.get('/api/admin/anomaly-detection', authUser, requireRole('ADMIN'), (req, re
 });
 
 // Synthetic monitoring: ver src/services/syntheticMonitor.js.
+// Inventario de red (equipos, usuarios AD, impresoras, IPs) y monitores de
+// servicios: ver src/routes/inventory.js.
+registerInventoryRoutes(app, { authUser, authServer, requireRole, adminWriteLimiter });
+
 // Sondeo manual de UniFi (boton "Probar conexion" en Admin -> Configuracion).
 app.post('/api/admin/unifi/sync', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
   const result = await runUnifiPoll();
@@ -2201,6 +2207,7 @@ scheduleAnomalyBaselineRefresh();
 scheduleSyntheticMonitor();
 scheduleDiskForecast();
 scheduleUnifiPoll();
+scheduleServiceMonitor();
 
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();

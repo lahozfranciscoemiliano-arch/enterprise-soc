@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'red' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'red' | 'inventario' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {
@@ -427,4 +427,142 @@ export type DashboardSummary = {
   criticalAlerts: number;
   healthBreakdown: { OK: number; WARNING: number; CRITICAL: number; UNKNOWN: number };
   backupBreakdown: { SUCCESS: number; WARNING: number; FAILED: number; NOT_CONFIGURED: number; UNKNOWN: number };
+};
+
+// ---------------------------------------------------------------------------
+// Inventario de red (agente del servidor con AD/DHCP)
+// ---------------------------------------------------------------------------
+export type InventorySummary = {
+  reporters: {
+    id: string;
+    name: string;
+    inventoryAt: string;
+    inventorySummary: {
+      collectedAt: string;
+      hostname: string | null;
+      roles: { dhcp?: boolean; ad?: boolean; printServer?: boolean };
+      errors: string[];
+      durationSeconds: number | null;
+      scanned: number;
+      alive: number;
+    } | null;
+  }[];
+  endpoints: { total: number; online: number; stale: number };
+  printers: { total: number; online: number; withIssues: number; lowSupplies: number };
+  users: { enabled: number; locked: number; passwordExpiringSoon: number };
+  ips: { scopes: number; freeDhcp: number; freeStatic: number; conflicts: number; maxScopeUsage: number };
+};
+
+export type InventoryEndpoint = {
+  id: string;
+  hostname: string;
+  dnsName: string | null;
+  os: string | null;
+  osVersion: string | null;
+  enabled: boolean | null;
+  description: string | null;
+  ou: string | null;
+  inAd: boolean;
+  adLastLogonAt: string | null;
+  ipAddress: string | null;
+  macAddress: string | null;
+  online: boolean;
+  lastSeenOnlineAt: string | null;
+  statusChangedAt: string;
+  lastUser: string | null;
+  lastUserAt: string | null;
+};
+
+export type LogonRecord = { id: string; username: string; ipAddress: string; hostname: string | null; at: string };
+
+export type DirectoryUserRow = {
+  sam: string;
+  displayName: string | null;
+  department: string | null;
+  title: string | null;
+  email: string | null;
+  enabled: boolean;
+  lockedOut: boolean;
+  neverExpires: boolean;
+  passwordLastSet: string | null;
+  passwordExpiresAt: string | null;
+  lastLogonAt: string | null;
+  lastHost: string | null;
+  lastHostIp: string | null;
+  lastHostAt: string | null;
+};
+
+export type PrinterRow = {
+  id: string;
+  name: string | null;
+  model: string | null;
+  serial: string | null;
+  location: string | null;
+  status: string | null;
+  deviceStatus: string | null;
+  errors: string[];
+  supplies: { name: string; percent: number | null }[] | null;
+  pageCount: number | null;
+  queues: { name: string; status: string | null; jobs: number | null; shared?: boolean }[] | null;
+  snmp: boolean;
+  online: boolean;
+  lastSeenOnlineAt: string | null;
+  statusChangedAt: string;
+};
+
+export type IpStatus = 'lease' | 'reserved' | 'static' | 'conflict' | 'free' | 'free-static';
+
+export type IpEntry = { ip: string; s: IpStatus; h?: string; m?: string; u?: string; a?: 1; e?: string };
+
+export type DhcpScopeRow = {
+  id: string;
+  name: string | null;
+  mask: string;
+  startRange: string;
+  endRange: string;
+  state: string | null;
+  leaseHours: number | null;
+  inUse: number;
+  free: number;
+  reserved: number;
+  percentInUse: number;
+  addresses: IpEntry[];
+  counts: Record<IpStatus | 'alive', number>;
+  freeRanges: string[];
+  freeStaticRanges: string[];
+  updatedAt: string;
+};
+
+export type DirectoryEventRow = {
+  id: string;
+  eventId: number;
+  kind: string;
+  target: string | null;
+  actor: string | null;
+  group: string | null;
+  callerHost: string | null;
+  at: string;
+};
+
+export type ServiceCheckRow = {
+  id: string;
+  name: string;
+  type: 'http' | 'tcp';
+  target: string;
+  intervalSeconds: number;
+  timeoutMs: number;
+  expectedStatus: number | null;
+  keyword: string | null;
+  enabled: boolean;
+  status: 'up' | 'down' | 'unknown';
+  lastLatencyMs: number | null;
+  lastCheckedAt: string | null;
+  lastChangeAt: string | null;
+  lastError: string | null;
+  certExpiresAt: string | null;
+  uptime24h: number | null;
+  uptime7d: number | null;
+  uptime30d: number | null;
+  avgLatency24h: number | null;
+  recent: { at: string; up: boolean; latencyMs: number | null }[];
 };

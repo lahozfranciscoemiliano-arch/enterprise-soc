@@ -284,7 +284,47 @@ const createRemoteSessionSchema = z
   })
   .strict();
 
+// Inventario de red que manda el agente del servidor con AD/DHCP. Se valida
+// la forma general y los topes; el detalle lo normaliza services/inventory.js.
+const inventorySchema = z
+  .object({
+    collectedAt: z.string().max(50).optional(),
+    hostname: z.string().max(200).optional(),
+    roles: z.record(z.boolean()).optional(),
+    scopes: z.array(z.record(z.any())).max(200).optional(),
+    computers: z.array(z.record(z.any())).max(20000).optional(),
+    users: z.array(z.record(z.any())).max(50000).optional(),
+    logons: z.array(z.record(z.any())).max(10000).optional(),
+    failedAuth: z.array(z.record(z.any())).max(1000).optional(),
+    directoryEvents: z.array(z.record(z.any())).max(5000).optional(),
+    printers: z.array(z.record(z.any())).max(2000).optional(),
+    sweep: z.object({ scanned: z.number(), alive: z.record(z.any()) }).optional(),
+    extraSubnets: z.array(z.string().max(50)).max(50).optional(),
+    errors: z.array(z.string().max(500)).max(50).optional(),
+    durationSeconds: z.number().optional(),
+  })
+  .strict();
+
+const serviceCheckSchema = z
+  .object({
+    name: z.string().min(1).max(100),
+    type: z.enum(['http', 'tcp']),
+    target: z.string().min(3).max(500),
+    intervalSeconds: z.coerce.number().int().min(30).max(3600).default(60),
+    timeoutMs: z.coerce.number().int().min(1000).max(30000).default(8000),
+    expectedStatus: z.coerce.number().int().min(100).max(599).nullable().optional(),
+    keyword: z.string().max(200).nullable().optional(),
+    enabled: z.boolean().default(true),
+  })
+  .strict()
+  .refine((d) => (d.type === 'http' ? /^https?:\/\/[^\s]+$/i.test(d.target) : /^[a-z0-9.-]+:\d{1,5}$/i.test(d.target)), {
+    message: 'Destino inválido: una URL http(s):// para HTTP, o host:puerto para TCP',
+    path: ['target'],
+  });
+
 module.exports = {
+  inventorySchema,
+  serviceCheckSchema,
   telemetrySchema,
   loginSchema,
   backupStatusSchema,

@@ -31,8 +31,11 @@ import re
 import socket as socket_module
 import subprocess
 import sys
+import ipaddress
+import struct
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -69,7 +72,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.3.0"
+AGENT_VERSION = "1.4.0"
 
 
 def get_base_dir() -> Path:
@@ -103,6 +106,16 @@ DIAGNOSTICS_INTERVAL_SECONDS = int(os.getenv("DIAGNOSTICS_INTERVAL_SECONDS", "30
 INTERNET_PROBE_HOSTS = [h.strip() for h in os.getenv("INTERNET_PROBE_HOSTS", "1.1.1.1,8.8.8.8").split(",") if h.strip()]
 PUBLIC_IP_URLS = ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com")
 PUBLIC_IP_REFRESH_SECONDS = int(os.getenv("PUBLIC_IP_REFRESH_SECONDS", "300"))
+# Inventario de red (PCs, usuarios del AD, impresoras, mapa de IPs). Lo hace
+# el servidor que tiene los roles de AD/DHCP (BSFS2): "auto" lo activa solo
+# si detecta esos roles; "true"/"false" lo fuerzan.
+INVENTORY_ENABLED = os.getenv("INVENTORY_ENABLED", "auto").strip().lower()
+INVENTORY_INTERVAL_SECONDS = int(os.getenv("INVENTORY_INTERVAL_SECONDS", "300"))
+# Subredes adicionales a barrer que no tengan ambito DHCP (ej. la de
+# servidores con IP fija): "192.168.110.0/24,10.0.5.0/24".
+INVENTORY_EXTRA_SUBNETS = [x.strip() for x in os.getenv("INVENTORY_EXTRA_SUBNETS", "").split(",") if x.strip()]
+SNMP_COMMUNITY = os.getenv("SNMP_COMMUNITY", "public")
+INVENTORY_MAX_IPS = 4096
 
 logger = logging.getLogger("enterprise-soc-agent")
 logger.setLevel(logging.INFO)
@@ -1493,6 +1506,592 @@ def start_control_connection() -> None:
         state["backoff"] = min(state["backoff"] * 2, 120)
 
 
+# ---------------------------------------------------------------------------
+# Inventario de red: DHCP, Active Directory, sesiones de usuarios, impresoras
+# y barrido de IPs. Corre en un hilo aparte cada INVENTORY_INTERVAL_SECONDS,
+# solo en el servidor con los roles (ver INVENTORY_ENABLED).
+# ---------------------------------------------------------------------------
+
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def run_powershell_json(script: str, timeout: int = 180) -> list[Any]:
+    """Ejecuta PowerShell y devuelve la salida de ConvertTo-Json como lista.
+
+    El script debe terminar escribiendo JSON (ConvertTo-Json -InputObject
+    @(...)); la salida se fuerza a UTF-8 para no romper tildes/eñes en
+    nombres de usuarios y equipos.
+    """
+    full = (
+        "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + script
+    )
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", full],
+        capture_output=True,
+        timeout=timeout,
+        creationflags=_CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(_decode_console_bytes(proc.stderr or b"").strip()[-400:] or f"codigo {proc.returncode}")
+    out = (proc.stdout or b"").decode("utf-8", errors="replace").strip().lstrip("﻿")
+    if not out:
+        return []
+    data = json.loads(out)
+    return data if isinstance(data, list) else [data]
+
+
+def _service_exists(name: str) -> bool:
+    if not hasattr(psutil, "win_service_get"):
+        return False
+    try:
+        psutil.win_service_get(name)
+        return True
+    except Exception:
+        return False
+
+
+def detect_inventory_roles() -> dict[str, bool]:
+    return {
+        "dhcp": _service_exists("DHCPServer"),
+        "ad": _service_exists("NTDS"),
+        "printServer": _service_exists("Spooler"),
+    }
+
+
+PS_DHCP = r"""
+Import-Module DhcpServer
+function Iso($d) { if ($d) { $d.ToUniversalTime().ToString('o') } else { $null } }
+$scopes = @(Get-DhcpServerv4Scope | ForEach-Object {
+  $s = $_
+  $st = Get-DhcpServerv4ScopeStatistics -ScopeId $s.ScopeId
+  [pscustomobject]@{
+    scopeId = $s.ScopeId.IPAddressToString; name = $s.Name; mask = $s.SubnetMask.IPAddressToString
+    start = $s.StartRange.IPAddressToString; end = $s.EndRange.IPAddressToString; state = "$($s.State)"
+    leaseHours = [math]::Round($s.LeaseDuration.TotalHours, 1)
+    inUse = [int]$st.InUse; free = [int]$st.Free; percentInUse = [math]::Round([double]$st.PercentageInUse, 1); reserved = [int]$st.Reserved
+    exclusions = @(Get-DhcpServerv4ExclusionRange -ScopeId $s.ScopeId -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ start = $_.StartRange.IPAddressToString; end = $_.EndRange.IPAddressToString } })
+    leases = @(Get-DhcpServerv4Lease -ScopeId $s.ScopeId -AllLeases -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = $_.IPAddress.IPAddressToString; mac = "$($_.ClientId)"; host = $_.HostName; state = "$($_.AddressState)"; expires = (Iso $_.LeaseExpiryTime) } })
+    reservations = @(Get-DhcpServerv4Reservation -ScopeId $s.ScopeId -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = $_.IPAddress.IPAddressToString; mac = "$($_.ClientId)"; name = $_.Name; description = $_.Description } })
+  }
+})
+ConvertTo-Json -InputObject $scopes -Depth 5 -Compress
+"""
+
+PS_AD_COMPUTERS = r"""
+Import-Module ActiveDirectory
+function Iso($d) { if ($d) { $d.ToUniversalTime().ToString('o') } else { $null } }
+$c = @(Get-ADComputer -Filter * -Properties LastLogonDate,OperatingSystem,OperatingSystemVersion,Enabled,Description,whenCreated,DNSHostName | ForEach-Object {
+  [pscustomobject]@{ name = $_.Name; dns = $_.DNSHostName; os = $_.OperatingSystem; osVersion = $_.OperatingSystemVersion; enabled = [bool]$_.Enabled
+    description = $_.Description; lastLogon = (Iso $_.LastLogonDate); created = (Iso $_.whenCreated); ou = ($_.DistinguishedName -replace '^CN=[^,]+,', '') }
+})
+ConvertTo-Json -InputObject $c -Depth 3 -Compress
+"""
+
+PS_AD_USERS = r"""
+Import-Module ActiveDirectory
+function Iso($d) { if ($d) { $d.ToUniversalTime().ToString('o') } else { $null } }
+$u = @(Get-ADUser -Filter * -Properties DisplayName,Department,Title,Enabled,LockedOut,PasswordNeverExpires,PasswordLastSet,LastLogonDate,'msDS-UserPasswordExpiryTimeComputed',EmailAddress | ForEach-Object {
+  $exp = $null
+  try { $raw = [int64]$_.'msDS-UserPasswordExpiryTimeComputed'; if ($raw -gt 0 -and $raw -lt 2650467743999999999) { $exp = [datetime]::FromFileTimeUtc($raw).ToString('o') } } catch { }
+  [pscustomobject]@{ sam = $_.SamAccountName; displayName = $_.DisplayName; department = $_.Department; title = $_.Title; email = $_.EmailAddress
+    enabled = [bool]$_.Enabled; lockedOut = [bool]$_.LockedOut; neverExpires = [bool]$_.PasswordNeverExpires
+    passwordLastSet = (Iso $_.PasswordLastSet); passwordExpiresAt = $exp; lastLogon = (Iso $_.LastLogonDate) }
+})
+ConvertTo-Json -InputObject $u -Depth 3 -Compress
+"""
+
+PS_PRINT_QUEUES = r"""
+$ports = @{}
+Get-PrinterPort -ErrorAction SilentlyContinue | ForEach-Object { if ($_.PrinterHostAddress) { $ports[$_.Name] = $_.PrinterHostAddress } }
+$p = @(Get-Printer -ErrorAction SilentlyContinue | Where-Object { $ports.ContainsKey($_.PortName) } | ForEach-Object {
+  [pscustomobject]@{ name = $_.Name; ip = $ports[$_.PortName]; driver = $_.DriverName; status = "$($_.PrinterStatus)"; jobs = [int]$_.JobCount; shared = [bool]$_.Shared; location = $_.Location; comment = $_.Comment }
+})
+ConvertTo-Json -InputObject $p -Depth 3 -Compress
+"""
+
+
+def _ps_section(name: str, script: str) -> tuple[list[Any], str | None]:
+    try:
+        return run_powershell_json(script), None
+    except Exception as exc:
+        logger.warning("Inventario: fallo '%s': %s", name, exc)
+        return [], f"{name}: {exc}"[:400]
+
+
+# --- Eventos de seguridad del controlador de dominio -----------------------
+
+_EVT_DATA_RE = re.compile(r"<Data Name=['\"]([^'\"]+)['\"]>([^<]*)</Data>")
+_last_security_query: str | None = None  # ISO UTC del ultimo evento procesado
+_ip_last_user: dict[str, dict[str, str]] = {}
+
+DIRECTORY_EVENT_IDS = {
+    4720: "user_created",
+    4726: "user_deleted",
+    4724: "password_reset",
+    4740: "lockout",
+    4767: "unlock",
+    4728: "group_member_added",
+    4732: "group_member_added",
+    4756: "group_member_added",
+    4729: "group_member_removed",
+    4733: "group_member_removed",
+    4757: "group_member_removed",
+}
+
+
+def _evt_data(xml: str) -> dict[str, str]:
+    return {k: v for k, v in _EVT_DATA_RE.findall(xml)}
+
+
+def _clean_ip(value: str | None) -> str | None:
+    if not value or value in ("-", "::1", "127.0.0.1"):
+        return None
+    return value.replace("::ffff:", "")
+
+
+def collect_security_events() -> dict[str, Any]:
+    """Inicios de sesion (4768: el DC entrega un TGT de Kerberos cuando un
+    usuario inicia sesion en una PC; trae usuario + IP de la PC), intentos
+    fallidos (4771) y auditoria del directorio. Incremental: solo lo nuevo
+    desde la corrida anterior (la primera mira las ultimas 24 h)."""
+    global _last_security_query
+    since = _last_security_query or datetime.fromtimestamp(time.time() - 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    time_filter = f"TimeCreated[@SystemTime>'{since}']"
+
+    logons: list[dict[str, Any]] = []
+    failures: dict[tuple[str, str | None], int] = {}
+    newest = since
+
+    for xml in _evt_query("Security", f"*[System[(EventID=4768) and {time_filter}]]", max_events=20000):
+        when = _evt_time_iso(xml)
+        data = _evt_data(xml)
+        user = data.get("TargetUserName", "")
+        if not when or not user or user.endswith("$") or data.get("Status", "0x0") != "0x0":
+            continue
+        ip = _clean_ip(data.get("IpAddress"))
+        if not ip:
+            continue
+        newest = max(newest, when)
+        prev = _ip_last_user.get(ip)
+        if prev and prev["user"] == user and prev["at"] >= when:
+            continue
+        _ip_last_user[ip] = {"user": user, "at": when}
+        logons.append({"user": user, "domain": data.get("TargetDomainName"), "ip": ip, "at": when})
+
+    for xml in _evt_query("Security", f"*[System[(EventID=4771 or EventID=4625) and {time_filter}]]", max_events=5000):
+        when = _evt_time_iso(xml)
+        data = _evt_data(xml)
+        user = data.get("TargetUserName", "")
+        if not when or not user or user.endswith("$"):
+            continue
+        newest = max(newest, when)
+        key = (user.lower(), _clean_ip(data.get("IpAddress")))
+        failures[key] = failures.get(key, 0) + 1
+
+    ids = " or ".join(f"EventID={i}" for i in DIRECTORY_EVENT_IDS)
+    directory: list[dict[str, Any]] = []
+    for xml in _evt_query("Security", f"*[System[({ids}) and {time_filter}]]", max_events=2000):
+        when = _evt_time_iso(xml)
+        id_match = _EVT_ID_RE.search(xml)
+        if not when or not id_match:
+            continue
+        event_id = int(id_match.group(1))
+        data = _evt_data(xml)
+        newest = max(newest, when)
+        kind = DIRECTORY_EVENT_IDS[event_id]
+        entry = {"eventId": event_id, "kind": kind, "at": when, "actor": data.get("SubjectUserName")}
+        if kind.startswith("group_member"):
+            member = data.get("MemberName", "")
+            cn = re.match(r"CN=([^,]+)", member)
+            entry.update(target=cn.group(1) if cn else member, group=data.get("TargetUserName"))
+        else:
+            entry["target"] = data.get("TargetUserName")
+        if kind == "lockout":
+            entry["callerHost"] = data.get("TargetDomainName")  # "Caller Computer Name" en el 4740
+        directory.append(entry)
+
+    _last_security_query = newest
+    return {
+        "logons": logons[-5000:],
+        "failedAuth": [{"user": u, "ip": ip, "count": c} for (u, ip), c in sorted(failures.items(), key=lambda x: -x[1])][:200],
+        "directoryEvents": directory,
+    }
+
+
+# --- Barrido de IPs ---------------------------------------------------------
+
+_ARP_RE = re.compile(r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})")
+
+
+def probe_alive(ip: str) -> str | None:
+    """True si algo responde en esa IP: ping ICMP o un puerto TCP comun. Un
+    "conexion rechazada" tambien cuenta (el equipo existe aunque bloquee
+    ping, como Windows con el firewall por defecto)."""
+    if icmp_ping(ip, 700) is not None:
+        return "icmp"
+    for port in (445, 135, 3389, 9100, 80, 443, 22):
+        try:
+            with socket_module.create_connection((ip, port), timeout=0.35):
+                return f"tcp/{port}"
+        except ConnectionRefusedError:
+            return f"tcp/{port}"
+        except OSError:
+            continue
+    return None
+
+
+def read_arp_table() -> dict[str, str]:
+    if sys.platform != "win32":
+        return {}
+    try:
+        proc = subprocess.run(["arp", "-a"], capture_output=True, timeout=15, creationflags=_CREATE_NO_WINDOW)
+    except Exception:
+        return {}
+    out = _decode_console_bytes(proc.stdout or b"")
+    return {ip: mac.lower() for ip, mac in _ARP_RE.findall(out) if not mac.lower().startswith("ff-ff")}
+
+
+def ips_to_sweep(scopes: list[dict[str, Any]]) -> list[str]:
+    ips: list[str] = []
+    seen: set[str] = set()
+
+    def add_range(first: ipaddress.IPv4Address, last: ipaddress.IPv4Address) -> None:
+        cur = int(first)
+        while cur <= int(last) and len(ips) < INVENTORY_MAX_IPS:
+            ip = str(ipaddress.IPv4Address(cur))
+            if ip not in seen:
+                seen.add(ip)
+                ips.append(ip)
+            cur += 1
+
+    # La subred COMPLETA de cada ambito, no solo el rango que reparte el
+    # DHCP: asi tambien aparecen las IPs fijas (impresoras, servidores, APs).
+    for scope in scopes:
+        try:
+            net = ipaddress.IPv4Network(f"{scope['scopeId']}/{scope['mask']}", strict=False)
+            hosts = list(net.hosts())
+            if hosts:
+                add_range(hosts[0], hosts[-1])
+        except (KeyError, ValueError):
+            continue
+    for subnet in INVENTORY_EXTRA_SUBNETS:
+        try:
+            net = ipaddress.IPv4Network(subnet, strict=False)
+        except ValueError:
+            continue
+        hosts = list(net.hosts())
+        if hosts:
+            add_range(hosts[0], hosts[-1])
+    return ips
+
+
+def sweep_ips(ips: list[str]) -> dict[str, str]:
+    if not ips:
+        return {}
+    with ThreadPoolExecutor(max_workers=128) as pool:
+        results = pool.map(probe_alive, ips)
+        return {ip: via for ip, via in zip(ips, results) if via}
+
+
+# --- SNMP v2c minimo (sin dependencias) para leer impresoras ----------------
+
+def _ber_len(n: int) -> bytes:
+    if n < 0x80:
+        return bytes([n])
+    body = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(body)]) + body
+
+
+def _ber(tag: int, payload: bytes) -> bytes:
+    return bytes([tag]) + _ber_len(len(payload)) + payload
+
+
+def _ber_int(v: int) -> bytes:
+    body = v.to_bytes(max(1, (v.bit_length() + 8) // 8), "big", signed=True)
+    return _ber(0x02, body)
+
+
+def _ber_oid(oid: str) -> bytes:
+    parts = [int(x) for x in oid.strip(".").split(".")]
+    out = bytearray([parts[0] * 40 + parts[1]])
+    for p in parts[2:]:
+        chunk = [p & 0x7F]
+        p >>= 7
+        while p:
+            chunk.insert(0, 0x80 | (p & 0x7F))
+            p >>= 7
+        out.extend(chunk)
+    return _ber(0x06, bytes(out))
+
+
+def _ber_parse(data: bytes, pos: int = 0) -> tuple[int, bytes, int]:
+    tag = data[pos]
+    length = data[pos + 1]
+    pos += 2
+    if length & 0x80:
+        n = length & 0x7F
+        length = int.from_bytes(data[pos:pos + n], "big")
+        pos += n
+    return tag, data[pos:pos + length], pos + length
+
+
+def _decode_oid(body: bytes) -> str:
+    parts = [body[0] // 40, body[0] % 40]
+    value = 0
+    for b in body[1:]:
+        value = (value << 7) | (b & 0x7F)
+        if not b & 0x80:
+            parts.append(value)
+            value = 0
+    return ".".join(str(p) for p in parts)
+
+
+def _decode_value(tag: int, body: bytes) -> Any:
+    if tag == 0x02:
+        return int.from_bytes(body, "big", signed=True) if body else 0
+    if tag in (0x41, 0x42, 0x43, 0x46):
+        return int.from_bytes(body, "big", signed=False) if body else 0
+    if tag == 0x04:
+        return body
+    if tag == 0x06:
+        return _decode_oid(body)
+    if tag == 0x40:
+        return ".".join(str(b) for b in body)
+    return None  # null, noSuchObject (0x80), noSuchInstance (0x81), endOfMibView (0x82)
+
+
+def snmp_request(host: str, oids: list[str], next_: bool = False, timeout: float = 1.5, community: str | None = None) -> list[tuple[str, Any]] | None:
+    """GET (o GETNEXT) SNMP v2c. Devuelve [(oid, valor)] o None si no responde."""
+    request_id = int.from_bytes(os.urandom(3), "big")
+    varbinds = b"".join(_ber(0x30, _ber_oid(o) + b"\x05\x00") for o in oids)
+    pdu = _ber(0xA1 if next_ else 0xA0, _ber_int(request_id) + _ber_int(0) + _ber_int(0) + _ber(0x30, varbinds))
+    message = _ber(0x30, _ber_int(1) + _ber(0x04, (community or SNMP_COMMUNITY).encode()) + pdu)
+
+    sock = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(message, (host, 161))
+        data, _ = sock.recvfrom(65535)
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+    try:
+        _, msg, _ = _ber_parse(data)
+        _, _, pos = _ber_parse(msg, 0)  # version
+        _, _, pos = _ber_parse(msg, pos)  # community
+        _, pdu_body, _ = _ber_parse(msg, pos)
+        _, _, p = _ber_parse(pdu_body, 0)  # request id
+        _, err, p = _ber_parse(pdu_body, p)
+        _, _, p = _ber_parse(pdu_body, p)
+        if int.from_bytes(err, "big"):
+            return None
+        _, vbs, _ = _ber_parse(pdu_body, p)
+        out = []
+        q = 0
+        while q < len(vbs):
+            _, vb, q = _ber_parse(vbs, q)
+            _, oid_body, r = _ber_parse(vb, 0)
+            vtag, vbody, _ = _ber_parse(vb, r)
+            out.append((_decode_oid(oid_body), _decode_value(vtag, vbody)))
+        return out
+    except (IndexError, ValueError):
+        return None
+
+
+def snmp_walk(host: str, base: str, limit: int = 24) -> list[tuple[str, Any]]:
+    rows = []
+    oid = base
+    for _ in range(limit):
+        res = snmp_request(host, [oid], next_=True)
+        if not res:
+            break
+        oid, value = res[0]
+        if not oid.startswith(base + ".") or value is None:
+            break
+        rows.append((oid, value))
+    return rows
+
+
+def _txt(value: Any) -> str | None:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip("\x00 ").strip() or None
+    return None if value is None else str(value)
+
+
+PRINTER_STATUS = {1: "other", 2: "unknown", 3: "idle", 4: "printing", 5: "warmup"}
+DEVICE_STATUS = {1: "unknown", 2: "running", 3: "warning", 4: "testing", 5: "down"}
+# hrPrinterDetectedErrorState (RFC 3805): bit 0 = MSB del primer octeto.
+PRINTER_ERROR_BITS = [
+    "lowPaper", "noPaper", "lowToner", "noToner", "doorOpen", "jammed", "offline", "serviceRequested",
+    "inputTrayMissing", "outputTrayMissing", "markerSupplyMissing", "outputNearFull", "outputFull", "inputTrayEmpty", "overduePreventMaint",
+]
+
+
+def snmp_printer_info(ip: str) -> dict[str, Any] | None:
+    """Estado de una impresora por la Printer-MIB estandar (HP, Brother,
+    Epson, Ricoh, Kyocera, Lexmark...). None si no es una impresora o no
+    responde SNMP."""
+    status = snmp_request(ip, ["1.3.6.1.2.1.25.3.5.1.1"], next_=True, timeout=1.2)
+    if not status or not status[0][0].startswith("1.3.6.1.2.1.25.3.5.1.1."):
+        return None
+    index = status[0][0].rsplit(".", 1)[-1]
+    info: dict[str, Any] = {"ip": ip, "printerStatus": PRINTER_STATUS.get(status[0][1], "unknown")}
+
+    base = snmp_request(
+        ip,
+        [
+            "1.3.6.1.2.1.1.1.0",  # sysDescr
+            "1.3.6.1.2.1.1.5.0",  # sysName
+            "1.3.6.1.2.1.1.6.0",  # sysLocation
+            f"1.3.6.1.2.1.25.3.2.1.3.{index}",  # hrDeviceDescr (modelo)
+            f"1.3.6.1.2.1.25.3.2.1.5.{index}",  # hrDeviceStatus
+            f"1.3.6.1.2.1.25.3.5.1.2.{index}",  # hrPrinterDetectedErrorState
+            "1.3.6.1.2.1.43.5.1.1.17.1",  # prtGeneralSerialNumber
+            "1.3.6.1.2.1.43.10.2.1.4.1.1",  # prtMarkerLifeCount (contador de paginas)
+        ],
+    ) or []
+    values = dict(base)
+    info["sysDescr"] = _txt(values.get("1.3.6.1.2.1.1.1.0"))
+    info["sysName"] = _txt(values.get("1.3.6.1.2.1.1.5.0"))
+    info["location"] = _txt(values.get("1.3.6.1.2.1.1.6.0"))
+    info["model"] = _txt(values.get(f"1.3.6.1.2.1.25.3.2.1.3.{index}")) or info["sysDescr"]
+    info["deviceStatus"] = DEVICE_STATUS.get(values.get(f"1.3.6.1.2.1.25.3.2.1.5.{index}"), "unknown")
+    info["serial"] = _txt(values.get("1.3.6.1.2.1.43.5.1.1.17.1"))
+    pages = values.get("1.3.6.1.2.1.43.10.2.1.4.1.1")
+    info["pageCount"] = pages if isinstance(pages, int) else None
+
+    errors = []
+    raw = values.get(f"1.3.6.1.2.1.25.3.5.1.2.{index}")
+    if isinstance(raw, bytes):
+        for i, name in enumerate(PRINTER_ERROR_BITS):
+            byte, bit = divmod(i, 8)
+            if byte < len(raw) and raw[byte] & (0x80 >> bit):
+                errors.append(name)
+    info["errors"] = errors
+
+    # Consumibles: descripcion, capacidad maxima y nivel (Printer-MIB).
+    descriptions = snmp_walk(ip, "1.3.6.1.2.1.43.11.1.1.6.1")
+    maxima = dict((o.rsplit(".", 1)[-1], v) for o, v in snmp_walk(ip, "1.3.6.1.2.1.43.11.1.1.8.1"))
+    levels = dict((o.rsplit(".", 1)[-1], v) for o, v in snmp_walk(ip, "1.3.6.1.2.1.43.11.1.1.9.1"))
+    supplies = []
+    for oid, desc in descriptions:
+        idx = oid.rsplit(".", 1)[-1]
+        max_cap, level = maxima.get(idx), levels.get(idx)
+        percent = None
+        if isinstance(max_cap, int) and isinstance(level, int) and max_cap > 0 and level >= 0:
+            percent = round(100 * level / max_cap)
+        supplies.append({"name": _txt(desc) or f"Consumible {idx}", "percent": percent, "level": level, "max": max_cap})
+    info["supplies"] = supplies[:12]
+    return info
+
+
+def collect_printers(alive: dict[str, str], queues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = set(alive) | {q["ip"] for q in queues if q.get("ip")}
+    candidates = {ip for ip in candidates if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip or "")}
+    with ThreadPoolExecutor(max_workers=48) as pool:
+        found = [p for p in pool.map(snmp_printer_info, sorted(candidates)) if p]
+    by_ip = {p["ip"]: p for p in found}
+    # Colas del servidor de impresion cuya impresora no respondio SNMP:
+    # igual se reportan (con el estado que ve Windows y si responde ping).
+    for q in queues:
+        ip = q.get("ip")
+        entry = by_ip.get(ip)
+        if entry is None:
+            entry = {"ip": ip, "printerStatus": None, "snmp": False, "reachable": ip in alive}
+            by_ip[ip] = entry
+        entry.setdefault("queues", []).append(
+            {"name": q.get("name"), "status": q.get("status"), "jobs": q.get("jobs"), "shared": q.get("shared"), "driver": q.get("driver")}
+        )
+        entry.setdefault("location", q.get("location"))
+    return list(by_ip.values())
+
+
+_inventory_roles: dict[str, bool] | None = None
+
+
+def inventory_should_run() -> bool:
+    global _inventory_roles
+    if INVENTORY_ENABLED in ("false", "0", "no"):
+        return False
+    if _inventory_roles is None:
+        _inventory_roles = detect_inventory_roles()
+        logger.info("Roles detectados para el inventario de red: %s", _inventory_roles)
+    if INVENTORY_ENABLED in ("true", "1", "yes"):
+        return True
+    return _inventory_roles["dhcp"] or _inventory_roles["ad"] or bool(INVENTORY_EXTRA_SUBNETS)
+
+
+def build_inventory_payload() -> dict[str, Any]:
+    started = time.monotonic()
+    roles = _inventory_roles or detect_inventory_roles()
+    errors: list[str] = []
+    payload: dict[str, Any] = {"collectedAt": _utc_now_iso(), "roles": roles, "hostname": os.getenv("COMPUTERNAME", "")}
+
+    scopes: list[dict[str, Any]] = []
+    if roles.get("dhcp"):
+        scopes, err = _ps_section("DHCP", PS_DHCP)
+        errors += [err] if err else []
+    payload["scopes"] = scopes
+
+    if roles.get("ad"):
+        payload["computers"], err = _ps_section("equipos del AD", PS_AD_COMPUTERS)
+        errors += [err] if err else []
+        payload["users"], err = _ps_section("usuarios del AD", PS_AD_USERS)
+        errors += [err] if err else []
+        try:
+            payload.update(collect_security_events())
+        except Exception as exc:
+            errors.append(f"eventos de seguridad: {exc}"[:400])
+
+    queues: list[dict[str, Any]] = []
+    if roles.get("printServer"):
+        queues, _ = _ps_section("colas de impresion", PS_PRINT_QUEUES)
+
+    targets = ips_to_sweep(scopes)
+    alive = sweep_ips(targets)
+    arp = read_arp_table()
+    payload["sweep"] = {"scanned": len(targets), "alive": {ip: {"via": via, "mac": arp.get(ip)} for ip, via in alive.items()}}
+    payload["extraSubnets"] = INVENTORY_EXTRA_SUBNETS
+    payload["printers"] = collect_printers(alive, queues)
+    payload["errors"] = errors
+    payload["durationSeconds"] = round(time.monotonic() - started, 1)
+    return payload
+
+
+def send_inventory(payload: dict[str, Any]) -> None:
+    url = f"{BACKEND_URL}/api/inventory"
+    headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        response.raise_for_status()
+        logger.info(
+            "Inventario enviado OK: %d ambito(s), %d equipo(s) AD, %d IP(s) activas de %d, %d impresora(s), %d inicio(s) de sesion (%.0fs)",
+            len(payload.get("scopes", [])),
+            len(payload.get("computers", [])),
+            len(payload["sweep"]["alive"]),
+            payload["sweep"]["scanned"],
+            len(payload.get("printers", [])),
+            len(payload.get("logons", [])),
+            payload["durationSeconds"],
+        )
+    except requests.exceptions.RequestException as exc:
+        status = getattr(exc.response, "status_code", "sin respuesta")
+        logger.error("Fallo al enviar el inventario (HTTP %s): %s", status, exc)
+
+
+def inventory_loop() -> None:
+    while True:
+        try:
+            if inventory_should_run():
+                send_inventory(build_inventory_payload())
+        except Exception:
+            logger.exception("Error en el ciclo de inventario de red")
+        time.sleep(INVENTORY_INTERVAL_SECONDS)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente de monitoreo Enterprise SOC")
     parser.add_argument(
@@ -1505,6 +2104,11 @@ def parse_args() -> argparse.Namespace:
         "--once",
         action="store_true",
         help="Ejecuta un unico ciclo de recoleccion y envio, y termina (util para probar sin esperar 60s).",
+    )
+    parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="Ejecuta un ciclo de inventario de red (DHCP/AD/impresoras/IPs), muestra el resumen y termina.",
     )
     parser.add_argument(
         "--version",
@@ -1584,6 +2188,15 @@ def main() -> None:
 
     validate_config()
     _cleanup_previous_update()
+
+    if args.inventory:
+        global _inventory_roles
+        _inventory_roles = detect_inventory_roles()
+        payload = build_inventory_payload()
+        print(json.dumps({k: (v if k in ("roles", "errors", "durationSeconds") else len(v) if isinstance(v, list) else v) for k, v in payload.items() if k != "sweep"}, indent=2, ensure_ascii=False))
+        print(f"IPs activas: {len(payload['sweep']['alive'])} de {payload['sweep']['scanned']} barridas")
+        send_inventory(payload)
+        return
     logger.info(
         "Agente Enterprise SOC iniciado (v%s). Backend=%s, intervalo=%ss, debug=%s, once=%s",
         AGENT_VERSION,
@@ -1595,6 +2208,7 @@ def main() -> None:
 
     if not args.once:
         threading.Thread(target=start_control_connection, daemon=True).start()
+        threading.Thread(target=inventory_loop, daemon=True).start()
 
     while True:
         cycle_start = time.monotonic()

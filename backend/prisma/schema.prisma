@@ -50,6 +50,13 @@ enum EventType {
   NETWORK_DEGRADED
   ISP_FAILOVER
   INTERNET_OUTAGE
+  // Inventario de red (services/inventory.js), reportado por el servidor
+  // con AD/DHCP.
+  DHCP_SCOPE_EXHAUSTED
+  IP_CONFLICT
+  PRINTER_ISSUE
+  AD_ACCOUNT_LOCKOUT
+  PRIVILEGED_GROUP_CHANGE
 }
 
 enum BackupResult {
@@ -294,6 +301,10 @@ model Server {
   diagnosticsAt DateTime?
   network       Json?
   networkAt     DateTime?
+  // Ultimo inventario de red recibido de este servidor (si tiene los roles
+  // de AD/DHCP): roles, duracion, errores de cada seccion.
+  inventoryAt      DateTime?
+  inventorySummary Json?
 
   // Synthetic monitoring (services/syntheticMonitor.js): puerto TCP a
   // chequear activamente cada pocos minutos. Null = chequeo desactivado para
@@ -423,4 +434,166 @@ model UnifiDevice {
   lastSyncAt       DateTime  @default(now())
 
   @@map("unifi_devices")
+}
+
+// ---------------------------------------------------------------------------
+// Inventario de red (ver services/inventory.js). Lo alimenta el agente del
+// servidor con AD/DHCP (BSFS2) cada ~5 minutos.
+// ---------------------------------------------------------------------------
+
+// Ambito DHCP con su mapa de IPs ya calculado (libre / concedida /
+// reservada / excluida / fija en uso) -- una fila por ambito.
+model DhcpScope {
+  id           String   @id // scopeId, ej. 192.168.109.0
+  name         String?
+  mask         String
+  startRange   String
+  endRange     String
+  state        String?
+  leaseHours   Float?
+  inUse        Int      @default(0)
+  free         Int      @default(0)
+  reserved     Int      @default(0)
+  percentInUse Float    @default(0)
+  addresses    Json     // [{ip, status, host, mac, user, since}]
+  serverId     String?
+  updatedAt    DateTime @updatedAt
+
+  @@map("dhcp_scopes")
+}
+
+// PC o laptop (equipo del dominio y/o cliente DHCP).
+model Endpoint {
+  id               String    @id @default(uuid())
+  hostname         String    @unique // nombre corto en mayusculas
+  dnsName          String?
+  os               String?
+  osVersion        String?
+  enabled          Boolean?
+  description      String?
+  ou               String?
+  inAd             Boolean   @default(false)
+  adLastLogonAt    DateTime?
+  createdInAdAt    DateTime?
+  ipAddress        String?
+  macAddress       String?
+  online           Boolean   @default(false)
+  lastSeenOnlineAt DateTime?
+  statusChangedAt  DateTime  @default(now())
+  lastUser         String?
+  lastUserAt       DateTime?
+  firstSeenAt      DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([ipAddress])
+  @@map("endpoints")
+}
+
+model Printer {
+  id               String    @id // IP
+  name             String?
+  model            String?
+  serial           String?
+  location         String?
+  status           String?   // idle | printing | warmup | other | unknown
+  deviceStatus     String?   // running | warning | down | ...
+  errors           String[]  @default([])
+  supplies         Json?
+  pageCount        Int?
+  queues           Json?
+  snmp             Boolean   @default(true)
+  online           Boolean   @default(false)
+  lastSeenOnlineAt DateTime?
+  statusChangedAt  DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@map("printers")
+}
+
+// Usuario del Active Directory (foto del ultimo inventario).
+model DirectoryUser {
+  sam               String    @id
+  displayName       String?
+  department        String?
+  title             String?
+  email             String?
+  enabled           Boolean   @default(true)
+  lockedOut         Boolean   @default(false)
+  neverExpires      Boolean   @default(false)
+  passwordLastSet   DateTime?
+  passwordExpiresAt DateTime?
+  lastLogonAt       DateTime?
+  updatedAt         DateTime  @updatedAt
+
+  @@map("directory_users")
+}
+
+// Inicio de sesion de un usuario en un equipo (evento 4768 del DC).
+model LogonEvent {
+  id        String   @id @default(uuid())
+  username  String
+  ipAddress String
+  hostname  String?
+  at        DateTime
+
+  @@unique([username, ipAddress, at])
+  @@index([at])
+  @@index([hostname, at])
+  @@map("logon_events")
+}
+
+// Auditoria del directorio: bloqueos, altas/bajas, cambios de grupos...
+model DirectoryEvent {
+  id         String   @id @default(uuid())
+  eventId    Int
+  kind       String
+  target     String?
+  actor      String?
+  group      String?
+  callerHost String?
+  at         DateTime
+
+  @@unique([eventId, target, at])
+  @@index([at])
+  @@map("directory_events")
+}
+
+// ---------------------------------------------------------------------------
+// Monitores de servicios (services/serviceMonitor.js): chequeos HTTP/TCP/TLS
+// desde la VPS contra sistemas propios y de terceros.
+// ---------------------------------------------------------------------------
+model ServiceCheck {
+  id                  String    @id @default(uuid())
+  name                String
+  type                String    // http | tcp
+  target              String    // URL (http) o host:puerto (tcp)
+  intervalSeconds     Int       @default(60)
+  timeoutMs           Int       @default(8000)
+  expectedStatus      Int?      // http: vacio = cualquier 2xx/3xx
+  keyword             String?   // http: texto que debe aparecer en la respuesta
+  enabled             Boolean   @default(true)
+  status              String    @default("unknown") // up | down | unknown
+  lastLatencyMs       Int?
+  lastCheckedAt       DateTime?
+  lastChangeAt        DateTime?
+  lastError           String?
+  consecutiveFailures Int       @default(0)
+  certExpiresAt       DateTime?
+  certWarnedDays      Int?
+  createdAt           DateTime  @default(now())
+  results             ServiceCheckResult[]
+
+  @@map("service_checks")
+}
+
+model ServiceCheckResult {
+  id        String       @id @default(uuid())
+  checkId   String
+  check     ServiceCheck @relation(fields: [checkId], references: [id], onDelete: Cascade)
+  at        DateTime     @default(now())
+  up        Boolean
+  latencyMs Int?
+
+  @@index([checkId, at])
+  @@map("service_check_results")
 }

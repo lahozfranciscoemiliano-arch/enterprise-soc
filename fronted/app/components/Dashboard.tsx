@@ -20,6 +20,7 @@ import FortiTab from './tabs/FortiTab';
 import { getHealthStatus } from '../lib/health';
 import { emitTelemetry } from '../lib/liveBus';
 import RedTab from './tabs/RedTab';
+import InventarioTab from './tabs/InventarioTab';
 import type {
   ConnectionStatus,
   CurrentUser,
@@ -324,6 +325,15 @@ export default function Dashboard({
             });
           }
 
+          // Inventario de red y monitores de servicios: las vistas escuchan
+          // estos eventos para refrescarse solas.
+          if (message.type === 'INVENTORY_UPDATE') {
+            window.dispatchEvent(new CustomEvent('soc:inventory', { detail: message }));
+          }
+          if (message.type === 'SERVICE_CHECK') {
+            window.dispatchEvent(new CustomEvent('soc:service-check', { detail: message.check }));
+          }
+
           if (message.type === 'UNIFI_UPDATE') {
             window.dispatchEvent(new CustomEvent('soc:unifi', { detail: message.lastRun }));
           }
@@ -429,6 +439,7 @@ export default function Dashboard({
             />
           )}
           {activeTab === 'red' && <RedTab servers={serverList} isAdmin={role === 'ADMIN'} />}
+          {activeTab === 'inventario' && <InventarioTab />}
           {activeTab === 'topologia' && <TopologiaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'mapa' && <MapaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'backups' && <BackupsTab servers={serverList} />}

@@ -102,6 +102,20 @@ async function runHousekeeping() {
       if (r.count > 0) touchedTables.push('forti_events');
     }
 
+    // Inventario y monitores: retencion fija, no configurable (historial de
+    // sesiones/auditoria del AD 180 dias, resultados de monitores 30 dias).
+    {
+      const logons = await prisma.logonEvent.deleteMany({ where: { at: { lt: cutoffDate(180) } } });
+      const dirEvents = await prisma.directoryEvent.deleteMany({ where: { at: { lt: cutoffDate(180) } } });
+      const checks = await prisma.serviceCheckResult.deleteMany({ where: { at: { lt: cutoffDate(30) } } });
+      deleted.logonEvents = logons.count;
+      deleted.directoryEvents = dirEvents.count;
+      deleted.serviceCheckResults = checks.count;
+      if (logons.count > 0) touchedTables.push('logon_events');
+      if (dirEvents.count > 0) touchedTables.push('directory_events');
+      if (checks.count > 0) touchedTables.push('service_check_results');
+    }
+
     if (retention.AUDIT_LOG_RETENTION_DAYS > 0) {
       const r = await prisma.auditLog.deleteMany({
         where: { createdAt: { lt: cutoffDate(retention.AUDIT_LOG_RETENTION_DAYS) } },

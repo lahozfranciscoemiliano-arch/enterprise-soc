@@ -104,6 +104,37 @@ async function collectReportData(periodDays) {
 
   const stillOpenCritical = eventsInPeriod.filter((e) => e.status !== 'RESOLVED' && e.severity === 'CRITICAL');
 
+  // Inventario de red (si hay un servidor con AD/DHCP reportando).
+  const [endpointsTotal, endpointsOnline, printers, lockedUsers, expiringPasswords, scopes, lockouts, privChanges, logonsInPeriod] =
+    await Promise.all([
+      prisma.endpoint.count(),
+      prisma.endpoint.count({ where: { online: true } }),
+      prisma.printer.findMany({ select: { name: true, id: true, online: true, errors: true, supplies: true } }),
+      prisma.directoryUser.count({ where: { enabled: true, lockedOut: true } }),
+      prisma.directoryUser.count({
+        where: { enabled: true, neverExpires: false, passwordExpiresAt: { gte: new Date(), lte: new Date(Date.now() + 7 * 86400000) } },
+      }),
+      prisma.dhcpScope.findMany({ select: { id: true, name: true, percentInUse: true, free: true } }),
+      prisma.directoryEvent.count({ where: { kind: 'lockout', at: { gte: periodStart } } }),
+      prisma.directoryEvent.count({ where: { kind: 'group_member_added', at: { gte: periodStart } } }),
+      prisma.logonEvent.count({ where: { at: { gte: periodStart } } }),
+    ]);
+  const inventory = {
+    endpointsTotal,
+    endpointsOnline,
+    printersTotal: printers.length,
+    printersWithIssues: printers.filter((p) => !p.online || p.errors.length > 0).map((p) => `${p.name ?? p.id}${p.online ? `: ${p.errors.join(', ')}` : ': sin respuesta'}`),
+    lowSupplies: printers.flatMap((p) =>
+      (Array.isArray(p.supplies) ? p.supplies : []).filter((x) => x.percent !== null && x.percent <= 15).map((x) => `${p.name ?? p.id} — ${x.name} ${x.percent}%`)
+    ),
+    lockedUsers,
+    expiringPasswords,
+    scopes,
+    lockouts,
+    privChanges,
+    logonsInPeriod,
+  };
+
   return {
     generatedAt: new Date(),
     periodDays,
@@ -121,6 +152,7 @@ async function collectReportData(periodDays) {
     stillOpenCritical,
     fortiEventsInPeriod,
     fortiCriticalInPeriod,
+    inventory,
   };
 }
 
@@ -188,6 +220,24 @@ function drawReportPdf(doc, data) {
       doc.text(`• ${name}: ${count} alerta(s)`);
     }
     doc.moveDown(0.6);
+  }
+
+  const inv = data.inventory;
+  if (inv && (inv.endpointsTotal > 0 || inv.scopes.length > 0 || inv.printersTotal > 0)) {
+    doc.fontSize(13).fillColor('#111827').text('Inventario de red y Active Directory');
+    doc.moveDown(0.3);
+    doc.fontSize(10).fillColor('#374151');
+    doc.text(`Equipos del dominio: ${inv.endpointsTotal} (${inv.endpointsOnline} encendidos al generar el reporte)`);
+    doc.text(`Inicios de sesión registrados en el período: ${inv.logonsInPeriod}`);
+    doc.text(
+      `Usuarios bloqueados ahora: ${inv.lockedUsers} · contraseñas que vencen en 7 días: ${inv.expiringPasswords} · bloqueos en el período: ${inv.lockouts} · altas a grupos: ${inv.privChanges}`
+    );
+    for (const sc of inv.scopes) {
+      doc.text(`Ámbito DHCP ${sc.name ?? sc.id} (${sc.id}): ${sc.percentInUse}% en uso, ${sc.free} IP(s) libres`);
+    }
+    doc.text(`Impresoras: ${inv.printersTotal}${inv.printersWithIssues.length ? ` — con problemas: ${inv.printersWithIssues.slice(0, 8).join('; ')}` : ' — todas operativas'}`);
+    if (inv.lowSupplies.length > 0) doc.text(`Consumibles por agotarse: ${inv.lowSupplies.slice(0, 10).join('; ')}`);
+    doc.moveDown(0.8);
   }
 
   doc.fontSize(13).fillColor('#111827').text('Detalle por servidor');

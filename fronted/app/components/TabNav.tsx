@@ -12,6 +12,7 @@ import {
   Moon,
   ShieldCheck,
   Wifi,
+  Boxes,
   type LucideIcon,
 } from 'lucide-react';
 import type { TabId } from '../types';
@@ -20,6 +21,7 @@ const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'general', label: 'General', icon: LineChart },
   { id: 'monitoreo', label: 'Monitoreo', icon: MonitorCheck },
   { id: 'red', label: 'Red e Internet', icon: Wifi },
+  { id: 'inventario', label: 'Inventario', icon: Boxes },
   { id: 'topologia', label: 'Topología', icon: Network },
   { id: 'mapa', label: 'Mapa', icon: MapIcon },
   { id: 'backups', label: 'Backups', icon: DatabaseBackup },

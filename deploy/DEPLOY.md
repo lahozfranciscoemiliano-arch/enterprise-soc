@@ -558,6 +558,54 @@ duración al volver. El backend además pronostica cuándo se llena C:.
 4. Opcional en `.env`: `APP_TIMEZONE=America/Asuncion` (o la que corresponda)
    para las fechas dentro de los textos de alertas.
 
+## 35. Inventario de red (PCs, usuarios del AD, impresoras, IPs) y monitores de servicios
+
+**Quién recolecta.** El agente 1.4.0 detecta solo si el servidor tiene los
+roles de Active Directory (servicio NTDS) o DHCP (servicio DHCPServer) —en
+Grupo Bistro, **BSFS2**— y ahí corre cada 5 minutos, en un hilo aparte:
+
+- **DHCP:** ámbitos, concesiones, reservas y exclusiones (`Get-DhcpServerv4*`).
+- **Barrido de IPs:** la subred completa de cada ámbito (ping + puertos 445,
+  135, 3389, 9100, 80, 443 y 22; un "conexión rechazada" también cuenta como
+  equipo presente). Con eso arma el mapa: concedida / reservada / IP fija en
+  uso / conflicto / **libre en el rango DHCP** / **libre para IP fija**.
+- **Equipos del AD** (`Get-ADComputer`), cruzados con el DHCP para tener
+  IP, MAC y si están encendidos.
+- **Usuario de cada PC:** el DC registra un evento 4768 (ticket de Kerberos)
+  cada vez que alguien inicia sesión en un equipo, con usuario e IP. Se
+  muestra como "último usuario que inició sesión" (con historial).
+- **Usuarios del AD:** bloqueados, vencimiento de contraseña, último logon.
+- **Auditoría del AD:** bloqueos (4740), altas/bajas de usuarios, reseteos
+  de contraseña y cambios de grupos. Además cuenta los fallos de contraseña
+  (4771/4625) para detectar ataques de fuerza bruta.
+- **Impresoras:** por SNMP (Printer-MIB estándar) en todas las IPs activas y
+  en las colas del servidor de impresión: estado, errores (atasco, sin
+  papel, tapa abierta…), nivel de tóner/consumibles, contador y serie.
+
+**Alertas nuevas:** ámbito DHCP ≥ 85 % (crítica ≥ 95 %), conflicto de IP,
+impresora con problemas (tóner ≤ 10 % como aviso bajo), cuenta bloqueada
+(se cierra sola al desbloquearse), fuerza bruta (≥ 15 fallos de un usuario
+en 5 min) y **alta en un grupo privilegiado** (Domain Admins, etc.: crítica).
+
+**Opcional en BSFS2**: agregar al final de
+`C:\Program Files\EnterpriseSOC\Agent\.env` y reiniciar la tarea:
+
+```
+# Subredes sin DHCP que también se quieren barrer (servidores, cámaras…)
+INVENTORY_EXTRA_SUBNETS=192.168.110.0/24
+# Si las impresoras usan otra comunidad SNMP de solo lectura
+SNMP_COMMUNITY=public
+```
+
+Probar a mano (PowerShell como administrador, en la carpeta del agente):
+`.\enterprise-soc-agent.exe --inventory` muestra el resumen y lo envía.
+
+**Monitores de servicios** (pestaña Red e Internet): chequeos HTTP(S) o
+TCP desde la VPS a los sistemas del negocio (punto de venta en la nube,
+facturación, web, VPN). Uptime 24 h / 7 d / 30 d, latencia, historial, aviso
+de caída (confirmada con 2 fallos) y de vencimiento del certificado SSL
+(30, 14 y 3 días antes).
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

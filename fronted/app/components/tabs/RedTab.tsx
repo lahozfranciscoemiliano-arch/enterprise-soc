@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import StatCard from '../StatCard';
 import AlertRepeatInfo from '../AlertRepeatInfo';
+import ServiceMonitorsPanel from '../ServiceMonitorsPanel';
 import { formatUptime, internetLevel, ISP_LABEL, RESOURCE_LEVEL_COLOR, SEVERITY_STYLES, timeAgo } from '../../lib/health';
 import type { NetworkOverview, ServerSummary, UnifiDevice } from '../../types';
 
@@ -247,6 +248,8 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
           })}
         </div>
       </div>
+
+      <ServiceMonitorsPanel isAdmin={isAdmin} />
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
