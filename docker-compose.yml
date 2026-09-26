@@ -50,6 +50,9 @@ services:
       WEBHOOK_URL: ${WEBHOOK_URL:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      # Zona horaria de las fechas en textos de alertas/notificaciones (ej. America/Asuncion).
+      APP_TIMEZONE: ${APP_TIMEZONE:-}
+      UNIFI_API_KEY: ${UNIFI_API_KEY:-}
       FORTI_SYSLOG_ENABLED: ${FORTI_SYSLOG_ENABLED:-false}
       FORTI_SYSLOG_PORT: ${FORTI_SYSLOG_PORT:-5514}
     volumes:

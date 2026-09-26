@@ -11,14 +11,12 @@
 const net = require('net');
 const prisma = require('../prismaClient');
 const { isInMaintenance } = require('./alertEngine');
-const { createAndDispatchEvent } = require('./eventPipeline');
+const { createAndDispatchEvent, autoResolveEvents } = require('./eventPipeline');
 
 const CHECK_TIMEOUT_MS = 5000;
 const FAILURE_THRESHOLD = 2; // chequeos consecutivos fallidos antes de alertar (evita ruido por un timeout aislado)
-const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // no repetir la alerta mientras el sitio siga caido
 
 const consecutiveFailures = new Map(); // serverId -> count
-const lastAlertAt = new Map(); // serverId -> timestamp
 
 function checkTcpPort(host, port) {
   return new Promise((resolve) => {
@@ -61,6 +59,7 @@ async function runSyntheticChecks() {
 
       if (ok) {
         consecutiveFailures.set(server.id, 0);
+        await autoResolveEvents(server.id, ['NETWORK_UNREACHABLE'], server.name);
         return;
       }
 
@@ -69,14 +68,10 @@ async function runSyntheticChecks() {
 
       if (failures < FAILURE_THRESHOLD) return;
 
-      const lastAlert = lastAlertAt.get(server.id);
-      if (lastAlert && Date.now() - lastAlert < ALERT_COOLDOWN_MS) {
-        unreachable.push({ id: server.id, name: server.name });
-        return;
-      }
-
-      // Si el heartbeat ya lo tiene OFFLINE, es casi seguro que el sitio
-      // entero esta caido (no solo ese puerto) -- CRITICAL en vez de HIGH.
+      // Mientras siga caido, eventPipeline deduplica: la misma alerta abierta
+      // se actualiza en vez de repetirse. Si el heartbeat ya lo tiene
+      // OFFLINE, es casi seguro que el sitio entero esta caido (no solo ese
+      // puerto) -- CRITICAL en vez de HIGH.
       const severity = server.status === 'OFFLINE' ? 'CRITICAL' : 'HIGH';
 
       await createAndDispatchEvent({
@@ -86,9 +81,9 @@ async function runSyntheticChecks() {
         severity,
         description: `${server.name}: no se pudo conectar al puerto ${server.syntheticCheckPort} (${FAILURE_THRESHOLD} intentos fallidos seguidos).`,
         metadata: { port: server.syntheticCheckPort, consecutiveFailures: failures, serverId: server.id },
+        dedupKey: 'NETWORK_UNREACHABLE',
       });
 
-      lastAlertAt.set(server.id, Date.now());
       unreachable.push({ id: server.id, name: server.name });
     })
   );

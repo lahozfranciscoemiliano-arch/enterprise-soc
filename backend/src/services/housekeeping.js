@@ -80,7 +80,15 @@ async function runHousekeeping() {
     // pasado, purgarla la sacaria de la vista sin que nadie la haya resuelto.
     if (retention.SECURITY_EVENT_RETENTION_DAYS > 0) {
       const r = await prisma.securityEvent.deleteMany({
-        where: { status: 'RESOLVED', createdAt: { lt: cutoffDate(retention.SECURITY_EVENT_RETENTION_DAYS) } },
+        // Por fecha de cierre, no de apertura: una alerta deduplicada puede
+        // haber estado activa meses (createdAt viejo) y cerrarse ayer.
+        where: {
+          status: 'RESOLVED',
+          OR: [
+            { resolvedAt: { lt: cutoffDate(retention.SECURITY_EVENT_RETENTION_DAYS) } },
+            { resolvedAt: null, createdAt: { lt: cutoffDate(retention.SECURITY_EVENT_RETENTION_DAYS) } },
+          ],
+        },
       });
       deleted.securityEvents = r.count;
       if (r.count > 0) touchedTables.push('security_events');

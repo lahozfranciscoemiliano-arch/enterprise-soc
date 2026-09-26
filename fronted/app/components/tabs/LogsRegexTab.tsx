@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, BookOpen, CircleDot, CheckCircle2, Eye, ListFilter, Regex, Sparkles, X } from 'lucide-react';
 import { EVENT_STATUS_STYLES, SEVERITY_STYLES } from '../../lib/health';
 import type { EventStatus, Playbook, SecurityAlert } from '../../types';
+import AlertRepeatInfo from '../AlertRepeatInfo';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -248,9 +249,10 @@ export default function LogsRegexTab({
                         <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusStyle.badge}`}>
                           {statusStyle.label}
                         </span>
-                        {a.acknowledgedByName && (
+                        {a.acknowledgedByName && !a.autoResolved && (
                           <p className="mt-0.5 text-[10px] text-slate-500">por {a.acknowledgedByName}</p>
                         )}
+                        <AlertRepeatInfo alert={a} className="mt-1" />
                       </td>
                       <td className="py-2 pr-4 text-slate-500">
                         {a.description}

@@ -46,6 +46,20 @@ const SETTING_DEFS = {
   GEMINI_API_KEY: { envFallback: 'GEMINI_API_KEY', type: 'string', sensitive: true },
   GEMINI_MODEL: { envFallback: 'GEMINI_MODEL', type: 'string', sensitive: false },
 
+  // Monitoreo preventivo (services/preventiveChecks.js). Servicios cuya
+  // caida genera alerta: nombres separados por coma, admite comodin al final
+  // (MSSQL$* = cualquier instancia de SQL Server).
+  CRITICAL_SERVICES: { envFallback: null, type: 'string', sensitive: false },
+  PATCH_MAX_AGE_DAYS: { envFallback: null, type: 'number', sensitive: false },
+
+  // Ubiquiti UniFi (services/unifi.js). Modo "cloud" = Site Manager API
+  // (api.ui.com, API key de unifi.ui.com -> API); "local" = Integration API
+  // de la consola (necesita que la VPS llegue a la IP de la consola).
+  UNIFI_MODE: { envFallback: null, type: 'string', sensitive: false },
+  UNIFI_API_KEY: { envFallback: 'UNIFI_API_KEY', type: 'string', sensitive: true },
+  UNIFI_CONTROLLER_URL: { envFallback: null, type: 'string', sensitive: false },
+  UNIFI_VERIFY_TLS: { envFallback: null, type: 'boolean', sensitive: false },
+
   // Acceso remoto
   REMOTE_ACCESS_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
 

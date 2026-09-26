@@ -104,6 +104,11 @@ function broadcastTelemetry(server, telemetry) {
       cpuUsage: telemetry.cpuUsage,
       memoryUsage: telemetry.memoryUsage,
       diskUsage: telemetry.diskUsage,
+      networkIn: telemetry.networkIn,
+      networkOut: telemetry.networkOut,
+      processCount: telemetry.processCount,
+      latencyMs: telemetry.metadata?.network?.latencyMs ?? null,
+      lossPct: telemetry.metadata?.network?.lossPct ?? null,
       recordedAt: telemetry.recordedAt,
     },
   });
@@ -123,6 +128,12 @@ function broadcastBackupStatus(server, backup) {
       vssServiceOk: backup.vssServiceOk,
       detail: backup.detail,
       recordedAt: backup.recordedAt,
+      durationSeconds: backup.metadata?.durationSeconds ?? null,
+      successfulRuns: Array.isArray(backup.metadata?.versions)
+        ? backup.metadata.versions.length
+        : Array.isArray(backup.metadata?.runs)
+          ? backup.metadata.runs.filter((r) => r.result === 'SUCCESS').length
+          : null,
     },
   });
 }
@@ -144,6 +155,7 @@ function broadcastServerStatus(serverId, status) {
 
 module.exports = {
   createSocketServer,
+  broadcast,
   broadcastAlert,
   broadcastAlertUpdate,
   broadcastTelemetry,

@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'red' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {
@@ -44,6 +44,12 @@ export type SecurityAlert = {
   serverName?: string;
   acknowledgedByName?: string | null;
   aiTriage?: string | null;
+  /** Veces que se detecto la misma condicion mientras la alerta seguia activa (deduplicacion). */
+  occurrences?: number;
+  /** Ultima deteccion; igual a createdAt si occurrences = 1. */
+  lastSeenAt?: string;
+  /** La cerro el sistema porque la condicion se normalizo. */
+  autoResolved?: boolean;
   createdAt: string;
   resolvedAt?: string | null;
 };
@@ -57,19 +63,24 @@ export type BackupInfo = {
   vssServiceOk: boolean;
   detail: string | null;
   recordedAt: string | null;
+  /** Duracion del ultimo backup exitoso (Visor de Eventos, agente >= 1.3.0). */
+  durationSeconds?: number | null;
+  /** Cantidad de backups exitosos que Windows conserva. */
+  successfulRuns?: number | null;
 };
 
+/** Una corrida de backup (no un chequeo): GET /api/servers/:id/backup-status. */
 export type BackupHistoryEntry = {
   id: string;
-  serverId: string;
   result: BackupResult;
-  method: string;
-  lastBackupAt: string | null;
-  targetPath: string | null;
+  method: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationSeconds: number | null;
   sizeBytes: number | null;
-  vssServiceOk: boolean;
+  targetPath: string | null;
   detail: string | null;
-  recordedAt: string;
+  source: 'eventlog' | 'wbadmin' | 'check';
 };
 
 export type ServerThresholds = {
@@ -108,6 +119,139 @@ export type ServerSummary = {
   hasFortinet: boolean | null;
   siteNotes: string | null;
   syntheticCheckPort: number | null;
+  ispPrimaryPublicIp?: string | null;
+  ispSecondaryPublicIp?: string | null;
+  /** Ultimo estado de red medido por el agente (>= 1.3.0) desde el sitio. */
+  network?: NetworkSummary | null;
+};
+
+export type ActiveIsp = 'primary' | 'secondary' | 'other' | 'unknown';
+
+export type NetworkSummary = {
+  internetUp: boolean | null;
+  latencyMs: number | null;
+  lossPct: number | null;
+  dnsOk: boolean | null;
+  dnsMs: number | null;
+  gateway: string | null;
+  gatewayLatencyMs: number | null;
+  gatewayLossPct: number | null;
+  publicIp: string | null;
+  activeIsp: ActiveIsp;
+  nics: { name: string; speedMbps: number | null; errors: number | null; drops: number | null }[];
+  at: string | null;
+};
+
+/** Un punto agregado de GET /api/servers/:id/metrics. */
+export type MetricPoint = {
+  t: string;
+  cpu: number | null;
+  cpuMax: number | null;
+  mem: number | null;
+  memMax: number | null;
+  disk: number | null;
+  netIn: number | null;
+  netOut: number | null;
+  processes: number | null;
+  latency: number | null;
+  loss: number | null;
+};
+
+export type MetricRange = '1h' | '6h' | '24h' | '7d' | '30d';
+
+/** Mensaje TELEMETRY del WebSocket (re-emitido en window como 'soc:telemetry'). */
+export type LiveTelemetry = {
+  serverId: string;
+  serverName: string;
+  cpuUsage: number;
+  memoryUsage: number;
+  diskUsage: number;
+  networkIn?: number | null;
+  networkOut?: number | null;
+  processCount?: number | null;
+  latencyMs?: number | null;
+  lossPct?: number | null;
+  recordedAt: string;
+};
+
+export type Diagnostics = {
+  collectedAt?: string;
+  uptimeSeconds?: number;
+  lastBootAt?: string;
+  os?: string;
+  cpuCount?: number;
+  memoryTotalBytes?: number;
+  pagefilePercent?: number;
+  volumes?: { mount: string; fs?: string; totalBytes?: number; freeBytes?: number; percent: number }[];
+  physicalDisks?: { name: string; mediaType?: string; health: string; sizeBytes?: number | null; predictFailure?: boolean }[];
+  rebootPending?: boolean;
+  updates?: { lastInstalledAt: string | null; pending?: number | null; pendingCritical?: number | null; pendingCheckedAt?: string | null };
+  stoppedServices?: { name: string; displayName: string }[];
+  defender?: { antivirusEnabled: boolean; realTimeEnabled: boolean; signatureAgeDays: number | null; quickScanAgeDays?: number | null } | null;
+  eventSignals?: Partial<Record<'diskErrors' | 'unexpectedShutdowns' | 'bugchecks' | 'lowMemory' | 'failedLogons' | 'malwareDetections', number>>;
+  topProcesses?: { byCpu: { name: string; cpu: number; memBytes: number }[]; byMemory: { name: string; cpu: number; memBytes: number }[] };
+};
+
+export type DiskForecast =
+  | { status: 'insufficient-data'; days: number }
+  | { status: 'stable'; current: number; growthPerDay: number; r2: number }
+  | { status: 'growing'; current: number; growthPerDay: number; daysTo95: number; daysToFull: number; fullAt: string; r2: number };
+
+export type ServerDetails = {
+  id: string;
+  name: string;
+  hostname: string;
+  ipAddress: string;
+  agentVersion: string | null;
+  diagnostics: Diagnostics | null;
+  diagnosticsAt: string | null;
+  network: NetworkSummary | null;
+  isp: { primaryName: string | null; primaryPublicIp: string | null; secondaryName: string | null; secondaryPublicIp: string | null };
+  diskForecast: DiskForecast | null;
+  activeAlerts: SecurityAlert[];
+};
+
+export type UnifiDevice = {
+  id: string;
+  name: string;
+  model: string | null;
+  deviceType: 'ap' | 'switch' | 'gateway' | 'other';
+  ipAddress: string | null;
+  status: string;
+  siteName: string | null;
+  hostName: string | null;
+  firmwareVersion: string | null;
+  firmwareStatus: string | null;
+  clients: number | null;
+  uptimeSeconds: number | null;
+  lastSeenOnlineAt: string | null;
+  statusChangedAt: string;
+  lastSyncAt: string;
+};
+
+export type UnifiRun = {
+  at: string;
+  mode: 'off' | 'cloud' | 'local';
+  devices: number;
+  online: number;
+  offline: number;
+  error: string | null;
+} | null;
+
+export type NetworkOverview = {
+  sites: {
+    serverId: string;
+    serverName: string;
+    status: string;
+    lastSeenAt: string | null;
+    ispPrimaryName: string | null;
+    ispSecondaryName: string | null;
+    ispPrimaryPublicIp: string | null;
+    ispSecondaryPublicIp: string | null;
+    network: NetworkSummary | null;
+  }[];
+  unifi: { lastRun: UnifiRun; devices: UnifiDevice[] };
+  recentEvents: SecurityAlert[];
 };
 
 export type FortiEventType =
@@ -198,6 +342,12 @@ export type SystemSettings = {
   FORTI_SYSLOG_PORT: PlainSetting<number>;
   GEMINI_API_KEY: SensitiveSetting;
   GEMINI_MODEL: PlainSetting<string>;
+  CRITICAL_SERVICES: PlainSetting<string>;
+  PATCH_MAX_AGE_DAYS: PlainSetting<number>;
+  UNIFI_MODE: PlainSetting<string>;
+  UNIFI_API_KEY: SensitiveSetting;
+  UNIFI_CONTROLLER_URL: PlainSetting<string>;
+  UNIFI_VERIFY_TLS: PlainSetting<boolean>;
   REMOTE_ACCESS_ENABLED: PlainSetting<boolean>;
   TELEMETRY_RETENTION_DAYS: PlainSetting<number>;
   SECURITY_EVENT_RETENTION_DAYS: PlainSetting<number>;

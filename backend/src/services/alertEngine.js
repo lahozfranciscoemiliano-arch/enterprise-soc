@@ -106,6 +106,7 @@ function evaluateTelemetry(server, telemetry, defaults = DEFAULT_THRESHOLDS) {
       severity: 'HIGH',
       description: `${server.name}: ${unhealthy.length} contenedor(es) Docker caído(s) o degradado(s): ${unhealthy.join(', ')}`,
       metadata: { unhealthyContainers: unhealthy, serverId: server.id },
+      dedupKey: 'CUSTOM:containers',
     });
   }
 
@@ -135,6 +136,15 @@ function evaluateBackup(server, backup) {
 
   return null;
 }
+
+// Condiciones que controla cada chequeo: las que no se vuelvan a detectar en
+// el chequeo siguiente se auto-resuelven (ver eventPipeline.resolveCleared).
+const TELEMETRY_MANAGED_KEYS = [
+  ...Object.entries(DEFAULT_THRESHOLDS).map(([field, rule]) => `${rule.type}:${field}`),
+  ...Object.keys(DEFAULT_THRESHOLDS).map((field) => `ANOMALY_DETECTED:${field}`),
+  'CUSTOM:containers',
+];
+const BACKUP_MANAGED_KEYS = ['BACKUP_FAILED', 'BACKUP_WARNING'];
 
 function getHealthStatus(telemetry, server, defaults = DEFAULT_THRESHOLDS) {
   // El heartbeat (services/heartbeat.js) mantiene server.status al dia: si
@@ -167,4 +177,6 @@ module.exports = {
   isInMaintenance,
   getEffectiveDefaultThresholds,
   DEFAULT_THRESHOLDS,
+  TELEMETRY_MANAGED_KEYS,
+  BACKUP_MANAGED_KEYS,
 };

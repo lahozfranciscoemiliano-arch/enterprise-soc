@@ -521,6 +521,43 @@ cd /home/socapp/enterprise-soc && git pull && bash deploy/vps-update.sh
 
 Al final muestra un resumen OK / FALLO / SALTEADO por paso.
 
+## 34. Alertas sin duplicados, monitoreo preventivo, red/internet y UniFi
+
+**Alertas deduplicadas.** Una misma condición (mismo servidor + mismo motivo)
+genera UNA alerta: mientras siga activa se actualiza (contador `×N` y "última
+vez"), sin volver a notificar salvo que empeore la severidad. Cuando se
+normaliza se cierra sola ("Auto-resuelta"); si reaparece en menos de 30 min
+se reabre la misma. La migración de esta versión consolida las alertas
+repetidas que ya existían (se conserva una por condición, con el total de
+repeticiones) y borra las filas repetidas del historial de backups.
+
+**Historial de backups.** Una fila por corrida real, no por chequeo. Con el
+agente 1.3.0 se lee además el Visor de Eventos (Microsoft-Windows-Backup):
+duración de cada backup, corridas fallidas y la lista de copias restaurables.
+En la pestaña Backups el historial muestra por defecto solo los exitosos.
+
+**Agente 1.3.0 (se actualiza solo).** Cada 5 min manda: todas las unidades,
+salud física de discos (SMART/Storage), reinicio pendiente, fecha del último
+parche y actualizaciones pendientes, servicios automáticos detenidos,
+Microsoft Defender, señales del Visor de Eventos de las últimas 24 h (errores
+de disco, apagados inesperados, pantallazos azules, memoria agotada, logins
+fallidos, malware) y top de procesos. Cada minuto mide internet desde el
+sitio (latencia/pérdida a 1.1.1.1 y 8.8.8.8, DNS, gateway, IP pública) y, si
+el sitio se queda sin internet, registra el corte y lo informa con su
+duración al volver. El backend además pronostica cuándo se llena C:.
+
+**Configurar (Admin):**
+1. *Servidores → Configurar*: cargar la **IP pública del ISP primario y del
+   secundario** de cada sitio. Con eso se detecta automáticamente cuándo una
+   sucursal está saliendo por el enlace de respaldo (alerta `ISP_FAILOVER`).
+2. *Configuración → Ubiquiti UniFi*: modo **Nube (Site Manager)** + API key
+   creada en https://unifi.ui.com → API. "Probar conexión" confirma cuántos
+   dispositivos ve. Modo **Local** solo si la VPS llega a la consola.
+3. *Configuración → Monitoreo preventivo* (opcional): lista de servicios
+   críticos (por defecto SQL Server, IIS, VSS, etc.) y días máximos sin parches.
+4. Opcional en `.env`: `APP_TIMEZONE=America/Asuncion` (o la que corresponda)
+   para las fechas dentro de los textos de alertas.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

@@ -127,6 +127,12 @@ const settingsSchema = z
     FORTI_SYSLOG_PORT: z.coerce.number().int().min(1).max(65535).optional(),
     GEMINI_API_KEY: z.string().max(500).optional(),
     GEMINI_MODEL: z.string().max(100).optional(),
+    CRITICAL_SERVICES: z.string().max(2000).optional(),
+    PATCH_MAX_AGE_DAYS: z.coerce.number().int().min(7).max(365).optional(),
+    UNIFI_MODE: z.enum(['off', 'cloud', 'local']).optional(),
+    UNIFI_API_KEY: z.string().max(500).optional(),
+    UNIFI_CONTROLLER_URL: z.union([z.literal(''), z.string().url().max(300)]).optional(),
+    UNIFI_VERIFY_TLS: z.boolean().optional(),
     REMOTE_ACCESS_ENABLED: z.boolean().optional(),
     TELEMETRY_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
     SECURITY_EVENT_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
@@ -214,6 +220,8 @@ const siteInfoSchema = z
     hasFortinet: z.boolean().nullable().optional(),
     siteNotes: z.string().max(2000).nullable().optional(),
     syntheticCheckPort: z.number().int().min(1).max(65535).nullable().optional(),
+    ispPrimaryPublicIp: z.string().ip().nullable().optional(),
+    ispSecondaryPublicIp: z.string().ip().nullable().optional(),
   })
   .strict();
 

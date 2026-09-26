@@ -47,10 +47,16 @@ const {
   getHealthStatus,
   isInMaintenance,
   getEffectiveDefaultThresholds,
+  TELEMETRY_MANAGED_KEYS,
+  BACKUP_MANAGED_KEYS,
 } = require('./src/services/alertEngine');
 const { logAudit } = require('./src/services/auditLog');
 const { notifyGeneric, sendReportEmail } = require('./src/services/notifications');
-const { createAndDispatchEvent } = require('./src/services/eventPipeline');
+const { buildBackupHistory } = require('./src/services/backupHistory');
+const { processAgentExtras, summarizeNetwork } = require('./src/services/preventiveChecks');
+const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
+const { runUnifiPoll, listUnifiDevices, getLastRun: getUnifiLastRun, scheduleUnifiPoll } = require('./src/services/unifi');
+const { createAndDispatchEvent, resolveCleared, defaultDedupKey, toClientEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
 const { ingestFortiEvent } = require('./src/services/fortinet');
 const {
@@ -462,6 +468,23 @@ const telemetryLimiter = rateLimit({
   message: { error: 'Límite de telemetría excedido' },
 });
 
+// Lo que se guarda en cada fila de telemetria: los errores del Visor de
+// Eventos (los usa el analisis con IA) y, de la red, solo los 3 numeros que
+// se grafican. El diagnostico completo (~10 KB) va al servidor, no a cada
+// fila -- si no, la tabla crece decenas de MB por dia.
+function slimTelemetryMetadata(metadata) {
+  if (!metadata) return metadata;
+  const { diagnostics, network, ...rest } = metadata;
+  if (network) {
+    rest.network = {
+      internetUp: network.internetUp ?? null,
+      latencyMs: network.internetLatencyMs ?? null,
+      lossPct: network.internetLossPct ?? null,
+    };
+  }
+  return rest;
+}
+
 app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
   const parsed = telemetrySchema.safeParse(req.body);
   if (!parsed.success) {
@@ -481,7 +504,7 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
         networkIn: data.networkIn,
         networkOut: data.networkOut,
         processCount: data.processCount,
-        metadata: data.metadata,
+        metadata: slimTelemetryMetadata(data.metadata),
         recordedAt: data.recordedAt ? new Date(data.recordedAt) : undefined,
       },
     });
@@ -497,6 +520,12 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
 
     broadcastTelemetry(server, telemetry);
 
+    // Diagnostico preventivo y estado de red (agente >= 1.3.0): se guarda el
+    // ultimo en el servidor y se evaluan sus reglas. Nunca rompe la ingesta.
+    processAgentExtras(server, data.metadata).catch((err) =>
+      console.error(`Error procesando diagnóstico/red de ${server.name}`, err)
+    );
+
     const defaultThresholds = await getEffectiveDefaultThresholds();
     const triggeredAlerts = evaluateTelemetry(server, data, defaultThresholds);
 
@@ -511,8 +540,9 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
       ? []
       : evaluateAnomalies(server, { ...data, recordedAt: telemetry.recordedAt }, fieldsAlreadyAlerted);
 
-    const createdEvents = await Promise.all(
-      [...triggeredAlerts, ...anomalyAlerts].map((alert) =>
+    const allAlerts = [...triggeredAlerts, ...anomalyAlerts];
+    const results = await Promise.all(
+      allAlerts.map((alert) =>
         createAndDispatchEvent({
           serverId: server.id,
           serverName: server.name,
@@ -520,9 +550,20 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
           severity: alert.severity,
           description: alert.description,
           metadata: alert.metadata,
+          dedupKey: alert.dedupKey,
         })
       )
     );
+
+    // Lo que ya no se detecta en esta telemetria se normalizo: se cierra
+    // solo. Y si el servidor esta reportando, ya no esta "caido".
+    await resolveCleared(
+      server.id,
+      [...TELEMETRY_MANAGED_KEYS, 'AGENT_OFFLINE'],
+      allAlerts.map((a) => a.dedupKey ?? defaultDedupKey(a.type, a.metadata)),
+      server.name
+    );
+    const createdEvents = results.filter((r) => r.isNew);
 
     const latestAgentVersion = await getSetting('AGENT_LATEST_VERSION');
 
@@ -557,28 +598,43 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
   const server = req.server;
 
   try {
-    const backup = await prisma.backupStatus.create({
-      data: {
-        serverId: server.id,
-        result: data.result,
-        method: data.method,
-        lastBackupAt: data.lastBackupAt ? new Date(data.lastBackupAt) : undefined,
-        targetPath: data.targetPath,
-        sizeBytes: data.sizeBytes,
-        vssServiceOk: data.vssServiceOk,
-        detail: data.detail,
-        metadata: data.metadata,
-        recordedAt: data.recordedAt ? new Date(data.recordedAt) : undefined,
-      },
+    // El agente chequea el backup cada 30 min, pero el backup en si corre una
+    // vez por dia: si el resultado y la fecha del ultimo backup son los mismos
+    // que el ultimo registro, es la MISMA corrida -- se actualiza ese registro
+    // (recordedAt = ultimo chequeo) en vez de agregar una fila repetida al
+    // historial.
+    const lastBackupAt = data.lastBackupAt ? new Date(data.lastBackupAt) : null;
+    const backupData = {
+      result: data.result,
+      method: data.method,
+      lastBackupAt,
+      targetPath: data.targetPath,
+      sizeBytes: data.sizeBytes,
+      vssServiceOk: data.vssServiceOk,
+      detail: data.detail,
+      metadata: data.metadata,
+      recordedAt: data.recordedAt ? new Date(data.recordedAt) : new Date(),
+    };
+    const previous = await prisma.backupStatus.findFirst({
+      where: { serverId: server.id },
+      orderBy: { recordedAt: 'desc' },
     });
+    const sameRun =
+      previous &&
+      previous.result === data.result &&
+      (previous.lastBackupAt?.getTime() ?? null) === (lastBackupAt?.getTime() ?? null);
+
+    const backup = sameRun
+      ? await prisma.backupStatus.update({ where: { id: previous.id }, data: backupData })
+      : await prisma.backupStatus.create({ data: { serverId: server.id, ...backupData } });
 
     broadcastBackupStatus(server, backup);
 
     const alert = evaluateBackup(server, data);
-    let createdEvent = null;
+    let result = null;
 
     if (alert) {
-      createdEvent = await createAndDispatchEvent({
+      result = await createAndDispatchEvent({
         serverId: server.id,
         serverName: server.name,
         type: alert.type,
@@ -587,10 +643,11 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
         metadata: alert.metadata,
       });
     }
+    await resolveCleared(server.id, BACKUP_MANAGED_KEYS, alert ? [alert.type] : [], server.name);
 
     return res.status(201).json({
       backupStatusId: backup.id,
-      alertTriggered: Boolean(createdEvent),
+      alertTriggered: Boolean(result?.isNew),
     });
   } catch (err) {
     console.error('Error procesando estado de backup', err);
@@ -654,6 +711,9 @@ app.get('/api/servers', authUser, async (req, res) => {
           hasFortinet: s.hasFortinet,
           siteNotes: s.siteNotes,
           syntheticCheckPort: s.syntheticCheckPort,
+          ispPrimaryPublicIp: s.ispPrimaryPublicIp,
+          ispSecondaryPublicIp: s.ispSecondaryPublicIp,
+          network: summarizeNetwork(s, s.network, s.networkAt),
           backup: backup
             ? {
                 result: backup.result,
@@ -664,6 +724,12 @@ app.get('/api/servers', authUser, async (req, res) => {
                 vssServiceOk: backup.vssServiceOk,
                 detail: backup.detail,
                 recordedAt: backup.recordedAt,
+                durationSeconds: backup.metadata?.durationSeconds ?? null,
+                successfulRuns: Array.isArray(backup.metadata?.versions)
+                  ? backup.metadata.versions.length
+                  : Array.isArray(backup.metadata?.runs)
+                    ? backup.metadata.runs.filter((r) => r.result === 'SUCCESS').length
+                    : null,
               }
             : null,
         };
@@ -743,6 +809,143 @@ app.get('/api/servers/:id/telemetry', authUser, async (req, res) => {
   }
 });
 
+// Serie temporal para los graficos (pestaña Monitoreo y detalle del
+// servidor), agregada en el Postgres por intervalos: 7 dias crudos serian
+// ~10.000 filas por servidor, con buckets son ~80 puntos livianos.
+const METRIC_RANGES = {
+  '1h': { window: '1 hour', bucket: '1 minute' },
+  '6h': { window: '6 hours', bucket: '5 minutes' },
+  '24h': { window: '24 hours', bucket: '15 minutes' },
+  '7d': { window: '7 days', bucket: '2 hours' },
+  '30d': { window: '30 days', bucket: '8 hours' },
+};
+
+app.get('/api/servers/:id/metrics', authUser, async (req, res) => {
+  const range = METRIC_RANGES[req.query.range] ? req.query.range : '1h';
+  const { window, bucket } = METRIC_RANGES[range];
+
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT
+        date_bin(${bucket}::interval, "recordedAt", TIMESTAMP '2000-01-01') AS t,
+        AVG("cpuUsage") AS cpu, MAX("cpuUsage") AS "cpuMax",
+        AVG("memoryUsage") AS mem, MAX("memoryUsage") AS "memMax",
+        MAX("diskUsage") AS disk,
+        AVG("networkIn") AS "netIn", AVG("networkOut") AS "netOut",
+        AVG("processCount") AS processes,
+        AVG(("metadata"->'network'->>'latencyMs')::float) AS latency,
+        AVG(("metadata"->'network'->>'lossPct')::float) AS loss
+      FROM telemetry
+      WHERE "serverId" = ${req.params.id}
+        AND "recordedAt" >= NOW() - ${window}::interval
+      GROUP BY t
+      ORDER BY t
+    `;
+
+    const round = (v, d = 1) => (v === null || v === undefined ? null : Number(Number(v).toFixed(d)));
+    return res.json({
+      range,
+      bucket,
+      points: rows.map((r) => ({
+        t: r.t,
+        cpu: round(r.cpu),
+        cpuMax: round(r.cpuMax),
+        mem: round(r.mem),
+        memMax: round(r.memMax),
+        disk: round(r.disk),
+        netIn: round(r.netIn, 0),
+        netOut: round(r.netOut, 0),
+        processes: round(r.processes, 0),
+        latency: round(r.latency),
+        loss: round(r.loss),
+      })),
+    });
+  } catch (err) {
+    console.error('Error obteniendo métricas', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Pestaña Red: internet de cada sitio (medido por su agente) + dispositivos
+// UniFi. Un solo request para toda la vista.
+app.get('/api/network/overview', authUser, async (req, res) => {
+  try {
+    const [servers, devices, openOutages] = await Promise.all([
+      prisma.server.findMany({ orderBy: { name: 'asc' } }),
+      listUnifiDevices(),
+      prisma.securityEvent.findMany({
+        where: {
+          type: { in: ['INTERNET_OUTAGE', 'ISP_FAILOVER', 'NETWORK_DEGRADED', 'NETWORK_UNREACHABLE'] },
+          createdAt: { gte: new Date(Date.now() - 7 * 86400000) },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+        include: { server: { select: { name: true } } },
+      }),
+    ]);
+
+    return res.json({
+      sites: servers.map((s) => ({
+        serverId: s.id,
+        serverName: s.name,
+        status: s.status,
+        lastSeenAt: s.lastSeenAt,
+        ispPrimaryName: s.ispPrimaryName,
+        ispSecondaryName: s.ispSecondaryName,
+        ispPrimaryPublicIp: s.ispPrimaryPublicIp,
+        ispSecondaryPublicIp: s.ispSecondaryPublicIp,
+        network: summarizeNetwork(s, s.network, s.networkAt),
+      })),
+      unifi: { lastRun: getUnifiLastRun(), devices },
+      recentEvents: openOutages.map((e) => toClientEvent(e)),
+    });
+  } catch (err) {
+    console.error('Error obteniendo el estado de red', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Todo lo que sabemos de un servidor para el modal de detalle: ultimo
+// diagnostico preventivo, red, pronostico de disco y alertas activas.
+app.get('/api/servers/:id/details', authUser, async (req, res) => {
+  try {
+    const server = await prisma.server.findUnique({
+      where: { id: req.params.id },
+      include: {
+        events: {
+          where: { status: { in: ['OPEN', 'ACKNOWLEDGED'] } },
+          orderBy: { lastSeenAt: 'desc' },
+          take: 50,
+        },
+      },
+    });
+    if (!server) return res.status(404).json({ error: 'Servidor no encontrado' });
+
+    return res.json({
+      id: server.id,
+      name: server.name,
+      hostname: server.hostname,
+      ipAddress: server.ipAddress,
+      agentVersion: server.agentVersion,
+      diagnostics: server.diagnostics,
+      diagnosticsAt: server.diagnosticsAt,
+      network: summarizeNetwork(server, server.network, server.networkAt),
+      networkRaw: server.network,
+      isp: {
+        primaryName: server.ispPrimaryName,
+        primaryPublicIp: server.ispPrimaryPublicIp,
+        secondaryName: server.ispSecondaryName,
+        secondaryPublicIp: server.ispSecondaryPublicIp,
+      },
+      diskForecast: getDiskForecast(server.id),
+      activeAlerts: server.events.map((e) => toClientEvent(e, server.name)),
+    });
+  } catch (err) {
+    console.error('Error obteniendo detalle del servidor', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // Analisis con IA de los errores del Visor de Eventos de Windows que el
 // agente ya manda en cada telemetria (metadata.recentEventLogErrors) pero
 // que hasta ahora nadie leia. A demanda, no se guarda el resultado.
@@ -785,15 +988,16 @@ app.post(
 
 app.get('/api/servers/:id/backup-status', authUser, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 20, 100);
+  const onlySuccess = req.query.onlySuccess === 'true';
 
   try {
-    const backups = await prisma.backupStatus.findMany({
+    const rows = await prisma.backupStatus.findMany({
       where: { serverId: req.params.id },
       orderBy: { recordedAt: 'desc' },
-      take: limit,
+      take: 200,
     });
 
-    return res.json(backups);
+    return res.json(buildBackupHistory(rows, { onlySuccess, limit }));
   } catch (err) {
     console.error('Error obteniendo historial de backups', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -804,26 +1008,15 @@ app.get('/api/events', authUser, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
 
   try {
+    // Por ultima actividad: una alerta deduplicada que sigue repitiendose
+    // (occurrences) queda arriba aunque se haya abierto hace horas.
     const events = await prisma.securityEvent.findMany({
-      orderBy: { createdAt: 'desc' },
+      orderBy: { lastSeenAt: 'desc' },
       take: limit,
       include: { server: { select: { name: true } }, acknowledgedBy: { select: { name: true } } },
     });
 
-    return res.json(
-      events.map((e) => ({
-        id: e.id,
-        type: e.type,
-        severity: e.severity,
-        status: e.status,
-        description: e.description,
-        serverName: e.server?.name,
-        acknowledgedByName: e.acknowledgedBy?.name ?? null,
-        aiTriage: e.aiTriage,
-        createdAt: e.createdAt,
-        resolvedAt: e.resolvedAt,
-      }))
-    );
+    return res.json(events.map((e) => toClientEvent(e)));
   } catch (err) {
     console.error('Error listando alertas', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -854,18 +1047,7 @@ app.patch('/api/events/:id', authUser, requireRole('ADMIN', 'ANALYST'), async (r
       targetId: event.id,
     });
 
-    const enriched = {
-      id: event.id,
-      type: event.type,
-      severity: event.severity,
-      status: event.status,
-      description: event.description,
-      serverName: event.server?.name,
-      acknowledgedByName: event.acknowledgedBy?.name ?? null,
-      aiTriage: event.aiTriage,
-      createdAt: event.createdAt,
-      resolvedAt: event.resolvedAt,
-    };
+    const enriched = toClientEvent(event);
     broadcastAlertUpdate(enriched);
 
     return res.json(enriched);
@@ -1292,7 +1474,7 @@ app.patch(
       // servidor (tags, thresholds), aca conviene devolver el objeto casi
       // completo para que el frontend actualice el mapa/CMDB sin otro
       // round-trip, asi que se lista todo lo demas explicitamente.
-      const { apiKeyHash, ...safeServer } = server;
+      const { apiKeyHash, diagnostics, network, ...safeServer } = server;
       return res.json(safeServer);
     } catch (err) {
       if (err.code === 'P2025') {
@@ -1531,6 +1713,12 @@ app.get('/api/admin/anomaly-detection', authUser, requireRole('ADMIN'), (req, re
 });
 
 // Synthetic monitoring: ver src/services/syntheticMonitor.js.
+// Sondeo manual de UniFi (boton "Probar conexion" en Admin -> Configuracion).
+app.post('/api/admin/unifi/sync', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const result = await runUnifiPoll();
+  return res.status(result.error ? 502 : 200).json(result);
+});
+
 app.get('/api/admin/synthetic-monitor', authUser, requireRole('ADMIN'), (req, res) => {
   return res.json({ lastRun: getSyntheticMonitorLastRun() });
 });
@@ -2011,6 +2199,8 @@ scheduleHeartbeat();
 scheduleProactiveDigest();
 scheduleAnomalyBaselineRefresh();
 scheduleSyntheticMonitor();
+scheduleDiskForecast();
+scheduleUnifiPoll();
 
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();

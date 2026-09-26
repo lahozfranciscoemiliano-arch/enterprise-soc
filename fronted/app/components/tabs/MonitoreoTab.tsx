@@ -1,14 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { AnimatePresence, motion } from 'framer-motion';
 import { DatabaseBackup, RefreshCw, Search, Server, Wrench } from 'lucide-react';
 import ServerDetailModal from '../ServerDetailModal';
+import MetricsPanel from '../MetricsPanel';
 import { BACKUP_STYLES, HEALTH_STYLES, MAINTENANCE_BADGE } from '../../lib/health';
-import type { HealthStatus, SecurityAlert, ServerSummary, TelemetryPoint } from '../../types';
-
-const TOOLTIP_STYLE = { background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 12, boxShadow: '0 4px 12px -2px rgb(15 23 42 / 0.08)' };
+import type { HealthStatus, SecurityAlert, ServerSummary } from '../../types';
 
 type HealthFilter = HealthStatus | 'ALL';
 
@@ -22,13 +20,11 @@ const HEALTH_FILTERS: { id: HealthFilter; label: string }[] = [
 
 export default function MonitoreoTab({
   servers,
-  history,
   alerts,
   onRefresh,
   refreshing,
 }: {
   servers: ServerSummary[];
-  history: Record<string, TelemetryPoint[]>;
   alerts: SecurityAlert[];
   onRefresh: () => void;
   refreshing: boolean;
@@ -59,16 +55,15 @@ export default function MonitoreoTab({
   );
 
   const selectedServer = servers.find((s) => s.id === selectedServerId) ?? null;
-  const selectedHistory = selectedServerId ? history[selectedServerId] ?? [] : [];
   const modalServer = servers.find((s) => s.id === modalServerId) ?? null;
   const modalAlerts = modalServer ? alerts.filter((a) => a.serverName === modalServer.name).slice(0, 20) : [];
 
   return (
     <div className="space-y-4 px-6 py-6">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-slate-800">
-            CPU / RAM en tiempo real
+            Métricas en tiempo real
             {selectedServer && <span className="ml-2 font-normal text-slate-400">— {selectedServer.name}</span>}
           </h2>
           {servers.length > 0 && (
@@ -86,35 +81,11 @@ export default function MonitoreoTab({
           )}
         </div>
 
-        <div className="h-64">
-          <AnimatePresence mode="wait">
-            {selectedHistory.length === 0 ? (
-              <motion.div
-                key="empty"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex h-full items-center justify-center text-sm text-slate-400"
-              >
-                Esperando telemetría...
-              </motion.div>
-            ) : (
-              <motion.div key={selectedServerId} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={selectedHistory}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="time" stroke="#94a3b8" fontSize={11} />
-                    <YAxis stroke="#94a3b8" fontSize={11} domain={[0, 100]} unit="%" />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={{ color: '#475569' }} />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                    <Line type="monotone" dataKey="cpuUsage" name="CPU %" stroke="#c2632d" strokeWidth={2} dot={false} isAnimationActive />
-                    <Line type="monotone" dataKey="memoryUsage" name="RAM %" stroke="#3b82f6" strokeWidth={2} dot={false} isAnimationActive />
-                  </LineChart>
-                </ResponsiveContainer>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+        {selectedServer ? (
+          <MetricsPanel key={selectedServer.id} server={selectedServer} chartHeight={240} />
+        ) : (
+          <p className="py-10 text-center text-sm text-slate-400">No hay servidores registrados todavía.</p>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">

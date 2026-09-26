@@ -2,9 +2,9 @@
 
 import { Fragment, useCallback, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown, Clock, DatabaseBackup, FolderOpen, HardDrive, Percent, ShieldOff, XCircle } from 'lucide-react';
+import { ChevronDown, Clock, DatabaseBackup, FolderOpen, HardDrive, Percent, ShieldOff, Timer, XCircle } from 'lucide-react';
 import StatCard from '../StatCard';
-import { BACKUP_METHOD_LABELS, BACKUP_STYLES, backupAgeLevel, formatBytes } from '../../lib/health';
+import { BACKUP_METHOD_LABELS, BACKUP_STYLES, backupAgeLevel, formatBytes, formatDuration } from '../../lib/health';
 import type { BackupHistoryEntry, BackupResult, ServerSummary } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -40,6 +40,9 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
   const [resultFilter, setResultFilter] = useState<BackupResult | 'ALL'>('ALL');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [history, setHistory] = useState<Record<string, BackupHistoryEntry[] | 'loading' | 'error'>>({});
+  // Por defecto el historial muestra solo los backups que salieron bien
+  // (lo que interesa para saber "desde que fecha puedo restaurar").
+  const [onlySuccess, setOnlySuccess] = useState(true);
 
   const resultCounts = useMemo(() => {
     const counts: Record<BackupResult, number> = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
@@ -64,22 +67,33 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
     [servers, filter, resultFilter]
   );
 
+  const loadHistory = useCallback(async (serverId: string, successOnly: boolean) => {
+    const key = `${serverId}:${successOnly}`;
+    setHistory((prev) => ({ ...prev, [key]: 'loading' }));
+    try {
+      const res = await fetch(`${API_URL}/api/servers/${serverId}/backup-status?limit=30&onlySuccess=${successOnly}`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('request failed');
+      const data: BackupHistoryEntry[] = await res.json();
+      setHistory((prev) => ({ ...prev, [key]: data }));
+    } catch {
+      setHistory((prev) => ({ ...prev, [key]: 'error' }));
+    }
+  }, []);
+
   const toggleExpand = useCallback(
-    async (serverId: string) => {
+    (serverId: string) => {
       setExpandedId((prev) => (prev === serverId ? null : serverId));
-      if (history[serverId]) return;
-      setHistory((prev) => ({ ...prev, [serverId]: 'loading' }));
-      try {
-        const res = await fetch(`${API_URL}/api/servers/${serverId}/backup-status?limit=15`, { credentials: 'include' });
-        if (!res.ok) throw new Error('request failed');
-        const data: BackupHistoryEntry[] = await res.json();
-        setHistory((prev) => ({ ...prev, [serverId]: data }));
-      } catch {
-        setHistory((prev) => ({ ...prev, [serverId]: 'error' }));
-      }
+      if (!history[`${serverId}:${onlySuccess}`]) loadHistory(serverId, onlySuccess);
     },
-    [history]
+    [history, onlySuccess, loadHistory]
   );
+
+  const changeOnlySuccess = (value: boolean) => {
+    setOnlySuccess(value);
+    if (expandedId && !history[`${expandedId}:${value}`]) loadHistory(expandedId, value);
+  };
 
   return (
     <div className="space-y-4 px-6 py-6">
@@ -145,6 +159,7 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
                 <th className="py-2 pr-4 font-medium">Método</th>
                 <th className="py-2 pr-4 font-medium">Último backup</th>
                 <th className="py-2 pr-4 font-medium">Antigüedad</th>
+                <th className="py-2 pr-4 font-medium">Duración</th>
                 <th className="py-2 pr-4 font-medium">Tamaño</th>
                 <th className="py-2 pr-4 font-medium">VSS</th>
                 <th className="w-8 py-2" />
@@ -153,7 +168,7 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-6 text-center text-slate-400">
+                  <td colSpan={9} className="py-6 text-center text-slate-400">
                     Sin nodos que coincidan
                   </td>
                 </tr>
@@ -164,7 +179,7 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
                 const style = BACKUP_STYLES[result];
                 const age = backupAgeLevel(backup?.lastBackupAt ?? null);
                 const isOpen = expandedId === s.id;
-                const hist = history[s.id];
+                const hist = history[`${s.id}:${onlySuccess}`];
 
                 return (
                   <Fragment key={s.id}>
@@ -184,6 +199,7 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
                           {AGE_LABEL[age]}
                         </span>
                       </td>
+                      <td className="py-2.5 pr-4 font-mono text-slate-500">{formatDuration(backup?.durationSeconds)}</td>
                       <td className="py-2.5 pr-4 font-mono text-slate-500">{formatBytes(backup?.sizeBytes ?? null)}</td>
                       <td className="py-2.5 pr-4">
                         {backup ? (
@@ -204,7 +220,7 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
                     <AnimatePresence initial={false}>
                       {isOpen && (
                         <tr className="border-b border-slate-200 bg-slate-50">
-                          <td colSpan={8} className="p-0">
+                          <td colSpan={9} className="p-0">
                             <motion.div
                               initial={{ height: 0, opacity: 0 }}
                               animate={{ height: 'auto', opacity: 1 }}
@@ -226,31 +242,83 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
                                 )}
 
                                 <div>
-                                  <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                                    <Clock className="h-3 w-3" />
-                                    Historial reciente
-                                  </p>
+                                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                                      <Clock className="h-3 w-3" />
+                                      Historial de backups
+                                      {backup?.successfulRuns ? (
+                                        <span className="font-normal normal-case text-slate-400">
+                                          · {backup.successfulRuns} copia(s) restaurable(s)
+                                        </span>
+                                      ) : null}
+                                    </p>
+                                    <div className="flex rounded-lg border border-slate-200 bg-white p-0.5 text-[11px]" onClick={(e) => e.stopPropagation()}>
+                                      {[
+                                        { v: true, label: 'Solo exitosos' },
+                                        { v: false, label: 'Todas las corridas' },
+                                      ].map((o) => (
+                                        <button
+                                          key={o.label}
+                                          onClick={() => changeOnlySuccess(o.v)}
+                                          className={`rounded-md px-2 py-0.5 transition-colors ${
+                                            onlySuccess === o.v ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-slate-50'
+                                          }`}
+                                        >
+                                          {o.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
                                   {hist === 'loading' && <p className="text-xs text-slate-400">Cargando...</p>}
                                   {hist === 'error' && <p className="text-xs text-red-600">No se pudo cargar el historial.</p>}
                                   {Array.isArray(hist) && hist.length === 0 && (
-                                    <p className="text-xs text-slate-400">Sin corridas registradas todavía.</p>
+                                    <p className="text-xs text-slate-400">
+                                      {onlySuccess ? 'Sin backups exitosos registrados todavía.' : 'Sin corridas registradas todavía.'}
+                                    </p>
                                   )}
                                   {Array.isArray(hist) && hist.length > 0 && (
-                                    <ul className="space-y-1.5">
-                                      {hist.map((h) => (
-                                        <li
-                                          key={h.id}
-                                          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px]"
-                                        >
-                                          <span className="text-slate-500">{new Date(h.recordedAt).toLocaleString('es-ES')}</span>
-                                          <span className={`rounded-full border px-2 py-0.5 ${BACKUP_STYLES[h.result].badge}`}>
-                                            {BACKUP_STYLES[h.result].label}
-                                          </span>
-                                          <span className="font-mono text-slate-500">{formatBytes(h.sizeBytes)}</span>
-                                          <span className="text-slate-400">{BACKUP_METHOD_LABELS[h.method] ?? h.method}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
+                                    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                                      <table className="w-full text-[11px]">
+                                        <thead>
+                                          <tr className="border-b border-slate-200 bg-slate-50 text-left text-slate-400">
+                                            <th className="px-3 py-1.5 font-medium">Finalizó</th>
+                                            <th className="px-3 py-1.5 font-medium">Resultado</th>
+                                            <th className="px-3 py-1.5 font-medium">
+                                              <span className="inline-flex items-center gap-1">
+                                                <Timer className="h-3 w-3" />
+                                                Duración
+                                              </span>
+                                            </th>
+                                            <th className="px-3 py-1.5 font-medium">Tamaño</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {hist.map((h, i) => (
+                                            <motion.tr
+                                              key={h.id}
+                                              initial={{ opacity: 0, y: 4 }}
+                                              animate={{ opacity: 1, y: 0 }}
+                                              transition={{ delay: Math.min(i * 0.02, 0.3) }}
+                                              className="border-b border-slate-100 last:border-0"
+                                            >
+                                              <td className="px-3 py-1.5 text-slate-600">
+                                                {h.finishedAt ? new Date(h.finishedAt).toLocaleString('es-ES') : 'Sin fecha'}
+                                                {h.detail && h.result !== 'SUCCESS' && (
+                                                  <p className="mt-0.5 line-clamp-2 text-[10px] text-slate-400">{h.detail}</p>
+                                                )}
+                                              </td>
+                                              <td className="px-3 py-1.5">
+                                                <span className={`rounded-full border px-2 py-0.5 ${BACKUP_STYLES[h.result].badge}`}>
+                                                  {BACKUP_STYLES[h.result].label}
+                                                </span>
+                                              </td>
+                                              <td className="px-3 py-1.5 font-mono text-slate-500">{formatDuration(h.durationSeconds)}</td>
+                                              <td className="px-3 py-1.5 font-mono text-slate-500">{formatBytes(h.sizeBytes)}</td>
+                                            </motion.tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
                                   )}
                                 </div>
                               </div>

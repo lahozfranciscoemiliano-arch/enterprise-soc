@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { AlertTriangle, Bot, CheckCircle2, DatabaseBackup, ServerCrash, Siren } from 'lucide-react';
 import type { SecurityAlert, ServerSummary } from '../../types';
+import AlertRepeatInfo from '../AlertRepeatInfo';
 
 // Vista pensada para el celular de quien esta de guardia a la noche: solo lo
 // que realmente necesita accion ahora (CRITICAL/HIGH abiertas, servidores
@@ -100,6 +101,7 @@ export default function GuardiaTab({
                   </span>
                 </div>
                 <p className="mb-2 text-sm text-slate-500">{a.description}</p>
+                <AlertRepeatInfo alert={a} className="mb-2" />
                 {a.aiTriage && (
                   <p className="mb-2 flex items-start gap-1.5 text-sm text-sky-700/90">
                     <Bot className="mt-0.5 h-3.5 w-3.5 shrink-0" />

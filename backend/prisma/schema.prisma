@@ -39,6 +39,17 @@ enum EventType {
   // Synthetic monitoring (services/syntheticMonitor.js): no se pudo
   // establecer una conexion TCP al puerto configurado del servidor.
   NETWORK_UNREACHABLE
+  // Mantenimiento preventivo (services/preventiveChecks.js y diskForecast.js),
+  // a partir de los datos extendidos que manda el agente >= 1.3.0.
+  DISK_FORECAST
+  DISK_FAILURE_PREDICTED
+  SERVICE_DOWN
+  REBOOT_PENDING
+  PATCHES_OUTDATED
+  // Conectividad del sitio (medida por el agente desde adentro de la red).
+  NETWORK_DEGRADED
+  ISP_FAILOVER
+  INTERNET_OUTAGE
 }
 
 enum BackupResult {
@@ -270,6 +281,19 @@ model Server {
   siteContactPhone    String?
   hasFortinet         Boolean?
   siteNotes           String?
+  // IP publica de salida de cada enlace, para saber por cual esta saliendo
+  // el sitio (el agente reporta la IP publica actual en publicIp).
+  ispPrimaryPublicIp   String?
+  ispSecondaryPublicIp String?
+  publicIp             String?
+
+  // Ultimo diagnostico preventivo y ultimo estado de red que mando el agente
+  // (>= 1.3.0; ver services/preventiveChecks.js). Se guarda solo el ultimo:
+  // la historia de CPU/RAM/disco/latencia ya vive en telemetry.
+  diagnostics   Json?
+  diagnosticsAt DateTime?
+  network       Json?
+  networkAt     DateTime?
 
   // Synthetic monitoring (services/syntheticMonitor.js): puerto TCP a
   // chequear activamente cada pocos minutos. Null = chequeo desactivado para
@@ -355,6 +379,14 @@ model SecurityEvent {
   // Null si el asistente no esta configurado o la llamada fallo; nunca
   // bloquea la creacion del evento (se completa async despues).
   aiTriage         String?
+  // Deduplicacion (services/eventPipeline.js): una misma condicion (mismo
+  // servidor + dedupKey) que sigue activa actualiza la alerta abierta en vez
+  // de crear otra -- occurrences cuenta las repeticiones y lastSeenAt la
+  // ultima. autoResolved = la cerro el sistema al normalizarse la condicion.
+  dedupKey         String?
+  occurrences      Int           @default(1)
+  lastSeenAt       DateTime      @default(now())
+  autoResolved     Boolean       @default(false)
   acknowledgedById String?
   acknowledgedBy   User?         @relation("AcknowledgedBy", fields: [acknowledgedById], references: [id])
   createdAt        DateTime      @default(now())
@@ -362,5 +394,33 @@ model SecurityEvent {
 
   @@index([serverId, createdAt])
   @@index([severity, status])
+  @@index([serverId, dedupKey, status])
   @@map("security_events")
+}
+
+// Dispositivos UniFi (APs, switches, gateways) sincronizados desde la API de
+// UniFi (services/unifi.js): Site Manager en la nube (api.ui.com) o la API de
+// integracion de una controladora local. id = MAC del dispositivo.
+model UnifiDevice {
+  id               String    @id
+  name             String
+  model            String?
+  deviceType       String    @default("other") // ap | switch | gateway | other
+  ipAddress        String?
+  status           String    // online | offline | otro valor que reporte UniFi
+  siteName         String?
+  firmwareVersion  String?
+  firmwareStatus   String?
+  startupTime      DateTime?
+  lastSeenOnlineAt DateTime?
+  clients          Int?
+  uptimeSeconds    Int?
+  // Consola/host de UniFi al que pertenece (Site Manager) o sitio (API local).
+  hostName         String?
+  // Ya se aviso que esta caido (se avisa una vez por caida, no en cada sondeo).
+  notifiedOffline  Boolean   @default(false)
+  statusChangedAt  DateTime  @default(now())
+  lastSyncAt       DateTime  @default(now())
+
+  @@map("unifi_devices")
 }

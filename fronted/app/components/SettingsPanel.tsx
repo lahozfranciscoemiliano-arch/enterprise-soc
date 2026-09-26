@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BarChart3, Bot, Check, FileText, Lock, Mail, Monitor, ShieldHalf, Trash2 } from 'lucide-react';
+import { BarChart3, Bot, Check, FileText, Lock, Mail, Monitor, ShieldCheck, ShieldHalf, Trash2, Wifi } from 'lucide-react';
 import type { SystemSettings } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -25,6 +25,8 @@ export default function SettingsPanel() {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const [unifiTest, setUnifiTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testingUnifi, setTestingUnifi] = useState(false);
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -69,6 +71,12 @@ export default function SettingsPanel() {
         AGENT_STALE_THRESHOLD_SECONDS: plainField(data, 'AGENT_STALE_THRESHOLD_SECONDS') || '240',
         TELEGRAM_BOT_TOKEN: '',
         TELEGRAM_CHAT_ID: plainField(data, 'TELEGRAM_CHAT_ID'),
+        CRITICAL_SERVICES: plainField(data, 'CRITICAL_SERVICES'),
+        PATCH_MAX_AGE_DAYS: plainField(data, 'PATCH_MAX_AGE_DAYS') || '45',
+        UNIFI_MODE: plainField(data, 'UNIFI_MODE') || 'off',
+        UNIFI_API_KEY: '',
+        UNIFI_CONTROLLER_URL: plainField(data, 'UNIFI_CONTROLLER_URL'),
+        UNIFI_VERIFY_TLS: boolField(data, 'UNIFI_VERIFY_TLS'),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -109,6 +117,7 @@ export default function SettingsPanel() {
             'AUDIT_LOG_RETENTION_DAYS',
             'REPORT_HOUR',
             'AGENT_STALE_THRESHOLD_SECONDS',
+            'PATCH_MAX_AGE_DAYS',
           ];
           payload[key] = numericKeys.includes(key) ? Number(value) : value;
         }
@@ -173,6 +182,22 @@ export default function SettingsPanel() {
       {saving === section ? 'Guardando...' : 'Guardar'}
     </button>
   );
+
+  const testUnifi = async () => {
+    setTestingUnifi(true);
+    setUnifiTest(null);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/unifi/sync`, { method: 'POST', credentials: 'include' });
+      const body = await res.json();
+      if (body.error) setUnifiTest({ ok: false, text: body.error });
+      else if (body.mode === 'off') setUnifiTest({ ok: false, text: 'La integración está desactivada (elegí un modo y cargá la API key).' });
+      else setUnifiTest({ ok: true, text: `Conexión OK: ${body.devices} dispositivo(s) — ${body.online} online, ${body.offline} offline.` });
+    } catch {
+      setUnifiTest({ ok: false, text: 'No se pudo contactar al backend.' });
+    } finally {
+      setTestingUnifi(false);
+    }
+  };
 
   if (loading) return <p className="text-sm text-slate-400">Cargando configuración...</p>;
 
@@ -294,6 +319,60 @@ export default function SettingsPanel() {
           dispositivos Fortinet más abajo).
         </p>
         <div className="mt-3">{saveBtn('fortinet', ['FORTI_SYSLOG_ENABLED', 'FORTI_SYSLOG_PORT'])}</div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Wifi className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Ubiquiti UniFi (Access Points)</h3>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <select
+            value={form.UNIFI_MODE as string}
+            onChange={(e) => set('UNIFI_MODE', e.target.value)}
+            className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-brand-500"
+          >
+            <option value="off">Desactivado</option>
+            <option value="cloud">Nube — Site Manager (unifi.ui.com)</option>
+            <option value="local">Local — consola UniFi Network</option>
+          </select>
+          {input('UNIFI_API_KEY', `API key (${sensitiveHint('UNIFI_API_KEY')})`, 'password')}
+          {form.UNIFI_MODE === 'local' && (
+            <>
+              {input('UNIFI_CONTROLLER_URL', 'URL de la consola, ej. https://192.168.1.1')}
+              {checkbox('UNIFI_VERIFY_TLS', 'Validar certificado TLS (dejar apagado si la consola usa certificado autofirmado)')}
+            </>
+          )}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-400">
+          {form.UNIFI_MODE === 'local'
+            ? 'API key creada en la consola: UniFi Network → Settings → Control Plane → Integrations. La VPS tiene que poder llegar a la IP de la consola (VPN o port-forward).'
+            : 'API key creada en unifi.ui.com → API (Site Manager). No requiere abrir puertos en las sucursales: consulta el estado de todos los dispositivos registrados en la cuenta.'}{' '}
+          Se consulta cada 2 minutos; un AP caído se avisa una sola vez (y otra al volver) por los canales de notificación.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {saveBtn('unifi', ['UNIFI_MODE', 'UNIFI_API_KEY', 'UNIFI_CONTROLLER_URL', 'UNIFI_VERIFY_TLS'])}
+          <button
+            onClick={testUnifi}
+            disabled={testingUnifi}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50"
+          >
+            {testingUnifi ? 'Probando...' : 'Probar conexión'}
+          </button>
+          {unifiTest && <span className={`text-xs ${unifiTest.ok ? 'text-emerald-700' : 'text-red-700'}`}>{unifiTest.text}</span>}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><ShieldCheck className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Monitoreo preventivo</h3>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="sm:col-span-2">
+            {input('CRITICAL_SERVICES', 'Servicios críticos (por defecto: MSSQLSERVER, MSSQL$*, SQLSERVERAGENT, W3SVC, VSS, ...)')}
+          </div>
+          {input('PATCH_MAX_AGE_DAYS', 'Días máx. sin parches (45)')}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-400">
+          Nombres de servicio de Windows separados por coma; un <code>*</code> al final funciona como comodín (MSSQL$* = cualquier instancia de SQL
+          Server). Si uno de estos servicios de inicio automático se detiene, se genera una alerta. Vacío = lista por defecto.
+        </p>
+        <div className="mt-3">{saveBtn('preventivo', ['CRITICAL_SERVICES', 'PATCH_MAX_AGE_DAYS'])}</div>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">

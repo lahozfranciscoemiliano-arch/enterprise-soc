@@ -18,6 +18,8 @@ import AccountSettingsModal from './AccountSettingsModal';
 import AssistantPanel from './AssistantPanel';
 import FortiTab from './tabs/FortiTab';
 import { getHealthStatus } from '../lib/health';
+import { emitTelemetry } from '../lib/liveBus';
+import RedTab from './tabs/RedTab';
 import type {
   ConnectionStatus,
   CurrentUser,
@@ -26,12 +28,10 @@ import type {
   SecurityAlert,
   ServerSummary,
   TabId,
-  TelemetryPoint,
 } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3000/ws';
-const MAX_POINTS = 30;
 const MAX_ALERTS = 100;
 const RECONNECT_DELAY_MS = 3000;
 const SUMMARY_DEBOUNCE_MS = 800;
@@ -79,22 +79,6 @@ const EMPTY_SITE_INFO = {
   | 'syntheticCheckPort'
 >;
 
-type TelemetryApiPoint = {
-  cpuUsage: number;
-  memoryUsage: number;
-  diskUsage: number;
-  recordedAt: string;
-};
-
-function toPoint(t: TelemetryApiPoint): TelemetryPoint {
-  return {
-    time: new Date(t.recordedAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    cpuUsage: t.cpuUsage,
-    memoryUsage: t.memoryUsage,
-    diskUsage: t.diskUsage,
-  };
-}
-
 export default function Dashboard({
   user,
   onUserChanged,
@@ -109,7 +93,6 @@ export default function Dashboard({
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [servers, setServers] = useState<Record<string, ServerSummary>>({});
-  const [history, setHistory] = useState<Record<string, TelemetryPoint[]>>({});
   const [alerts, setAlerts] = useState<SecurityAlert[]>([]);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
@@ -155,28 +138,10 @@ export default function Dashboard({
     setSummary(await res.json());
   }, [handleAuthFailure]);
 
-  const fetchHistoryFor = useCallback(
-    async (serverId: string) => {
-      const res = await fetch(`${API_URL}/api/servers/${serverId}/telemetry?limit=${MAX_POINTS}`, {
-        credentials: 'include',
-      });
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
-      const data: TelemetryApiPoint[] = await res.json();
-      setHistory((prev) => ({ ...prev, [serverId]: data.map(toPoint) }));
-    },
-    [handleAuthFailure]
-  );
-
   const loadAll = useCallback(async () => {
-    const [serverList] = await Promise.all([fetchServers(), fetchEvents(), fetchSummary()]);
+    await Promise.all([fetchServers(), fetchEvents(), fetchSummary()]);
     setLastSync(new Date().toISOString());
-
-    const reported = (serverList ?? []).filter((s) => s.cpuUsage !== null);
-    if (reported.length > 0) await fetchHistoryFor(reported[0].id);
-  }, [fetchServers, fetchEvents, fetchSummary, fetchHistoryFor]);
+  }, [fetchServers, fetchEvents, fetchSummary]);
 
   const handleManualRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -280,16 +245,8 @@ export default function Dashboard({
               };
             });
 
-            setHistory((prev) => {
-              const existing = prev[d.serverId] ?? [];
-              const point: TelemetryPoint = {
-                time: new Date(recordedAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                cpuUsage: d.cpuUsage,
-                memoryUsage: d.memoryUsage,
-                diskUsage: d.diskUsage,
-              };
-              return { ...prev, [d.serverId]: [...existing, point].slice(-MAX_POINTS) };
-            });
+            // Graficos en vivo (MetricsPanel) escuchan este evento.
+            emitTelemetry({ ...d, recordedAt });
 
             setLastSync(recordedAt);
             scheduleSummaryRefresh();
@@ -328,6 +285,8 @@ export default function Dashboard({
                     vssServiceOk: d.vssServiceOk,
                     detail: d.detail ?? null,
                     recordedAt,
+                    durationSeconds: d.durationSeconds ?? existing?.backup?.durationSeconds ?? null,
+                    successfulRuns: d.successfulRuns ?? existing?.backup?.successfulRuns ?? null,
                   },
                 },
               };
@@ -356,22 +315,31 @@ export default function Dashboard({
             scheduleSummaryRefresh();
           }
 
+          // Estado de red del sitio (agente >= 1.3.0), en cada telemetria.
+          if (message.type === 'SERVER_NETWORK') {
+            setServers((prev) => {
+              const existing = prev[message.serverId];
+              if (!existing) return prev;
+              return { ...prev, [message.serverId]: { ...existing, network: message.network } };
+            });
+          }
+
+          if (message.type === 'UNIFI_UPDATE') {
+            window.dispatchEvent(new CustomEvent('soc:unifi', { detail: message.lastRun }));
+          }
+
           if (message.type === 'SECURITY_ALERT') {
             const ev = message.event;
             setAlerts((prev) =>
               [
                 {
-                  id: ev.id,
-                  type: ev.type,
-                  severity: ev.severity,
-                  status: 'OPEN' as const,
-                  description: ev.description,
-                  serverName: ev.serverName,
-                  acknowledgedByName: null,
+                  ...ev,
+                  status: ev.status ?? ('OPEN' as const),
+                  acknowledgedByName: ev.acknowledgedByName ?? null,
                   createdAt: ev.createdAt ?? new Date().toISOString(),
-                  resolvedAt: null,
+                  resolvedAt: ev.resolvedAt ?? null,
                 },
-                ...prev,
+                ...prev.filter((a) => a.id !== ev.id),
               ].slice(0, MAX_ALERTS)
             );
             scheduleSummaryRefresh();
@@ -379,7 +347,18 @@ export default function Dashboard({
 
           if (message.type === 'SECURITY_ALERT_UPDATE') {
             const ev = message.event;
-            setAlerts((prev) => prev.map((a) => (a.id === ev.id ? { ...a, ...ev } : a)));
+            // El backend deduplica: una condicion que sigue activa (o que se
+            // reabre, o se auto-resuelve) llega como UPDATE de la misma
+            // alerta. Si se repitio, sube arriba de la lista; si no estaba
+            // en la lista (alerta vieja reabierta), se agrega.
+            setAlerts((prev) => {
+              const existing = prev.find((a) => a.id === ev.id);
+              const merged = { ...(existing ?? {}), ...ev };
+              const rest = prev.filter((a) => a.id !== ev.id);
+              const bumped = !existing || (ev.lastSeenAt && ev.lastSeenAt !== existing.lastSeenAt);
+              if (bumped) return [merged, ...rest].slice(0, MAX_ALERTS);
+              return prev.map((a) => (a.id === ev.id ? merged : a));
+            });
             scheduleSummaryRefresh();
           }
 
@@ -444,12 +423,12 @@ export default function Dashboard({
           {activeTab === 'monitoreo' && (
             <MonitoreoTab
               servers={serverList}
-              history={history}
               alerts={alerts}
               onRefresh={handleManualRefresh}
               refreshing={refreshing}
             />
           )}
+          {activeTab === 'red' && <RedTab servers={serverList} isAdmin={role === 'ADMIN'} />}
           {activeTab === 'topologia' && <TopologiaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'mapa' && <MapaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'backups' && <BackupsTab servers={serverList} />}

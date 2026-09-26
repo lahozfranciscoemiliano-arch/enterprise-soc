@@ -39,6 +39,8 @@ export default function ServerConfigPanel({
     hasFortinet: server.hasFortinet,
     siteNotes: server.siteNotes ?? '',
     syntheticCheckPort: server.syntheticCheckPort ?? '',
+    ispPrimaryPublicIp: server.ispPrimaryPublicIp ?? '',
+    ispSecondaryPublicIp: server.ispSecondaryPublicIp ?? '',
   });
   const [savingSiteInfo, setSavingSiteInfo] = useState(false);
 
@@ -108,6 +110,8 @@ export default function ServerConfigPanel({
       hasFortinet: siteInfo.hasFortinet,
       siteNotes: siteInfo.siteNotes || null,
       syntheticCheckPort: siteInfo.syntheticCheckPort === '' ? null : Number(siteInfo.syntheticCheckPort),
+      ispPrimaryPublicIp: siteInfo.ispPrimaryPublicIp.trim() || null,
+      ispSecondaryPublicIp: siteInfo.ispSecondaryPublicIp.trim() || null,
     };
 
     try {
@@ -264,6 +268,22 @@ export default function ServerConfigPanel({
             placeholder="Contacto ISP secundario"
             value={siteInfo.ispSecondaryContact}
             onChange={(e) => setSiteInfo((p) => ({ ...p, ispSecondaryContact: e.target.value }))}
+            className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
+          />
+          <input
+            type="text"
+            placeholder="IP pública del ISP primario"
+            title="IP pública con la que sale el sitio por el enlace principal (se ve en el Fortigate o en whatismyip). Sirve para detectar el failover."
+            value={siteInfo.ispPrimaryPublicIp}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, ispPrimaryPublicIp: e.target.value }))}
+            className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
+          />
+          <input
+            type="text"
+            placeholder="IP pública del ISP secundario"
+            title="IP pública con la que sale el sitio por el enlace de respaldo."
+            value={siteInfo.ispSecondaryPublicIp}
+            onChange={(e) => setSiteInfo((p) => ({ ...p, ispSecondaryPublicIp: e.target.value }))}
             className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <input

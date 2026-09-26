@@ -69,7 +69,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.3.0"
 
 
 def get_base_dir() -> Path:
@@ -95,6 +95,14 @@ REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 EVENT_LOG_MAX_ERRORS = int(os.getenv("EVENT_LOG_MAX_ERRORS", "10"))
 EVENT_LOGS_TO_READ = ("System", "Application")
 BACKUP_CHECK_INTERVAL_SECONDS = int(os.getenv("BACKUP_CHECK_INTERVAL_SECONDS", "1800"))
+# Diagnostico preventivo (discos, servicios, parches, Defender, eventos
+# criticos): mas pesado que las metricas basicas, no hace falta cada minuto.
+DIAGNOSTICS_INTERVAL_SECONDS = int(os.getenv("DIAGNOSTICS_INTERVAL_SECONDS", "300"))
+# Destinos para medir internet desde ADENTRO del sitio (ICMP, sin depender
+# del idioma de Windows ni de privilegios de administrador).
+INTERNET_PROBE_HOSTS = [h.strip() for h in os.getenv("INTERNET_PROBE_HOSTS", "1.1.1.1,8.8.8.8").split(",") if h.strip()]
+PUBLIC_IP_URLS = ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com")
+PUBLIC_IP_REFRESH_SECONDS = int(os.getenv("PUBLIC_IP_REFRESH_SECONDS", "300"))
 
 logger = logging.getLogger("enterprise-soc-agent")
 logger.setLevel(logging.INFO)
@@ -162,6 +170,477 @@ def collect_system_metrics() -> dict[str, Any]:
         "networkOut": net_out,
         "processCount": len(psutil.pids()),
     }
+
+
+# ---------------------------------------------------------------------------
+# Red e internet del sitio
+# ---------------------------------------------------------------------------
+
+def icmp_ping(host: str, timeout_ms: int = 1000) -> float | None:
+    """Un ping ICMP; devuelve el RTT en ms o None si no hubo respuesta.
+
+    En Windows usa IcmpSendEcho (iphlpapi.dll) directamente: no necesita
+    privilegios de administrador y, a diferencia de parsear la salida de
+    ping.exe, no depende del idioma del sistema. Fuera de Windows (pruebas)
+    cae a una conexion TCP al puerto 443.
+    """
+    try:
+        address = socket_module.gethostbyname(host)
+    except OSError:
+        return None
+
+    if sys.platform != "win32":
+        start = time.perf_counter()
+        try:
+            with socket_module.create_connection((address, 443), timeout=timeout_ms / 1000):
+                return round((time.perf_counter() - start) * 1000, 1)
+        except OSError:
+            return None
+
+    from ctypes import wintypes
+
+    class IP_OPTION_INFORMATION(ctypes.Structure):
+        _fields_ = [("Ttl", ctypes.c_ubyte), ("Tos", ctypes.c_ubyte), ("Flags", ctypes.c_ubyte),
+                    ("OptionsSize", ctypes.c_ubyte), ("OptionsData", ctypes.c_void_p)]
+
+    class ICMP_ECHO_REPLY(ctypes.Structure):
+        _fields_ = [("Address", wintypes.ULONG), ("Status", wintypes.ULONG), ("RoundTripTime", wintypes.ULONG),
+                    ("DataSize", wintypes.USHORT), ("Reserved", wintypes.USHORT), ("Data", ctypes.c_void_p),
+                    ("Options", IP_OPTION_INFORMATION)]
+
+    iphlpapi = ctypes.windll.iphlpapi
+    iphlpapi.IcmpCreateFile.restype = wintypes.HANDLE
+    iphlpapi.IcmpSendEcho.argtypes = [wintypes.HANDLE, wintypes.ULONG, ctypes.c_void_p, wintypes.WORD,
+                                      ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+    iphlpapi.IcmpCloseHandle.argtypes = [wintypes.HANDLE]
+
+    handle = iphlpapi.IcmpCreateFile()
+    if not handle or handle == wintypes.HANDLE(-1).value:
+        return None
+    try:
+        payload = b"enterprise-soc"
+        reply_size = ctypes.sizeof(ICMP_ECHO_REPLY) + len(payload) + 8
+        reply = ctypes.create_string_buffer(reply_size)
+        dest = int.from_bytes(socket_module.inet_aton(address), "little")
+        count = iphlpapi.IcmpSendEcho(handle, dest, payload, len(payload), None, reply, reply_size, timeout_ms)
+        if count == 0:
+            return None
+        echo = ICMP_ECHO_REPLY.from_buffer_copy(reply)
+        if echo.Status != 0:  # IP_SUCCESS
+            return None
+        return float(echo.RoundTripTime)
+    finally:
+        iphlpapi.IcmpCloseHandle(handle)
+
+
+def probe_host(host: str, attempts: int = 3) -> dict[str, Any]:
+    rtts = [r for r in (icmp_ping(host) for _ in range(attempts)) if r is not None]
+    return {
+        "host": host,
+        "lossPct": round(100 * (attempts - len(rtts)) / attempts, 1),
+        "avgMs": round(sum(rtts) / len(rtts), 1) if rtts else None,
+    }
+
+
+_ROUTE_RE = re.compile(r"^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)\s+\S+\s+(\d+)", re.MULTILINE)
+
+
+def get_default_gateway() -> str | None:
+    """Gateway por defecto (router/Fortigate del sitio) desde 'route print':
+    las columnas son numericas, asi que el parseo no depende del idioma."""
+    if sys.platform != "win32":
+        return None
+    try:
+        proc = subprocess.run(["route", "print", "-4", "0.0.0.0"], capture_output=True, timeout=10)
+    except Exception:
+        return None
+    routes = _ROUTE_RE.findall(_decode_console_bytes(proc.stdout or b""))
+    if not routes:
+        return None
+    return min(routes, key=lambda r: int(r[1]))[0]  # menor metrica = ruta activa
+
+
+_public_ip_cache: dict[str, Any] = {"ip": None, "at": float("-inf")}
+
+
+def get_public_ip() -> str | None:
+    """IP publica con la que sale el sitio a internet. Comparada contra las
+    IPs de los dos ISP cargadas en el CMDB, le dice al backend por cual
+    enlace esta saliendo (y si hubo failover al secundario)."""
+    now = time.monotonic()
+    if now - _public_ip_cache["at"] < PUBLIC_IP_REFRESH_SECONDS:
+        return _public_ip_cache["ip"]
+    ip = None
+    for url in PUBLIC_IP_URLS:
+        try:
+            response = requests.get(url, timeout=5)
+            candidate = response.text.strip()
+            if response.ok and re.fullmatch(r"[0-9a-fA-F:.]{7,45}", candidate):
+                ip = candidate
+                break
+        except requests.exceptions.RequestException:
+            continue
+    _public_ip_cache.update(ip=ip, at=now)
+    return ip
+
+
+_last_nic_counters: dict[str, Any] = {}
+
+
+def collect_nic_status() -> list[dict[str, Any]]:
+    """Placas de red activas: velocidad negociada y errores/descartes desde el
+    ciclo anterior (un cable o puerto de switch en mal estado se ve aca
+    antes de que se corte del todo)."""
+    global _last_nic_counters
+    nics: list[dict[str, Any]] = []
+    try:
+        stats = psutil.net_if_stats()
+        counters = psutil.net_io_counters(pernic=True)
+    except Exception:
+        return nics
+    for name, st in stats.items():
+        if not st.isup or "loopback" in name.lower() or name.lower().startswith(("lo", "isatap", "teredo")):
+            continue
+        c = counters.get(name)
+        prev = _last_nic_counters.get(name)
+        errors = drops = None
+        if c and prev:
+            errors = max(0, (c.errin + c.errout) - (prev.errin + prev.errout))
+            drops = max(0, (c.dropin + c.dropout) - (prev.dropin + prev.dropout))
+        nics.append({"name": name, "speedMbps": st.speed or None, "errors": errors, "drops": drops})
+    _last_nic_counters = counters
+    return nics[:6]
+
+
+def collect_network_status() -> dict[str, Any]:
+    gateway = get_default_gateway()
+    probes = [probe_host(h) for h in INTERNET_PROBE_HOSTS]
+    reachable = [p for p in probes if p["avgMs"] is not None]
+
+    dns_ms = None
+    try:
+        start = time.perf_counter()
+        socket_module.getaddrinfo("www.microsoft.com", 443)
+        dns_ms = round((time.perf_counter() - start) * 1000, 1)
+    except OSError:
+        pass
+
+    internet_up = bool(reachable)
+    return {
+        "gateway": gateway,
+        "gatewayProbe": probe_host(gateway) if gateway else None,
+        "internetUp": internet_up,
+        "internetLatencyMs": round(sum(p["avgMs"] for p in reachable) / len(reachable), 1) if reachable else None,
+        "internetLossPct": round(sum(p["lossPct"] for p in probes) / len(probes), 1) if probes else None,
+        "probes": probes,
+        "dnsOk": dns_ms is not None,
+        "dnsMs": dns_ms,
+        "publicIp": get_public_ip() if internet_up else None,
+        "nics": collect_nic_status(),
+    }
+
+
+# Cortes de internet vistos desde el sitio. Mientras el sitio esta sin
+# internet el agente NO puede avisarle al backend (esta en la nube), asi que
+# registra el corte localmente y lo reporta con su duracion cuando vuelve.
+_outage_started_at: str | None = None
+_pending_outages: list[dict[str, Any]] = []
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def track_outage(internet_up: bool) -> None:
+    global _outage_started_at
+    if not internet_up and _outage_started_at is None:
+        _outage_started_at = _utc_now_iso()
+        logger.warning("Sin salida a internet desde este sitio (inicio del corte: %s)", _outage_started_at)
+    elif internet_up and _outage_started_at is not None:
+        ended = _utc_now_iso()
+        duration = int(_seconds_between(_outage_started_at, ended))
+        _pending_outages.append({"startedAt": _outage_started_at, "endedAt": ended, "durationSeconds": duration})
+        logger.warning("Internet restablecido tras %s s sin conexion", duration)
+        _outage_started_at = None
+        del _pending_outages[:-20]
+
+
+# ---------------------------------------------------------------------------
+# Diagnostico preventivo
+# ---------------------------------------------------------------------------
+
+def collect_volumes() -> list[dict[str, Any]]:
+    volumes = []
+    for part in psutil.disk_partitions(all=False):
+        if sys.platform == "win32" and ("cdrom" in part.opts or not part.fstype):
+            continue
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+        except (PermissionError, OSError):
+            continue
+        volumes.append(
+            {
+                "mount": part.mountpoint.rstrip("\\") or part.mountpoint,
+                "fs": part.fstype,
+                "totalBytes": usage.total,
+                "freeBytes": usage.free,
+                "percent": round(usage.percent, 1),
+            }
+        )
+    return volumes
+
+
+def _wmi_query(namespace: str, query: str) -> list[Any]:
+    if win32com is None:
+        return []
+    try:
+        service = win32com.client.GetObject(f"winmgmts:\\\\.\\{namespace}")
+        return list(service.ExecQuery(query))
+    except Exception:
+        return []
+
+
+def _safe_attr(obj: Any, name: str) -> Any:
+    try:
+        return getattr(obj, name)
+    except Exception:
+        return None
+
+
+PHYSICAL_DISK_HEALTH = {0: "Healthy", 1: "Warning", 2: "Unhealthy", 5: "Unknown"}
+MEDIA_TYPES = {3: "HDD", 4: "SSD", 5: "SCM"}
+
+
+def collect_physical_disks() -> list[dict[str, Any]]:
+    """Salud fisica de los discos (Storage Management API + prediccion SMART):
+    un disco en "Warning" o con prediccion de falla se reemplaza ANTES de
+    perder datos."""
+    disks = []
+    for d in _wmi_query(r"root\Microsoft\Windows\Storage", "SELECT FriendlyName, MediaType, HealthStatus, Size FROM MSFT_PhysicalDisk"):
+        disks.append(
+            {
+                "name": str(_safe_attr(d, "FriendlyName") or "Disco"),
+                "mediaType": MEDIA_TYPES.get(_safe_attr(d, "MediaType"), "Desconocido"),
+                "health": PHYSICAL_DISK_HEALTH.get(_safe_attr(d, "HealthStatus"), "Unknown"),
+                "sizeBytes": int(_safe_attr(d, "Size") or 0) or None,
+                "predictFailure": False,
+            }
+        )
+    predicted = [bool(_safe_attr(p, "PredictFailure")) for p in _wmi_query(r"root\wmi", "SELECT PredictFailure FROM MSStorageDriver_FailurePredictStatus")]
+    if any(predicted):
+        if disks:
+            for disk, flag in zip(disks, predicted):
+                disk["predictFailure"] = disk["predictFailure"] or flag
+        else:
+            disks = [{"name": f"Disco {i}", "mediaType": "Desconocido", "health": "Unknown", "sizeBytes": None, "predictFailure": f} for i, f in enumerate(predicted)]
+    return disks
+
+
+def check_reboot_pending() -> bool:
+    try:
+        import winreg
+    except ImportError:
+        return False
+    keys = [
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+    ]
+    for key in keys:
+        try:
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key))
+            return True
+        except OSError:
+            continue
+    try:
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager")
+        value, _ = winreg.QueryValueEx(k, "PendingFileRenameOperations")
+        winreg.CloseKey(k)
+        return bool(value)
+    except OSError:
+        return False
+
+
+def _com_date_to_iso(value: Any) -> str | None:
+    try:
+        return datetime(value.year, value.month, value.day, value.hour, value.minute, tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    except Exception:
+        return None
+
+
+# La busqueda de actualizaciones pendientes contra Windows Update puede tardar
+# minutos: corre en un hilo aparte cada 12 hs y el diagnostico usa el ultimo
+# resultado disponible.
+_updates_cache: dict[str, Any] = {"pending": None, "checkedAt": None, "running": False, "lastRun": float("-inf")}
+
+
+def _search_pending_updates() -> None:
+    try:
+        import pythoncom
+        pythoncom.CoInitialize()
+        session = win32com.client.Dispatch("Microsoft.Update.Session")
+        result = session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+        critical = 0
+        for i in range(result.Updates.Count):
+            severity = str(_safe_attr(result.Updates.Item(i), "MsrcSeverity") or "")
+            if severity in ("Critical", "Important"):
+                critical += 1
+        _updates_cache.update(pending=result.Updates.Count, pendingCritical=critical, checkedAt=_utc_now_iso())
+    except Exception as exc:
+        logger.info("No se pudo consultar Windows Update: %s", exc)
+    finally:
+        _updates_cache["running"] = False
+
+
+def collect_update_status() -> dict[str, Any]:
+    status: dict[str, Any] = {"lastInstalledAt": None}
+    if win32com is None:
+        return status
+    try:
+        session = win32com.client.Dispatch("Microsoft.Update.Session")
+        searcher = session.CreateUpdateSearcher()
+        total = searcher.GetTotalHistoryCount()
+        if total:
+            history = searcher.QueryHistory(0, min(total, 50))
+            dates = [
+                _com_date_to_iso(history.Item(i).Date)
+                for i in range(history.Count)
+                if _safe_attr(history.Item(i), "ResultCode") in (2, 3)  # Succeeded / SucceededWithErrors
+            ]
+            dates = [d for d in dates if d]
+            status["lastInstalledAt"] = max(dates) if dates else None
+    except Exception as exc:
+        logger.debug("No se pudo leer el historial de Windows Update: %s", exc)
+
+    now = time.monotonic()
+    if not _updates_cache["running"] and now - _updates_cache["lastRun"] > 12 * 3600:
+        _updates_cache.update(running=True, lastRun=now)
+        threading.Thread(target=_search_pending_updates, daemon=True).start()
+    status["pending"] = _updates_cache.get("pending")
+    status["pendingCritical"] = _updates_cache.get("pendingCritical")
+    status["pendingCheckedAt"] = _updates_cache.get("checkedAt")
+    return status
+
+
+# Servicios automaticos que es NORMAL encontrar detenidos (arranque por
+# disparador o que terminan solos): no son una señal de problema.
+BENIGN_STOPPED_SERVICES = {
+    "gupdate", "gupdatem", "edgeupdate", "edgeupdatem", "sppsvc", "remoteregistry", "mapsbroker",
+    "tiledatamodelsvc", "wbiosrvc", "clr_optimization_v4.0.30319_32", "clr_optimization_v4.0.30319_64",
+    "sysmain", "usosvc", "wuauserv", "bits", "cdpsvc", "onesyncsvc", "wlidsvc", "ngcsvc", "ngcctnrsvc",
+    "tabletinputservice", "shellhwdetection", "stisvc", "dosvc", "waasmedicsvc", "trustedinstaller",
+    "googleupdaterservice", "googleupdaterinternalservice", "intelaudioservice", "wpnservice",
+}
+
+
+def collect_stopped_services() -> list[dict[str, str]]:
+    stopped = []
+    if not hasattr(psutil, "win_service_iter"):
+        return stopped
+    try:
+        for svc in psutil.win_service_iter():
+            try:
+                info = svc.as_dict()
+            except Exception:
+                continue
+            name = info.get("name") or ""
+            if info.get("start_type") != "automatic" or info.get("status") == "running":
+                continue
+            if name.lower() in BENIGN_STOPPED_SERVICES or "_" in name and name.split("_")[0].lower() in ("cdpusersvc", "onesyncsvc", "wpnuserservice"):
+                continue
+            stopped.append({"name": name, "displayName": info.get("display_name") or name})
+    except Exception as exc:
+        logger.debug("No se pudo listar servicios: %s", exc)
+    return stopped[:40]
+
+
+def collect_defender_status() -> dict[str, Any] | None:
+    items = _wmi_query(
+        r"root\Microsoft\Windows\Defender",
+        "SELECT AntivirusEnabled, RealTimeProtectionEnabled, AntivirusSignatureAge, QuickScanAge FROM MSFT_MpComputerStatus",
+    )
+    if not items:
+        return None
+    d = items[0]
+    return {
+        "antivirusEnabled": bool(_safe_attr(d, "AntivirusEnabled")),
+        "realTimeEnabled": bool(_safe_attr(d, "RealTimeProtectionEnabled")),
+        "signatureAgeDays": _safe_attr(d, "AntivirusSignatureAge"),
+        "quickScanAgeDays": _safe_attr(d, "QuickScanAge"),
+    }
+
+
+# Señales tempranas en el Visor de Eventos (ultimas 24 hs). Cada una suele
+# aparecer dias o semanas antes de la falla "grande":
+EVENT_SIGNALS = {
+    # Errores de controlador de disco / sectores defectuosos / NTFS corrupto.
+    "diskErrors": ("System", "*[System[Provider[@Name='disk' or @Name='Ntfs' or @Name='volmgr' or @Name='storahci' or @Name='stornvme'] and (EventID=7 or EventID=11 or EventID=15 or EventID=51 or EventID=55 or EventID=98 or EventID=129 or EventID=153 or EventID=157) and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
+    # Apagados no esperados (corte de luz, cuelgue, UPS).
+    "unexpectedShutdowns": ("System", "*[System[(EventID=41 or EventID=6008) and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
+    # Pantallazos azules.
+    "bugchecks": ("System", "*[System[EventID=1001 and Provider[@Name='Microsoft-Windows-WER-SystemErrorReporting'] and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
+    # Windows detecto memoria virtual agotada.
+    "lowMemory": ("System", "*[System[EventID=2004 and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
+    # Inicios de sesion fallidos (fuerza bruta RDP, credenciales viejas).
+    "failedLogons": ("Security", "*[System[EventID=4625 and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
+    # Malware detectado por Microsoft Defender.
+    "malwareDetections": ("Microsoft-Windows-Windows Defender/Operational", "*[System[(EventID=1116 or EventID=1117) and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
+}
+
+
+def collect_event_signals() -> dict[str, int]:
+    return {key: len(_evt_query(channel, xpath, max_events=500)) for key, (channel, xpath) in EVENT_SIGNALS.items()}
+
+
+def collect_top_processes(limit: int = 5) -> dict[str, list[dict[str, Any]]]:
+    procs = []
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            cpu = p.cpu_percent(None)  # desde la llamada anterior (process_iter cachea los objetos)
+            mem = p.info["memory_info"].rss if p.info.get("memory_info") else 0
+            procs.append({"name": p.info.get("name") or "?", "cpu": round(cpu / max(psutil.cpu_count() or 1, 1), 1), "memBytes": mem})
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    procs = [p for p in procs if p["name"].lower() not in ("system idle process", "idle")]
+    return {
+        "byCpu": sorted(procs, key=lambda p: p["cpu"], reverse=True)[:limit],
+        "byMemory": sorted(procs, key=lambda p: p["memBytes"], reverse=True)[:limit],
+    }
+
+
+def collect_diagnostics() -> dict[str, Any]:
+    """Todo lo que permite anticiparse a una falla. Cada bloque es
+    independiente y best-effort: si uno falla (WMI roto, sin permisos), el
+    resto se manda igual."""
+    boot = psutil.boot_time()
+    swap = psutil.swap_memory()
+    diagnostics: dict[str, Any] = {
+        "collectedAt": _utc_now_iso(),
+        "uptimeSeconds": int(time.time() - boot),
+        "lastBootAt": datetime.fromtimestamp(boot, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z"),
+        "os": f"{os.getenv('OS', '')} {sys.getwindowsversion().build if sys.platform == 'win32' else ''}".strip(),
+        "cpuCount": psutil.cpu_count(),
+        "memoryTotalBytes": psutil.virtual_memory().total,
+        "pagefilePercent": round(swap.percent, 1),
+    }
+    collectors = {
+        "volumes": collect_volumes,
+        "physicalDisks": collect_physical_disks,
+        "rebootPending": check_reboot_pending,
+        "updates": collect_update_status,
+        "stoppedServices": collect_stopped_services,
+        "defender": collect_defender_status,
+        "eventSignals": collect_event_signals,
+        "topProcesses": collect_top_processes,
+    }
+    for key, fn in collectors.items():
+        try:
+            diagnostics[key] = fn()
+        except Exception as exc:
+            logger.warning("Diagnostico '%s' fallo: %s", key, exc)
+    return diagnostics
+
+
+_last_diagnostics_at: float = float("-inf")
 
 
 def read_event_log_errors(log_type: str, max_events: int) -> list[dict[str, Any]]:
@@ -391,10 +870,147 @@ def check_wbadmin() -> dict[str, Any]:
         "method": "WBADMIN",
         "detail": output[-600:],
     }
+    versions = _parse_wbadmin_versions(output)
+    if versions:
+        # Sin esto, cada chequeo llegaba al backend sin fecha y no habia forma
+        # de distinguir "el backup de anoche" del "de hace una semana".
+        status["lastBackupAt"] = versions[0]
+        status["versions"] = versions
     target = _extract_target_path(output)
     if target:
         status["targetPath"] = target
     return status
+
+
+_WBADMIN_VERSION_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})-(\d{2}):(\d{2})\b")
+
+
+def _parse_wbadmin_versions(output: str) -> list[str]:
+    """Fechas de los backups listados por 'wbadmin get versions', mas nuevos
+    primero, en ISO-8601 UTC.
+
+    El "identificador de version" de wbadmin tiene SIEMPRE el formato
+    MM/DD/YYYY-HH:MM en UTC, sin importar el idioma ni la configuracion
+    regional de Windows (es el valor que se le pasa a 'wbadmin start
+    recovery -version:'), asi que se puede parsear sin depender del idioma.
+    """
+    found: set[str] = set()
+    for month, day, year, hour, minute in _WBADMIN_VERSION_RE.findall(output):
+        try:
+            dt = datetime(int(year), int(month), int(day), int(hour), int(minute), tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        found.add(dt.strftime("%Y-%m-%dT%H:%M:00.000000Z"))
+    return sorted(found, reverse=True)[:60]
+
+
+# Canal "Microsoft-Windows-Backup" del Visor de Eventos: lo escribe Windows
+# Server Backup (y wbadmin) en cada corrida. Es la unica fuente que da la
+# DURACION real de cada backup (inicio -> fin) y tambien las corridas que
+# fallaron, que ni wbadmin ni el WMI listan.
+BACKUP_EVENT_START = {1}
+BACKUP_EVENT_SUCCESS = {4}
+BACKUP_EVENT_FAILURE = {5, 8, 9, 17, 18, 19, 20, 21, 22, 49, 50, 52, 100, 517, 518, 521, 527, 528, 544, 545, 546, 561, 564, 612}
+_EVT_ID_RE = re.compile(r"<EventID[^>]*>(\d+)</EventID>")
+_EVT_TIME_RE = re.compile(r"<TimeCreated SystemTime=['\"]([^'\"]+)['\"]")
+
+
+def _evt_query(channel: str, xpath: str, max_events: int = 500) -> list[str]:
+    """Devuelve el XML de los eventos de un canal (API moderna EvtQuery, que a
+    diferencia de OpenEventLog tambien lee canales "Applications and Services
+    Logs" como Microsoft-Windows-Backup), mas nuevos primero."""
+    if win32evtlog is None:
+        return []
+    results: list[str] = []
+    try:
+        handle = win32evtlog.EvtQuery(
+            channel, win32evtlog.EvtQueryChannelPath | win32evtlog.EvtQueryReverseDirection, xpath
+        )
+    except Exception:
+        return []  # canal inexistente (caracteristica no instalada) o sin permisos
+    while len(results) < max_events:
+        try:
+            batch = win32evtlog.EvtNext(handle, 100)
+        except Exception:
+            break
+        if not batch:
+            break
+        for event in batch:
+            try:
+                results.append(win32evtlog.EvtRender(event, win32evtlog.EvtRenderEventXml))
+            except Exception:
+                continue
+    return results[:max_events]
+
+
+def _evt_time_iso(xml: str) -> str | None:
+    match = _EVT_TIME_RE.search(xml)
+    if not match:
+        return None
+    raw = match.group(1)
+    # "2026-09-25T03:00:01.1234567Z" -> precision de microsegundos
+    try:
+        base, _, frac = raw.rstrip("Z").partition(".")
+        dt = datetime.strptime(base, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        micro = int((frac + "000000")[:6]) if frac else 0
+        return dt.replace(microsecond=micro).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        return None
+
+
+def _seconds_between(start_iso: str, end_iso: str) -> float:
+    fmt = "%Y-%m-%dT%H:%M:%S.%fZ"
+    return (datetime.strptime(end_iso, fmt) - datetime.strptime(start_iso, fmt)).total_seconds()
+
+
+def read_backup_runs(max_runs: int = 30) -> list[dict[str, Any]]:
+    """Corridas de backup reconstruidas desde el Visor de Eventos, mas nuevas
+    primero: [{startedAt, finishedAt, durationSeconds, result, eventId}]."""
+    ids = sorted(BACKUP_EVENT_START | BACKUP_EVENT_SUCCESS | BACKUP_EVENT_FAILURE)
+    xpath = "*[System[(" + " or ".join(f"EventID={i}" for i in ids) + ")]]"
+    events: list[tuple[str, int]] = []
+    for xml in _evt_query("Microsoft-Windows-Backup", xpath, max_events=max_runs * 4):
+        id_match = _EVT_ID_RE.search(xml)
+        when = _evt_time_iso(xml)
+        if id_match and when:
+            events.append((when, int(id_match.group(1))))
+    events.sort()  # cronologico para emparejar inicio -> fin
+
+    runs: list[dict[str, Any]] = []
+    started_at: str | None = None
+    for when, event_id in events:
+        if event_id in BACKUP_EVENT_START:
+            started_at = when
+            continue
+        result = "SUCCESS" if event_id in BACKUP_EVENT_SUCCESS else "FAILED"
+        # Una corrida fallida puede escribir varios eventos de error seguidos:
+        # solo el primero cierra la corrida.
+        if (
+            started_at is None
+            and result == "FAILED"
+            and runs
+            and runs[-1]["result"] == "FAILED"
+            and _seconds_between(runs[-1]["finishedAt"], when) < 900
+        ):
+            continue
+        duration = None
+        if started_at:
+            duration = int(_seconds_between(started_at, when))
+            if duration < 0 or duration > 2 * 24 * 3600:
+                duration = None
+        runs.append(
+            {
+                "startedAt": started_at,
+                "finishedAt": when,
+                "durationSeconds": duration,
+                "result": result,
+                "eventId": event_id,
+            }
+        )
+        started_at = None
+
+    runs.reverse()
+    return runs[:max_runs]
 
 
 def _extract_target_path(output: str) -> str | None:
@@ -478,6 +1094,35 @@ def get_backup_status() -> dict[str, Any]:
 
     status["vssServiceOk"] = vss_ok
 
+    try:
+        runs = read_backup_runs()
+    except Exception as exc:
+        logger.warning("No se pudo leer el historial de backups del Visor de Eventos: %s", exc)
+        runs = []
+    if runs:
+        status["runs"] = runs
+        latest = runs[0]
+        last_success = next((r for r in runs if r["result"] == "SUCCESS"), None)
+        if last_success and last_success.get("durationSeconds") is not None:
+            status["durationSeconds"] = last_success["durationSeconds"]
+        if not status.get("lastBackupAt") and last_success:
+            status["lastBackupAt"] = last_success["finishedAt"]
+        # wbadmin solo lista los backups que SALIERON bien: si la ultima
+        # corrida del Visor de Eventos fallo despues del ultimo backup
+        # listado, el estado real es FALLIDO aunque haya versiones viejas.
+        if (
+            status.get("method") == "WBADMIN"
+            and status.get("result") == "SUCCESS"
+            and latest["result"] == "FAILED"
+            and latest["finishedAt"] > (status.get("lastBackupAt") or "")
+        ):
+            status["result"] = "FAILED"
+            status["detail"] = (
+                f"La ultima corrida de backup ({latest['finishedAt']}) fallo "
+                f"(evento {latest['eventId']} de Microsoft-Windows-Backup). "
+                + (status.get("detail") or "")
+            )
+
     # Tamano real del backup: best-effort, solo si se detecto una ruta de
     # destino y el ultimo resultado fue exitoso (si fallo, el contenido
     # puede estar incompleto/no ser representativo).
@@ -511,6 +1156,13 @@ def build_backup_payload() -> dict[str, Any]:
     if status.get("sizeBytes") is not None:
         payload["sizeBytes"] = status["sizeBytes"]
 
+    metadata: dict[str, Any] = {}
+    for key in ("runs", "versions", "durationSeconds"):
+        if status.get(key):
+            metadata[key] = status[key]
+    if metadata:
+        payload["metadata"] = metadata
+
     return payload
 
 
@@ -540,17 +1192,34 @@ def send_backup_status(payload: dict[str, Any]) -> None:
 
 
 def build_payload() -> dict[str, Any]:
+    global _last_diagnostics_at
     metrics = collect_system_metrics()
     recent_errors = collect_recent_errors()
 
+    metadata: dict[str, Any] = {
+        "hostname": os.getenv("COMPUTERNAME", ""),
+        "recentEventLogErrors": recent_errors,
+    }
+
+    try:
+        network = collect_network_status()
+        track_outage(network["internetUp"])
+        if _pending_outages:
+            network["outages"] = list(_pending_outages)
+        metadata["network"] = network
+    except Exception as exc:
+        logger.warning("No se pudo medir la red: %s", exc)
+
+    now = time.monotonic()
+    if now - _last_diagnostics_at >= DIAGNOSTICS_INTERVAL_SECONDS:
+        _last_diagnostics_at = now
+        metadata["diagnostics"] = collect_diagnostics()
+
     return {
         **metrics,
-        "recordedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "recordedAt": _utc_now_iso(),
         "agentVersion": AGENT_VERSION,
-        "metadata": {
-            "hostname": os.getenv("COMPUTERNAME", ""),
-            "recentEventLogErrors": recent_errors,
-        },
+        "metadata": metadata,
     }
 
 
@@ -570,6 +1239,10 @@ def send_telemetry(payload: dict[str, Any]) -> str | None:
         logger.debug("Respuesta cruda del backend (HTTP %s): %s", response.status_code, response.text[:500])
         response.raise_for_status()
         body = response.json()
+        # Los cortes de internet ya reportados no se vuelven a mandar.
+        for outage in (payload.get("metadata", {}).get("network") or {}).get("outages", []):
+            if outage in _pending_outages:
+                _pending_outages.remove(outage)
         logger.info(
             "Telemetria enviada OK (HTTP %s, telemetryId=%s, alertas=%s)",
             response.status_code,
@@ -580,6 +1253,9 @@ def send_telemetry(payload: dict[str, Any]) -> str | None:
     except requests.exceptions.RequestException as exc:
         status = getattr(exc.response, "status_code", "sin respuesta")
         logger.error("Fallo al enviar telemetria a %s (HTTP %s): %s", url, status, exc)
+        if "diagnostics" in payload.get("metadata", {}):
+            global _last_diagnostics_at
+            _last_diagnostics_at = float("-inf")  # reintentar el diagnostico en el proximo ciclo
         return None
 
 

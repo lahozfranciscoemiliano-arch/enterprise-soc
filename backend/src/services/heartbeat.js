@@ -56,6 +56,9 @@ async function runHeartbeatCheck() {
           ? `${server.name}: sin telemetría hace ${minutesSilent} minuto(s). El agente dejó de reportar.`
           : `${server.name}: nunca reportó telemetría y quedó marcado como caído.`,
         metadata: { lastSeenAt: server.lastSeenAt, thresholdSeconds },
+        // Se auto-resuelve con la primera telemetria que vuelva a llegar
+        // (POST /api/telemetry).
+        dedupKey: 'AGENT_OFFLINE',
       });
       broadcastServerStatus(server.id, 'OFFLINE');
 
