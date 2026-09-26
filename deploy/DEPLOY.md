@@ -499,6 +499,28 @@ que cada servidor lo actualice solo en su próximo ciclo (no hace falta reinstal
 `install-agent.ps1` a mano, siempre que `AGENT_LATEST_VERSION` esté seteado en Admin →
 Configuración).
 
+## 33. Actualizar la VPS de producción (un solo comando)
+
+`deploy/vps-update.sh` aplica todo lo pendiente en la VPS y se puede correr las veces que
+haga falta (cada paso detecta si ya está hecho, y si uno falla sigue con los demás):
+
+```bash
+cd /home/socapp/enterprise-soc && git pull && bash deploy/vps-update.sh
+```
+
+1. Reconstruye y reinicia backend + frontend, y espera a que el backend responda.
+2. Agrega `location /downloads/` al Nginx si falta (con backup y rollback automático si
+   `nginx -t` falla). Sin eso, la descarga del `.exe` — que usan `install-agent.ps1` y la
+   auto-actualización de los agentes — cae en el frontend y da 404.
+3. Baja el `.exe` de la Release `agent-latest`, verifica que sea la misma versión que
+   `AGENT_VERSION` de `agent/agent.py`, lo publica en el backend, comprueba la descarga
+   de punta a punta vía Nginx, y recién ahí marca `AGENT_LATEST_VERSION` para que los
+   agentes se actualicen solos. Necesita el repo **público** en ese momento; si está
+   privado, este paso se saltea con un aviso.
+4. Instala el auto-monitoreo del VPS (sección 19) si todavía no estaba.
+
+Al final muestra un resumen OK / FALLO / SALTEADO por paso.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real
