@@ -196,8 +196,8 @@ export type SystemSettings = {
   AGENT_LATEST_VERSION: PlainSetting<string>;
   FORTI_SYSLOG_ENABLED: PlainSetting<boolean>;
   FORTI_SYSLOG_PORT: PlainSetting<number>;
-  ANTHROPIC_API_KEY: SensitiveSetting;
-  ANTHROPIC_MODEL: PlainSetting<string>;
+  GEMINI_API_KEY: SensitiveSetting;
+  GEMINI_MODEL: PlainSetting<string>;
   REMOTE_ACCESS_ENABLED: PlainSetting<boolean>;
   TELEMETRY_RETENTION_DAYS: PlainSetting<number>;
   SECURITY_EVENT_RETENTION_DAYS: PlainSetting<number>;

@@ -42,9 +42,9 @@ const SETTING_DEFS = {
   FORTI_SYSLOG_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
   FORTI_SYSLOG_PORT: { envFallback: null, type: 'number', sensitive: false },
 
-  // Asistente (Claude)
-  ANTHROPIC_API_KEY: { envFallback: 'ANTHROPIC_API_KEY', type: 'string', sensitive: true },
-  ANTHROPIC_MODEL: { envFallback: 'ANTHROPIC_MODEL', type: 'string', sensitive: false },
+  // Asistente (Gemini)
+  GEMINI_API_KEY: { envFallback: 'GEMINI_API_KEY', type: 'string', sensitive: true },
+  GEMINI_MODEL: { envFallback: 'GEMINI_MODEL', type: 'string', sensitive: false },
 
   // Acceso remoto
   REMOTE_ACCESS_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },

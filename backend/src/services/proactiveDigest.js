@@ -5,7 +5,7 @@
 // individuales, cada una por separado no necesariamente HIGH/CRITICAL.
 const prisma = require('../prismaClient');
 const { notifyGeneric } = require('./notifications');
-const { draftProactiveNote } = require('./claude');
+const { draftProactiveNote } = require('./gemini');
 
 const REPEAT_THRESHOLD = 3; // alertas en la ventana para considerarlo un patron
 const WINDOW_HOURS = 24;

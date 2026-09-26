@@ -54,8 +54,8 @@ export default function SettingsPanel() {
         AGENT_LATEST_VERSION: plainField(data, 'AGENT_LATEST_VERSION'),
         FORTI_SYSLOG_ENABLED: boolField(data, 'FORTI_SYSLOG_ENABLED'),
         FORTI_SYSLOG_PORT: plainField(data, 'FORTI_SYSLOG_PORT') || '5514',
-        ANTHROPIC_API_KEY: '',
-        ANTHROPIC_MODEL: plainField(data, 'ANTHROPIC_MODEL') || 'claude-sonnet-4-5',
+        GEMINI_API_KEY: '',
+        GEMINI_MODEL: plainField(data, 'GEMINI_MODEL') || 'gemini-3.8-flash',
         REMOTE_ACCESS_ENABLED: boolField(data, 'REMOTE_ACCESS_ENABLED'),
         TELEMETRY_RETENTION_DAYS: plainField(data, 'TELEMETRY_RETENTION_DAYS') || '30',
         SECURITY_EVENT_RETENTION_DAYS: plainField(data, 'SECURITY_EVENT_RETENTION_DAYS') || '365',
@@ -297,19 +297,19 @@ export default function SettingsPanel() {
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
-        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Bot className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Asistente (Claude)</h3>
+        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Bot className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Asistente (Gemini)</h3>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {input('ANTHROPIC_API_KEY', `API key de Anthropic (${sensitiveHint('ANTHROPIC_API_KEY')})`, 'password')}
-          {input('ANTHROPIC_MODEL', 'Modelo (claude-sonnet-4-5)')}
+          {input('GEMINI_API_KEY', `API key de Gemini (${sensitiveHint('GEMINI_API_KEY')})`, 'password')}
+          {input('GEMINI_MODEL', 'Modelo (gemini-3.8-flash)')}
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
           Requiere una API key de{' '}
-          <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-brand-600 underline hover:text-brand-700">
-            console.anthropic.com
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-brand-600 underline hover:text-brand-700">
+            aistudio.google.com
           </a>{' '}
-          (se factura por uso, es distinta de una suscripción Claude Pro).
+          (tiene nivel gratuito con límite de requests/minuto).
         </p>
-        <div className="mt-3">{saveBtn('asistente', ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL'])}</div>
+        <div className="mt-3">{saveBtn('asistente', ['GEMINI_API_KEY', 'GEMINI_MODEL'])}</div>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">

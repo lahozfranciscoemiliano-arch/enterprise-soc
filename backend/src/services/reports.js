@@ -5,7 +5,7 @@ const prisma = require('../prismaClient');
 const { getSettings } = require('./settings');
 const { getHealthStatus, getEffectiveDefaultThresholds } = require('./alertEngine');
 const { sendReportEmail } = require('./notifications');
-const { summarizeReportNaturalLanguage } = require('./claude');
+const { summarizeReportNaturalLanguage } = require('./gemini');
 
 // Los PDF generados se guardan aca, igual que el .exe del agente en
 // server.js (DOWNLOADS_DIR): sobreviven a un "docker compose up --build"

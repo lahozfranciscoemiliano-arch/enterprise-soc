@@ -2,13 +2,13 @@
 // repetido en cada lugar que dispara una alerta (telemetria, backups,
 // heartbeat, y ahora tambien anomalias y synthetic monitoring). Crea el
 // evento, lo transmite por WebSocket, dispara la notificacion externa
-// (email/Slack/webhook/Telegram), y pide un triage a Claude en segundo
+// (email/Slack/webhook/Telegram), y pide un triage a Gemini en segundo
 // plano -- todo en un solo lugar, para que una funcionalidad nueva que
 // dispare alertas no tenga que reimplementar las cuatro cosas.
 const prisma = require('../prismaClient');
 const { broadcastAlert } = require('../websocket/socketServer');
 const { notifyAlert } = require('./notifications');
-const { triageEvent } = require('./claude');
+const { triageEvent } = require('./gemini');
 
 async function createAndDispatchEvent({ serverId, serverName, type, severity, description, metadata }) {
   const event = await prisma.securityEvent.create({

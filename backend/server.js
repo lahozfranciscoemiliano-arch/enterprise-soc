@@ -54,11 +54,11 @@ const { createAndDispatchEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
 const { ingestFortiEvent } = require('./src/services/fortinet');
 const {
-  askClaude,
+  askGemini,
   analyzeEventLogErrors,
   filterEventsByNaturalLanguage,
   analyzeFortiScreenshot,
-} = require('./src/services/claude');
+} = require('./src/services/gemini');
 const { createSession, revokeSession, revokeAllUserSessions } = require('./src/services/sessions');
 const {
   generateSecret,
@@ -1460,7 +1460,7 @@ app.patch('/api/admin/settings', adminWriteLimiter, authUser, requireRole('ADMIN
     'SLACK_WEBHOOK_URL',
     'WEBHOOK_URL',
     'AGENT_ENROLLMENT_SECRET',
-    'ANTHROPIC_API_KEY',
+    'GEMINI_API_KEY',
   ]);
 
   try {
@@ -1711,7 +1711,7 @@ app.delete('/api/admin/forti-devices/:id', authUser, requireRole('ADMIN'), async
 
 // ---------------------------------------------------------------------------
 // Lectura de capturas de pantalla del panel de un FortiGate (vision de
-// Claude): para los sitios sin API key ni syslog configurados todavia.
+// Gemini): para los sitios sin API key ni syslog configurados todavia.
 // Nunca crea eventos por si solo -- devuelve una propuesta para que un
 // ADMIN la revise y confirme con el segundo endpoint antes de ingestarla.
 // ---------------------------------------------------------------------------
@@ -1841,8 +1841,8 @@ app.get('/api/forti/events', authUser, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Asistente (Claude): consultas del equipo con contexto en vivo del estado
-// del NOC/SOC. Requiere ANTHROPIC_API_KEY configurada (Admin -> Configuración).
+// Asistente (Gemini): consultas del equipo con contexto en vivo del estado
+// del NOC/SOC. Requiere GEMINI_API_KEY configurada (Admin -> Configuración).
 // ---------------------------------------------------------------------------
 
 const assistantLimiter = rateLimit({
@@ -1860,7 +1860,7 @@ app.post('/api/assistant/chat', assistantLimiter, authUser, async (req, res) => 
   }
 
   try {
-    const reply = await askClaude(parsed.data.messages, req.user.sub);
+    const reply = await askGemini(parsed.data.messages, req.user.sub);
     return res.json({ reply });
   } catch (err) {
     if (err.code === 'NOT_CONFIGURED') {

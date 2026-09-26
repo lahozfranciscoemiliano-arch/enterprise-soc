@@ -59,7 +59,7 @@ NEXT_PUBLIC_API_URL=https://noc.tudominio.com
 NEXT_PUBLIC_WS_URL=wss://noc.tudominio.com/ws
 ```
 
-El resto (SMTP/Slack/webhook, Fortinet, Claude, umbrales, etc.) es opcional acá — se puede
+El resto (SMTP/Slack/webhook, Fortinet, Gemini, umbrales, etc.) es opcional acá — se puede
 completar después desde el panel, sin redeploy (ver sección 11).
 
 ## 4. Primer build y arranque
@@ -247,15 +247,24 @@ Detalles de seguridad de esta función:
 - Es la función de mayor privilegio de todo el sistema (acceso interactivo directo a un
   servidor) — si no la vas a usar por ahora, dejala apagada en Configuración.
 
-## 15. Asistente (Claude)
+## 15. Asistente (Gemini)
 
 Botón flotante 🤖 en el dashboard, disponible para cualquier usuario logueado. Para
 activarlo:
 
-1. Creá una cuenta y una API key en [console.anthropic.com](https://console.anthropic.com)
-   — **distinta de una suscripción Claude Pro de claude.ai**, que no da acceso a la API y
-   no sirve para esto. Se factura por uso.
-2. Cargala en Admin → Configuración → Asistente (Claude).
+1. Creá una API key gratis en [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+   con tu cuenta de Google — el nivel gratuito alcanza para uso normal del asistente (tiene
+   límite de requests por minuto); para uso más intensivo se asocia un proyecto de Google
+   Cloud con facturación habilitada.
+2. Cargala en Admin → Configuración → Asistente (Gemini).
+
+El modelo por defecto es `gemini-3.8-flash`. Si lo cambiás, usá otro modelo de la familia
+Gemini 3.x: el backend manda el nivel de razonamiento como `thinkingLevel` (low/medium),
+que es el parámetro de los modelos 3.x — los 2.5 usan otro (`thinkingBudget`) y pueden
+rechazar la request. Ojo: en estos modelos `maxOutputTokens` incluye los tokens de
+razonamiento, por eso cada llamada fija su nivel explícitamente (`low` para triage, digest,
+resúmenes y búsqueda; `medium` para el chat, el análisis de logs y la visión) y suma un
+margen al tope de respuesta (ver `src/services/gemini.js`).
 
 Cada consulta se manda con un resumen en vivo de las alertas abiertas, servidores y
 eventos Fortinet recientes, para que pueda responder sobre el estado real sin que tengas
@@ -392,8 +401,8 @@ minuto solo) se ve en **Admin → Reportes**.
 
 ## 23. Triage automático y resumen de reportes con IA
 
-Con `ANTHROPIC_API_KEY` configurada (sección 15), cada alerta nueva recibe automáticamente
-un triage corto de Claude (causa probable + primera acción, usando el playbook del tipo
+Con `GEMINI_API_KEY` configurada (sección 15), cada alerta nueva recibe automáticamente
+un triage corto de Gemini (causa probable + primera acción, usando el playbook del tipo
 como contexto) que aparece junto a la alerta en **Logs Regex**. Los reportes ejecutivos
 también incluyen un resumen en lenguaje natural para gerencia. Sin la API key configurada,
 todo funciona igual pero sin estas dos cosas — nunca bloquea ni demora la alerta en sí.
@@ -404,7 +413,7 @@ Desde el detalle de cada servidor (Monitoreo → clic en un nodo), el botón **�
 IA** resume los errores recientes del Visor de Eventos que el agente ya manda. En **Logs
 Regex**, el campo "🤖 Buscar con IA" permite preguntar en lenguaje natural sobre las alertas
 cargadas (ej. "problemas de backup de Kansas este mes") en vez de armar una regex. Ambos
-requieren la API key de Claude.
+requieren la API key de Gemini.
 
 ## 25. Detección de anomalías estadística
 
@@ -427,14 +436,14 @@ una alerta `NETWORK_UNREACHABLE` (CRITICAL si el heartbeat también lo tiene OFF
 
 Corre cada 6 horas: si un mismo servidor acumula 3 o más alertas en las últimas 24hs, manda
 una notificación por los canales configurados (sección 9) señalando el patrón — con una nota
-redactada por Claude si está configurado, o un texto genérico si no. No hace falta abrir el
+redactada por Gemini si está configurado, o un texto genérico si no. No hace falta abrir el
 dashboard para enterarse de un problema recurrente.
 
-## 28. Lectura de capturas de Fortinet por visión (Claude)
+## 28. Lectura de capturas de Fortinet por visión (Gemini)
 
 Para los sitios sin API key ni syslog de Fortinet configurado todavía: en **Admin →
 Fortinet → Analizar captura de pantalla**, subí un screenshot del panel del FortiGate y
-Claude extrae los eventos visibles (tipo, severidad, descripción, IPs). Nunca se ingesta
+Gemini extrae los eventos visibles (tipo, severidad, descripción, IPs). Nunca se ingesta
 nada automáticamente — se revisan y confirman los eventos antes de cargarlos.
 
 ## 29. Notificaciones por Telegram
