@@ -44,15 +44,19 @@ export default function TabNav({
   const tabs = showAdmin ? [...TABS, ADMIN_TAB] : TABS;
 
   return (
-    <nav className="flex flex-wrap gap-1 border-b border-slate-200 bg-white px-6 py-2">
+    <nav className="no-scrollbar flex gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 sm:flex-wrap sm:overflow-visible sm:px-6">
       {tabs.map((tab) => {
         const Icon = tab.icon;
         const isActive = active === tab.id;
         return (
           <button
             key={tab.id}
-            onClick={() => onChange(tab.id)}
-            className={`relative flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150 ${
+            onClick={(e) => {
+              onChange(tab.id);
+              // En celular la fila se desliza: centrar la pestaña elegida.
+              e.currentTarget.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            }}
+            className={`relative flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors duration-150 sm:gap-2 sm:px-4 sm:py-2 sm:text-sm ${
               isActive ? 'text-white' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
             }`}
           >

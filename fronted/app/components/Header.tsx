@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
-import { Clock, LogOut, UserRound } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Clock, LogOut, Smartphone, UserRound } from 'lucide-react';
 import type { ConnectionStatus } from '../types';
 
 export default function Header({
@@ -15,6 +16,16 @@ export default function Header({
   onLogout: () => void;
   onOpenAccount: () => void;
 }) {
+  // Dentro de la app Android (WebView con el puente "NocApp"): boton para
+  // abrir sus ajustes (alertas, servidor, notificaciones).
+  const [isNativeApp, setIsNativeApp] = useState(false);
+  useEffect(() => {
+    setIsNativeApp(typeof window !== 'undefined' && 'NocApp' in window);
+  }, []);
+  const openNativeMenu = () => {
+    (window as unknown as { NocApp?: { openMenu: () => void } }).NocApp?.openMenu();
+  };
+
   const statusLabel =
     status === 'connected' ? 'Conectado' : status === 'connecting' ? 'Conectando...' : 'Desconectado';
   const statusDot =
@@ -23,10 +34,10 @@ export default function Header({
   return (
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur">
       <div className="h-1 w-full animate-gradient-bar" />
-      <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-3.5">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 sm:px-6 sm:py-3.5">
         <div className="flex items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo-bistro.png" alt="Grupo Bistro" className="h-8 w-auto shrink-0 object-contain" />
+          <img src="/logo-bistro.png" alt="Grupo Bistro" className="h-7 w-auto shrink-0 object-contain sm:h-8" />
           <div className="hidden h-8 w-px bg-slate-200 sm:block" />
           <div className="hidden sm:block">
             <h1 className="text-sm font-semibold leading-tight text-slate-900">SOC / NOC Central</h1>
@@ -37,8 +48,11 @@ export default function Header({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div
+            title={statusLabel}
+            className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600 sm:px-3"
+          >
             <span className="relative flex h-2 w-2">
               {status === 'connected' && (
                 <motion.span
@@ -49,11 +63,20 @@ export default function Header({
               )}
               <span className={`relative inline-flex h-2 w-2 rounded-full ${statusDot}`} />
             </span>
-            {statusLabel}
+            <span className="hidden sm:inline">{statusLabel}</span>
           </div>
+          {isNativeApp && (
+            <button
+              onClick={openNativeMenu}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
+              title="Ajustes de la app"
+            >
+              <Smartphone className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             onClick={onOpenAccount}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 sm:px-3"
             title={userEmail}
           >
             <UserRound className="h-3.5 w-3.5" />
@@ -61,7 +84,7 @@ export default function Header({
           </button>
           <button
             onClick={onLogout}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 sm:px-3"
           >
             <LogOut className="h-3.5 w-3.5" />
             <span className="hidden md:inline">Cerrar sesión</span>

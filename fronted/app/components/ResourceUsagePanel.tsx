@@ -87,10 +87,10 @@ export default function ResourceUsagePanel({ servers, alerts }: { servers: Serve
         <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
           <Gauge className="h-4 w-4 text-slate-400" />
           Uso de Recursos por Nodo
-          <span className="font-normal text-slate-400">(ordenado por mayor uso)</span>
+          <span className="hidden font-normal text-slate-400 sm:inline">(ordenado por mayor uso)</span>
         </h2>
         {averages && (
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-4 sm:gap-5">
             <FleetStat label="CPU prom." value={`${averages.cpu.toFixed(0)}%`} />
             <FleetStat label="RAM prom." value={`${averages.ram.toFixed(0)}%`} />
             <FleetStat label="Disco prom." value={`${averages.disk.toFixed(0)}%`} />
@@ -115,10 +115,10 @@ export default function ResourceUsagePanel({ servers, alerts }: { servers: Serve
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(i * 0.03, 0.3) }}
                   onClick={() => setModalServerId(s.id)}
-                  className="grid w-full grid-cols-[1.25rem_minmax(0,11rem)_repeat(3,minmax(0,1fr))] items-center gap-4 rounded-lg border border-transparent px-3 py-2.5 text-left transition-colors hover:border-slate-200 hover:bg-slate-50"
+                  className="grid w-full grid-cols-3 items-center gap-x-3 gap-y-2 rounded-lg sm:grid-cols-[1.25rem_minmax(0,11rem)_repeat(3,minmax(0,1fr))] sm:gap-4 border border-transparent px-3 py-2.5 text-left transition-colors hover:border-slate-200 hover:bg-slate-50"
                 >
-                  <span className="text-xs font-medium tabular-nums text-slate-300">{i + 1}</span>
-                  <span className="flex min-w-0 items-center gap-2">
+                  <span className="hidden text-xs font-medium tabular-nums text-slate-300 sm:inline">{i + 1}</span>
+                  <span className="col-span-3 flex min-w-0 items-center gap-2 sm:col-span-1">
                     <span className={`h-2 w-2 shrink-0 rounded-full ${health.dot}`} />
                     <span className="truncate text-sm font-medium text-slate-800">{s.name}</span>
                   </span>

@@ -13,10 +13,9 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -34,7 +33,6 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import androidx.core.content.ContextCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 
@@ -76,17 +74,15 @@ class MainActivity : AppCompatActivity() {
             return
         }
         setContentView(R.layout.activity_main)
+        SystemBars.apply(this, findViewById(R.id.root))
         Notifier.createChannels(this)
-
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
-        setSupportActionBar(toolbar)
-        supportActionBar?.subtitle = Uri.parse(prefs.serverUrl).host
 
         webView = findViewById(R.id.webview)
         swipe = findViewById(R.id.swipe)
         progress = findViewById(R.id.progress)
         errorView = findViewById(R.id.errorView)
         findViewById<Button>(R.id.retryButton).setOnClickListener { loadHome() }
+        findViewById<Button>(R.id.settingsButton).setOnClickListener { showAppMenu() }
 
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -104,6 +100,18 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
             userAgentString = "$userAgentString NOCBistroApp/${BuildConfig.VERSION_NAME}"
         }
+
+        // Puente para el boton "Ajustes de la app" del encabezado del NOC. Solo
+        // se cargan paginas del propio NOC (lo externo va al navegador).
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun openMenu() {
+                runOnUiThread { showAppMenu() }
+            }
+
+            @JavascriptInterface
+            fun version(): String = BuildConfig.VERSION_NAME
+        }, "NocApp")
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -208,7 +216,6 @@ class MainActivity : AppCompatActivity() {
     private fun loadHome() {
         errorView.visibility = View.GONE
         loadedServer = prefs.serverUrl
-        supportActionBar?.subtitle = Uri.parse(prefs.serverUrl).host
         webView.loadUrl(prefs.serverUrl!!)
     }
 
@@ -256,65 +263,70 @@ class MainActivity : AppCompatActivity() {
         CookieManager.getInstance().flush()
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.main_menu, menu)
-        return true
-    }
-
-    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        menu.findItem(R.id.action_live_alerts)?.isChecked = prefs.liveAlerts
-        return super.onPrepareOptionsMenu(menu)
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            R.id.action_reload -> webView.reload()
-            R.id.action_live_alerts -> {
-                prefs.liveAlerts = !prefs.liveAlerts
-                item.isChecked = prefs.liveAlerts
-                if (prefs.liveAlerts) AlertService.start(this, reconnect = true) else AlertService.stop(this)
-                Toast.makeText(
-                    this,
-                    if (prefs.liveAlerts) "Alertas en tiempo real activadas" else "Alertas en tiempo real desactivadas (se revisa cada 15 min)",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-            R.id.action_min_severity -> {
-                val options = arrayOf("Todas (LOW o más)", "MEDIUM o más", "HIGH o más (recomendado)", "Solo CRITICAL")
-                val values = arrayOf("LOW", "MEDIUM", "HIGH", "CRITICAL")
-                AlertDialog.Builder(this)
-                    .setTitle("Notificarme alertas de nivel")
-                    .setSingleChoiceItems(options, values.indexOf(prefs.minSeverity)) { dialog, which ->
-                        prefs.minSeverity = values[which]
-                        dialog.dismiss()
+    /** Ajustes de la app (se abren desde el boton del encabezado del NOC). */
+    private fun showAppMenu() {
+        val liveLabel = if (prefs.liveAlerts) "Alertas en tiempo real: ACTIVADAS (tocar para apagar)" else "Alertas en tiempo real: apagadas (tocar para activar)"
+        val levelLabel = "Nivel mínimo de alerta: " + mapOf("LOW" to "todas", "MEDIUM" to "media o más", "HIGH" to "alta o más", "CRITICAL" to "solo críticas")[prefs.minSeverity]
+        val items = arrayOf(
+            liveLabel,
+            levelLabel,
+            "Probar notificación",
+            "Evitar que Android corte las alertas",
+            "Recargar",
+            "Cambiar servidor",
+            "Acerca de",
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Ajustes de la app")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> toggleLiveAlerts()
+                    1 -> chooseMinSeverity()
+                    2 -> {
+                        requestNotificationPermission()
+                        Notifier.showAlert(
+                            this, "test-${System.currentTimeMillis()}", "CRITICAL",
+                            "Prueba · NOC Grupo Bistro", "Si ves esta notificación, las alertas del NOC van a llegar a este celular."
+                        )
                     }
-                    .show()
+                    3 -> openBatterySettings()
+                    4 -> webView.reload()
+                    5 -> startActivity(Intent(this, SetupActivity::class.java))
+                    6 -> AlertDialog.Builder(this)
+                        .setTitle("NOC / SOC Grupo Bistro")
+                        .setMessage(
+                            "Versión ${BuildConfig.VERSION_NAME}\nServidor: ${prefs.serverUrl}\n\n" +
+                                "Acceso Restringido a cualquier Personal no autorizado de Grupo Bistro.\n\n" +
+                                "Desarrollado por: Francisco E. Lahoz F."
+                        )
+                        .setPositiveButton("Cerrar", null)
+                        .show()
+                }
             }
-            R.id.action_test_notification -> {
-                requestNotificationPermission()
-                Notifier.showAlert(
-                    this, "test-${System.currentTimeMillis()}", "CRITICAL",
-                    "Prueba · NOC Grupo Bistro", "Si ves esta notificación, las alertas del NOC van a llegar a este celular."
-                )
+            .setNegativeButton("Cerrar", null)
+            .show()
+    }
+
+    private fun toggleLiveAlerts() {
+        prefs.liveAlerts = !prefs.liveAlerts
+        if (prefs.liveAlerts) AlertService.start(this, reconnect = true) else AlertService.stop(this)
+        Toast.makeText(
+            this,
+            if (prefs.liveAlerts) "Alertas en tiempo real activadas" else "Alertas en tiempo real desactivadas (se revisa cada 15 min)",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun chooseMinSeverity() {
+        val options = arrayOf("Todas (baja o más)", "Media o más", "Alta o más (recomendado)", "Solo críticas")
+        val values = arrayOf("LOW", "MEDIUM", "HIGH", "CRITICAL")
+        AlertDialog.Builder(this)
+            .setTitle("Notificarme alertas de nivel")
+            .setSingleChoiceItems(options, values.indexOf(prefs.minSeverity)) { dialog, which ->
+                prefs.minSeverity = values[which]
+                dialog.dismiss()
             }
-            R.id.action_battery -> openBatterySettings()
-            R.id.action_server -> {
-                startActivity(Intent(this, SetupActivity::class.java))
-            }
-            R.id.action_about -> {
-                AlertDialog.Builder(this)
-                    .setTitle("NOC / SOC Grupo Bistro")
-                    .setMessage(
-                        "Versión ${BuildConfig.VERSION_NAME}\nServidor: ${prefs.serverUrl}\n\n" +
-                            "Acceso Restringido a cualquier Personal no autorizado de Grupo Bistro.\n\n" +
-                            "Desarrollado por: Francisco E. Lahoz F."
-                    )
-                    .setPositiveButton("Cerrar", null)
-                    .show()
-            }
-            else -> return super.onOptionsItemSelected(item)
-        }
-        return true
+            .show()
     }
 
     @SuppressLint("BatteryLife")

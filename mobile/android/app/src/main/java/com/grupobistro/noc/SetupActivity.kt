@@ -15,6 +15,7 @@ class SetupActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_setup)
+        SystemBars.apply(this, findViewById(R.id.root))
 
         val prefs = Prefs(this)
         val input = findViewById<EditText>(R.id.serverUrl)

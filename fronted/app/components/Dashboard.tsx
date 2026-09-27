@@ -475,7 +475,7 @@ export default function Dashboard({
             whileHover={{ scale: 1.06 }}
             whileTap={{ scale: 0.96 }}
             onClick={() => setShowAssistant(true)}
-            className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-brand-600 text-white shadow-lg shadow-brand-900/20"
+            className="fixed bottom-4 right-4 z-40 flex h-11 w-11 items-center justify-center rounded-full bg-brand-600 text-white shadow-lg shadow-brand-900/20 sm:bottom-5 sm:right-5 sm:h-12 sm:w-12"
             title="Abrir asistente"
           >
             <Bot className="h-5 w-5" />

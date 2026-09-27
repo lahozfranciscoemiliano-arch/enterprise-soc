@@ -50,7 +50,7 @@ export default function InventarioTab() {
   const stale = reporter ? Date.now() - new Date(reporter.inventoryAt).getTime() > 20 * 60 * 1000 : false;
 
   return (
-    <div className="space-y-4 px-6 py-6">
+    <div className="space-y-4 px-3 py-4 sm:px-6 sm:py-6">
       <div
         className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 shadow-card ${
           !reporter ? 'border-amber-200 bg-amber-50' : stale ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'
@@ -117,7 +117,7 @@ export default function InventarioTab() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
         <StatCard
           label="Equipos encendidos"
           value={summary ? `${summary.endpoints.online}/${summary.endpoints.total}` : '—'}

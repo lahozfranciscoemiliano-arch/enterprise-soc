@@ -58,8 +58,8 @@ export default function GeneralTab({
   const offlineCount = servers.filter((s) => s.status === 'OFFLINE').length;
 
   return (
-    <div className="space-y-4 px-6 py-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="space-y-4 px-3 py-4 sm:px-6 sm:py-6">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="SLA Confiabilidad"
           value={summary ? `${summary.slaPercentage.toFixed(2)}%` : '—'}
@@ -101,7 +101,7 @@ export default function GeneralTab({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className={panel}>
           <h2 className="mb-2 text-sm font-semibold text-slate-700">Health Status</h2>
-          <div className="relative h-64">
+          <div className="relative h-52 sm:h-64">
             {hasHealthData ? (
               <>
                 <ResponsiveContainer width="100%" height="100%">
@@ -125,7 +125,7 @@ export default function GeneralTab({
 
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className={panel}>
           <h2 className="mb-2 text-sm font-semibold text-slate-700">Estado de Backups</h2>
-          <div className="relative h-64">
+          <div className="relative h-52 sm:h-64">
             {hasBackupData ? (
               <>
                 <ResponsiveContainer width="100%" height="100%">

@@ -158,8 +158,8 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
   }, [devices, deviceFilter, search]);
 
   return (
-    <div className="space-y-4 px-6 py-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+    <div className="space-y-4 px-3 py-4 sm:px-6 sm:py-6">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
         <StatCard label="Sitios con internet OK" value={`${siteStats.ok}/${siteStats.measured}`} color="emerald" icon={<Globe className="h-5 w-5" />} />
         <StatCard label="Internet degradado" value={siteStats.degraded.toString()} color={siteStats.degraded > 0 ? 'amber' : 'emerald'} icon={<Signal className="h-5 w-5" />} />
         <StatCard label="Sin internet" value={siteStats.down.toString()} color={siteStats.down > 0 ? 'red' : 'emerald'} icon={<WifiOff className="h-5 w-5" />} />

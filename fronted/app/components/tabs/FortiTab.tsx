@@ -73,7 +73,7 @@ export default function FortiTab({ events, onRefresh }: { events: FortiEvent[]; 
   }, [events]);
 
   return (
-    <div className="px-6 py-6">
+    <div className="px-3 py-4 sm:px-6 sm:py-6">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
@@ -114,7 +114,7 @@ export default function FortiTab({ events, onRefresh }: { events: FortiEvent[]; 
 
         {events.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full min-w-[680px] text-left text-xs sm:min-w-0">
               <thead>
                 <tr className="border-b border-slate-200 text-slate-400">
                   <th className="py-2 pr-4 font-medium">Timestamp</th>

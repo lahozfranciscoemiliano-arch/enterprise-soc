@@ -96,20 +96,92 @@ export default function EndpointsView() {
             </button>
           ))}
         </div>
-        <div className="relative">
+        <div className="relative w-full sm:w-auto">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar equipo, usuario, IP, MAC..."
-            className="w-64 rounded-lg border border-slate-300 bg-slate-50 py-1.5 pl-8 pr-3 text-xs text-slate-800 outline-none transition-colors focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10"
+            className="w-full rounded-lg border border-slate-300 bg-slate-50 py-1.5 pl-8 sm:w-64 pr-3 text-xs text-slate-800 outline-none transition-colors focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10"
           />
         </div>
       </div>
 
       {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
 
-      <div className="overflow-x-auto">
+      {/* Celular: tarjetas */}
+      <div className="space-y-2 md:hidden">
+        {rows.length === 0 && (
+          <p className="py-8 text-center text-sm text-slate-400">{data === null ? 'Cargando...' : 'Sin equipos que coincidan'}</p>
+        )}
+        {rows.map((e) => {
+          const Icon = deviceIcon(e);
+          const open = openId === e.id;
+          const hist = history[e.id];
+          return (
+            <div key={e.id} className="rounded-xl border border-slate-200 bg-white">
+              <button onClick={() => toggle(e)} className="flex w-full items-start gap-3 p-3 text-left">
+                <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${e.online ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-semibold text-slate-800">{e.hostname}</span>
+                    <span className={`flex shrink-0 items-center gap-1 text-[11px] font-medium ${e.online ? 'text-emerald-700' : 'text-slate-400'}`}>
+                      <span className={`h-2 w-2 rounded-full ${e.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                      {e.online ? 'Encendido' : 'Apagado'}
+                    </span>
+                  </span>
+                  <span className="mt-1 flex items-center gap-1 text-xs text-slate-600">
+                    <UserRound className="h-3 w-3 text-slate-400" />
+                    {e.lastUser ? (
+                      <>
+                        <b className="font-medium">{e.lastUser}</b>
+                        <span className="text-slate-400">· {timeAgo(e.lastUserAt)}</span>
+                      </>
+                    ) : (
+                      <span className="text-slate-400">sin inicio de sesión registrado</span>
+                    )}
+                  </span>
+                  <span className="mt-0.5 block truncate font-mono text-[11px] text-slate-400">
+                    {e.ipAddress ?? 'sin IP'} · {e.os ?? 'SO desconocido'}
+                  </span>
+                </span>
+                <motion.span animate={{ rotate: open ? 180 : 0 }} className="mt-1 text-slate-400">
+                  <ChevronDown className="h-4 w-4" />
+                </motion.span>
+              </button>
+              <AnimatePresence initial={false}>
+                {open && (
+                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                    <div className="space-y-1 border-t border-slate-100 px-3 py-2.5 text-[11px] text-slate-600">
+                      <p>MAC: <span className="font-mono">{e.macAddress ?? '—'}</span></p>
+                      <p>Último logon en AD: {e.adLastLogonAt ? timeAgo(e.adLastLogonAt) : 'nunca'}</p>
+                      <p className="truncate">OU: {e.ou ?? '—'}</p>
+                      <p className="pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Inicios de sesión</p>
+                      {hist === 'loading' || hist === undefined ? (
+                        <p className="text-slate-400">Cargando...</p>
+                      ) : hist.length === 0 ? (
+                        <p className="text-slate-400">Sin registros todavía.</p>
+                      ) : (
+                        hist.slice(0, 10).map((l) => (
+                          <p key={l.id} className="flex justify-between gap-2">
+                            <b className="font-medium">{l.username}</b>
+                            <span className="text-slate-400">{new Date(l.at).toLocaleString('es-ES')}</span>
+                          </p>
+                        ))
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Tablet / PC: tabla */}
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-slate-200 text-slate-400">

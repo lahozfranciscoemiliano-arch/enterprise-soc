@@ -33,12 +33,14 @@ export default function StatCard({
       animate={{ opacity: 1, y: 0 }}
       whileHover={{ y: -2 }}
       transition={{ duration: 0.25 }}
-      className="flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-card transition-shadow hover:shadow-card-hover"
+      className="flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-card transition-shadow hover:shadow-card-hover sm:gap-4 sm:p-4"
     >
-      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${ICON_BG[color]}`}>{icon}</div>
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
-        <p className={`mt-0.5 text-2xl font-semibold ${VALUE_COLOR[color]}`}>{value}</p>
+      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg sm:h-11 sm:w-11 [&>svg]:h-4 [&>svg]:w-4 sm:[&>svg]:h-5 sm:[&>svg]:w-5 ${ICON_BG[color]}`}>
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="text-[10px] font-medium uppercase leading-tight tracking-wide text-slate-400 sm:text-xs">{label}</p>
+        <p className={`mt-0.5 truncate text-lg font-semibold leading-tight sm:text-2xl ${VALUE_COLOR[color]}`}>{value}</p>
       </div>
     </motion.div>
   );

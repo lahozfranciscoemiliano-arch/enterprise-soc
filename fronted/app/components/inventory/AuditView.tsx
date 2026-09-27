@@ -89,7 +89,7 @@ export default function AuditView() {
           <p className="text-xs text-slate-400">Sin inicios de sesión registrados todavía.</p>
         ) : (
           <div className="max-h-[520px] overflow-y-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full min-w-[480px] text-left text-xs sm:min-w-0">
               <thead className="sticky top-0 bg-white">
                 <tr className="border-b border-slate-200 text-slate-400">
                   <th className="py-1.5 pr-2 font-medium">Usuario</th>

@@ -59,7 +59,7 @@ export default function MonitoreoTab({
   const modalAlerts = modalServer ? alerts.filter((a) => a.serverName === modalServer.name).slice(0, 20) : [];
 
   return (
-    <div className="space-y-4 px-6 py-6">
+    <div className="space-y-4 px-3 py-4 sm:px-6 sm:py-6">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-slate-800">

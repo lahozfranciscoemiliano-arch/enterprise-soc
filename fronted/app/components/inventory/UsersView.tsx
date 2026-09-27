@@ -74,13 +74,13 @@ export default function UsersView() {
             </button>
           ))}
         </div>
-        <div className="relative">
+        <div className="relative w-full sm:w-auto">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar usuario, nombre, área, equipo..."
-            className="w-64 rounded-lg border border-slate-300 bg-slate-50 py-1.5 pl-8 pr-3 text-xs text-slate-800 outline-none transition-colors focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10"
+            className="w-full rounded-lg border border-slate-300 bg-slate-50 py-1.5 pl-8 sm:w-64 pr-3 text-xs text-slate-800 outline-none transition-colors focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10"
           />
         </div>
       </div>
@@ -88,7 +88,7 @@ export default function UsersView() {
       {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
 
       <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
+        <table className="w-full min-w-[760px] text-left text-xs sm:min-w-0">
           <thead>
             <tr className="border-b border-slate-200 text-slate-400">
               <th className="py-2 pr-3 font-medium">Usuario</th>

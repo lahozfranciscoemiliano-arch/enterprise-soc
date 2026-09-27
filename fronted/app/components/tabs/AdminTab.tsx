@@ -248,7 +248,7 @@ export default function AdminTab({
   );
 
   return (
-    <div className="space-y-6 px-6 py-6">
+    <div className="space-y-6 px-3 py-4 sm:px-6 sm:py-6">
       <div className="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1.5">
         {SECTIONS.map((s) => (
           <button

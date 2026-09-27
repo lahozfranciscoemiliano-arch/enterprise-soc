@@ -96,8 +96,8 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
   };
 
   return (
-    <div className="space-y-4 px-6 py-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="space-y-4 px-3 py-4 sm:px-6 sm:py-6">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard
           label="Tamaño Total Respaldado"
           value={fleetStats.withSize > 0 ? formatBytes(fleetStats.totalBytes) : '—'}
@@ -151,7 +151,7 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+          <table className="w-full min-w-[760px] text-left text-xs sm:min-w-0">
             <thead>
               <tr className="border-b border-slate-200 text-slate-400">
                 <th className="py-2 pr-4 font-medium">Servidor</th>
