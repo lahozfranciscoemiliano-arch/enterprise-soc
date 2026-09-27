@@ -59,6 +59,10 @@ export const BACKUP_METHOD_LABELS: Record<string, string> = {
   WINDOWS_SERVER_BACKUP: 'Windows Server Backup',
   WBADMIN: 'Backup and Restore (wbadmin)',
   NONE: 'Sin método detectado',
+  SCHEDULED_TASK: 'Tarea programada (script)',
+  FILE_HISTORY: 'Historial de archivos',
+  SQL_SERVER: 'SQL Server',
+  THIRD_PARTY: 'Software de backup',
 };
 
 export const SEVERITY_STYLES: Record<Severity, string> = {

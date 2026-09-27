@@ -17,6 +17,12 @@ const prisma = require('../prismaClient');
 const { broadcastAlert, broadcastAlertUpdate } = require('../websocket/socketServer');
 const { notifyAlert } = require('./notifications');
 const { triageEvent } = require('./gemini');
+const { getRecommendation } = require('./recommendations');
+
+// Confirmacion (anti-fatiga): condiciones que suelen ser picos pasajeros
+// (CPU/RAM, anomalias, red degradada, impresoras) solo generan alerta si se
+// detectan en N chequeos seguidos. serverId|dedupKey -> detecciones seguidas.
+const pendingConfirmations = new Map();
 
 const SEVERITY_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
 const ACTIVE_STATUSES = ['OPEN', 'ACKNOWLEDGED'];
@@ -43,12 +49,18 @@ function toClientEvent(event, serverName) {
     occurrences: event.occurrences,
     lastSeenAt: event.lastSeenAt,
     autoResolved: event.autoResolved,
+    snoozedUntil: event.snoozedUntil ?? null,
+    recommendation: getRecommendation(event.type),
     createdAt: event.createdAt,
     resolvedAt: event.resolvedAt,
   };
 }
 
-async function createAndDispatchEvent({ serverId, serverName, type, severity, description, metadata, dedupKey }) {
+function isSnoozed(event) {
+  return Boolean(event?.snoozedUntil && new Date(event.snoozedUntil) > new Date());
+}
+
+async function createAndDispatchEvent({ serverId, serverName, type, severity, description, metadata, dedupKey, confirmations = 1 }) {
   const key = dedupKey ?? defaultDedupKey(type, metadata);
   const now = new Date();
 
@@ -56,6 +68,17 @@ async function createAndDispatchEvent({ serverId, serverName, type, severity, de
     where: { serverId, dedupKey: key, status: { in: ACTIVE_STATUSES } },
     orderBy: { createdAt: 'desc' },
   });
+
+  // Una alerta nueva de una condicion "ruidosa" espera a confirmarse.
+  if (!active && confirmations > 1) {
+    const pendingKey = `${serverId}|${key}`;
+    const seen = (pendingConfirmations.get(pendingKey) ?? 0) + 1;
+    if (seen < confirmations) {
+      pendingConfirmations.set(pendingKey, seen);
+      return { event: null, isNew: false, escalated: false, pending: true };
+    }
+    pendingConfirmations.delete(pendingKey);
+  }
 
   if (active) {
     const escalated = (SEVERITY_RANK[severity] ?? 0) > (SEVERITY_RANK[active.severity] ?? 0);
@@ -74,7 +97,7 @@ async function createAndDispatchEvent({ serverId, serverName, type, severity, de
     });
     const enriched = toClientEvent(updated, serverName);
     broadcastAlertUpdate(enriched);
-    if (escalated) notifyAlert({ ...enriched, description: `Empeoró: ${description}` }).catch(() => {});
+    if (escalated && !isSnoozed(updated)) notifyAlert({ ...enriched, description: `Empeoró: ${description}` }).catch(() => {});
     return { event: updated, isNew: false, escalated };
   }
 
@@ -107,7 +130,7 @@ async function createAndDispatchEvent({ serverId, serverName, type, severity, de
     });
     const enriched = toClientEvent(reopened, serverName);
     broadcastAlertUpdate(enriched);
-    if (escalated) notifyAlert(enriched).catch(() => {});
+    if (escalated && !isSnoozed(reopened)) notifyAlert(enriched).catch(() => {});
     return { event: reopened, isNew: false, escalated };
   }
 
@@ -129,6 +152,8 @@ async function createAndDispatchEvent({ serverId, serverName, type, severity, de
 // barato: una sola query cuando no hay nada abierto.
 async function autoResolveEvents(serverId, keys, serverName) {
   if (!keys || keys.length === 0) return 0;
+  // La condicion se normalizo: se descartan las confirmaciones a medias.
+  for (const k of keys) pendingConfirmations.delete(`${serverId}|${k}`);
 
   const open = await prisma.securityEvent.findMany({
     where: { serverId, dedupKey: { in: keys }, status: { in: ACTIVE_STATUSES } },

@@ -72,7 +72,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.4.2"
+AGENT_VERSION = "1.5.0"
 
 
 def get_base_dir() -> Path:
@@ -1087,6 +1087,526 @@ def estimate_backup_size(target_path: str) -> int | None:
     return total or None
 
 
+# ---------------------------------------------------------------------------
+# Deteccion de TODOS los metodos de backup del equipo (no solo Windows Server
+# Backup): tareas programadas con scripts (robocopy/xcopy/7-Zip/bat/ps1, con
+# lectura de sus logs), Historial de archivos, SQL Server, y software de
+# terceros (Veeam, Acronis, Cobian, Macrium...). Pensado para las PCs de caja
+# (ALOHA) que no son Windows Server y resguardan con un script o con el
+# "Historial de archivos".
+# ---------------------------------------------------------------------------
+
+BACKUP_TASK_PATTERN = (
+    r"backup|respaldo|resguardo|copia|robocopy|xcopy|wbadmin|7z|7-zip|winrar|\brar\b|\.zip|compress-archive|"
+    r"sqlcmd|\.bak\b|cobian|veeam|acronis|macrium|syncback|freefilesync|goodsync|bvckup|aloha"
+)
+BACKUP_TASK_EXCLUDE = r"enterprisesoc|googleupdate|microsoftedgeupdate|onedrive|adobe|mozilla|office"
+
+PS_BACKUP_TASKS = r"""
+function Iso($d) { if ($d -and $d.Year -gt 2001) { $d.ToUniversalTime().ToString('o') } else { $null } }
+$pat = '__PATTERN__'
+$exc = '__EXCLUDE__'
+$out = @(Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\Microsoft\*' } | ForEach-Object {
+  $t = $_
+  $acts = @($t.Actions | Where-Object { $_.Execute } | ForEach-Object { [pscustomobject]@{ execute = [Environment]::ExpandEnvironmentVariables($_.Execute); arguments = $_.Arguments; workingDirectory = $_.WorkingDirectory } })
+  $text = ($t.TaskName + ' ' + (($acts | ForEach-Object { $_.execute + ' ' + $_.arguments }) -join ' '))
+  if ($text -match $pat -and $t.TaskName -notmatch $exc) {
+    $i = $t | Get-ScheduledTaskInfo
+    [pscustomobject]@{ name = $t.TaskName; path = $t.TaskPath; state = "$($t.State)"; enabled = [bool]$t.Settings.Enabled
+      actions = $acts; lastRun = (Iso $i.LastRunTime); lastResult = [int64]$i.LastTaskResult; nextRun = (Iso $i.NextRunTime); missedRuns = [int]$i.NumberOfMissedRuns
+      user = $t.Principal.UserId }
+  }
+})
+ConvertTo-Json -InputObject $out -Depth 5 -Compress
+"""
+
+PS_SQL_BACKUPS = r"""
+$res = @()
+foreach ($inst in @(__INSTANCES__)) {
+  $server = if ($inst -eq 'MSSQLSERVER') { '.' } else { ".\$inst" }
+  try {
+    $cn = New-Object System.Data.SqlClient.SqlConnection("Server=$server;Integrated Security=SSPI;Connect Timeout=5;Application Name=EnterpriseSOC")
+    $cn.Open()
+    $cmd = $cn.CreateCommand()
+    $cmd.CommandTimeout = 20
+    $cmd.CommandText = "SELECT d.name, d.recovery_model_desc, MAX(CASE WHEN b.type='D' THEN b.backup_finish_date END), MAX(CASE WHEN b.type='I' THEN b.backup_finish_date END), MAX(CASE WHEN b.type='L' THEN b.backup_finish_date END), MAX(CASE WHEN b.type='D' THEN b.backup_size END), MAX(b.backup_finish_date) FROM sys.databases d LEFT JOIN msdb.dbo.backupset b ON b.database_name = d.name WHERE d.name <> 'tempdb' AND d.state = 0 GROUP BY d.name, d.recovery_model_desc"
+    $r = $cmd.ExecuteReader()
+    $dbs = @()
+    while ($r.Read()) {
+      $f = { param($i) if ($r.IsDBNull($i)) { $null } else { $r.GetDateTime($i).ToUniversalTime().ToString('o') } }
+      $dbs += [pscustomobject]@{ name = $r.GetString(0); recovery = $r.GetString(1); lastFull = (& $f 2); lastDiff = (& $f 3); lastLog = (& $f 4); fullSize = $(if ($r.IsDBNull(5)) { $null } else { [double]$r.GetDecimal(5) }) }
+    }
+    $cn.Close()
+    $res += [pscustomobject]@{ instance = $inst; databases = $dbs; error = $null }
+  } catch { $res += [pscustomobject]@{ instance = $inst; databases = @(); error = $_.Exception.Message } }
+}
+ConvertTo-Json -InputObject $res -Depth 5 -Compress
+"""
+
+THIRD_PARTY_BACKUP = {
+    "veeam": "Veeam Agent", "acronis": "Acronis", "macrium": "Macrium Reflect", "reflect": "Macrium Reflect",
+    "cobian": "Cobian Backup", "easeus": "EaseUS Todo Backup", "aomei": "AOMEI Backupper", "iperius": "Iperius Backup",
+    "duplicati": "Duplicati", "urbackup": "UrBackup", "backupexec": "Veritas Backup Exec", "arcserve": "Arcserve",
+    "carbonite": "Carbonite", "crashplan": "CrashPlan", "altaro": "Altaro", "nakivo": "NAKIVO", "bvckup": "Bvckup 2",
+    "syncback": "SyncBack", "goodsync": "GoodSync", "freefilesync": "FreeFileSync",
+}
+
+ARCHIVE_EXTS = (".7z", ".zip", ".rar", ".bak", ".vhd", ".vhdx", ".tib", ".tibx", ".mrimg", ".tar", ".gz", ".vbk", ".vib", ".adi")
+STALE_HOURS = 48
+
+_ARG = r'("[^"]+"|\S+)'
+_RE_ROBOCOPY = re.compile(r"robocopy(?:\.exe)?\"?\s+" + _ARG + r"\s+" + _ARG + r"([^\r\n]*)", re.IGNORECASE)
+_RE_XCOPY = re.compile(r"\b(?:xcopy|copy)(?:\.exe)?\s+(?:/\S+\s+)*" + _ARG + r"\s+" + _ARG, re.IGNORECASE)
+_RE_7Z = re.compile(r"(?:7z|7za|7zg|rar|winrar)(?:\.exe)?\"?\s+a\s+(?:-\S+\s+)*" + _ARG, re.IGNORECASE)
+_RE_SQL_DISK = re.compile(r"TO\s+DISK\s*=\s*N?'([^']+)'", re.IGNORECASE)
+_RE_WBADMIN_TARGET = re.compile(r"-backupTarget:" + _ARG, re.IGNORECASE)
+_RE_PS_DEST = re.compile(r"-Destination(?:Path)?\s+" + _ARG, re.IGNORECASE)
+_RE_LOG = re.compile(r"/(?:UNI)?LOG\+?:" + _ARG, re.IGNORECASE)
+_RE_SCRIPT = re.compile(r"(\"[^\"]+\.(?:bat|cmd|ps1|vbs)\"|[^\s\"]+\.(?:bat|cmd|ps1|vbs))", re.IGNORECASE)
+_RE_RC_SUMMARY = re.compile(
+    r"^\s*[^:\r\n]{1,25}:\s+([\d.,]+\s?[kmgt]?)\s+([\d.,]+\s?[kmgt]?)\s+([\d.,]+\s?[kmgt]?)\s+([\d.,]+\s?[kmgt]?)\s+([\d.,]+\s?[kmgt]?)\s+([\d.,]+\s?[kmgt]?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _unquote(v: str) -> str:
+    return v.strip().strip('"').strip()
+
+
+def _read_text_file(path: str, limit: int = 200_000) -> str:
+    try:
+        with open(path, "rb") as f:
+            data = f.read(limit)
+        return _decode_console_bytes(data)
+    except OSError:
+        return ""
+
+
+def _read_tail(path: str, limit: int = 24_000) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - limit))
+            return _decode_console_bytes(f.read())
+    except OSError:
+        return ""
+
+
+def _file_mtime_iso(path: str) -> str | None:
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    except OSError:
+        return None
+
+
+def _hours_since(iso: str | None) -> float | None:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    except ValueError:
+        return None
+
+
+def parse_robocopy_log(path: str) -> dict[str, Any] | None:
+    """Resumen de la ultima corrida de robocopy desde su log (/LOG:). Las
+    etiquetas del resumen dependen del idioma, pero las 6 columnas numericas
+    (Total, Copiados, Omitidos, No coinciden, ERROR, Extras) no."""
+    tail = _read_tail(path)
+    if not tail:
+        return None
+    rows = _RE_RC_SUMMARY.findall(tail)
+    if len(rows) < 3:
+        return None
+    dirs, files, size = rows[-3], rows[-2], rows[-1]
+
+    def n(v: str) -> int:
+        digits = re.sub(r"[^\d]", "", v)
+        return int(digits) if digits else 0
+
+    return {
+        "logPath": path,
+        "finishedAt": _file_mtime_iso(path),
+        "filesTotal": n(files[0]),
+        "filesCopied": n(files[1]),
+        "filesSkipped": n(files[2]),
+        "filesFailed": n(files[4]),
+        "dirsFailed": n(dirs[4]),
+        "bytesTotal": size[0].strip(),
+        "bytesCopied": size[1].strip(),
+        "errorLines": len(re.findall(r"\bERROR\b\s+\d+\s+\(0x", tail)),
+    }
+
+
+def latest_archive_in(directory: str) -> dict[str, Any] | None:
+    """Ultimo archivo de backup (.7z/.zip/.bak/...) en la carpeta destino (o
+    una subcarpeta): su fecha es la del ultimo backup y su tamano el real."""
+    best = None
+    try:
+        for root, dirs, files in os.walk(directory):
+            for name in files:
+                if name.lower().endswith(ARCHIVE_EXTS):
+                    full = os.path.join(root, name)
+                    try:
+                        st = os.stat(full)
+                    except OSError:
+                        continue
+                    if best is None or st.st_mtime > best[1]:
+                        best = (full, st.st_mtime, st.st_size)
+            if root.count(os.sep) - directory.count(os.sep) >= 1:
+                dirs[:] = []
+    except OSError:
+        return None
+    if not best:
+        return None
+    return {
+        "file": best[0],
+        "modifiedAt": datetime.fromtimestamp(best[1], timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z"),
+        "sizeBytes": best[2],
+    }
+
+
+def _analyze_commands(text: str, base_dir: str | None) -> dict[str, Any]:
+    """Destinos, logs y herramientas usadas en los comandos de una tarea/script."""
+    info: dict[str, Any] = {"tools": [], "targets": [], "logs": []}
+
+    def add(key: str, value: str) -> None:
+        value = _unquote(value)
+        if value and value not in info[key]:
+            info[key].append(value)
+
+    for m in _RE_ROBOCOPY.finditer(text):
+        add("tools", "robocopy")
+        add("targets", m.group(2))
+        for lm in _RE_LOG.finditer(m.group(3)):
+            add("logs", lm.group(1))
+    for m in _RE_XCOPY.finditer(text):
+        add("tools", "xcopy")
+        add("targets", m.group(2))
+    for m in _RE_7Z.finditer(text):
+        add("tools", "7-Zip/RAR")
+        add("targets", os.path.dirname(_unquote(m.group(1))) or _unquote(m.group(1)))
+    for m in _RE_SQL_DISK.finditer(text):
+        add("tools", "SQL BACKUP")
+        add("targets", os.path.dirname(m.group(1)))
+    for m in _RE_WBADMIN_TARGET.finditer(text):
+        add("tools", "wbadmin")
+        add("targets", m.group(1))
+    for m in _RE_PS_DEST.finditer(text):
+        add("tools", "PowerShell")
+        add("targets", m.group(1))
+    for lm in _RE_LOG.finditer(text):
+        add("logs", lm.group(1))
+
+    if base_dir:
+        info["logs"] = [l if os.path.isabs(l) else os.path.join(base_dir, l) for l in info["logs"]]
+    return info
+
+
+def _task_result(exit_code: int, uses_robocopy_directly: bool) -> tuple[str, str]:
+    code = exit_code & 0xFFFFFFFF
+    if code == 0x41301:
+        return "RUNNING", "en ejecución ahora"
+    if code == 0x41303:
+        return "WARNING", "la tarea nunca se ejecutó"
+    if code in (0x41306, 0x800710E0):
+        return "WARNING", f"Windows no la ejecutó (código 0x{code:X}: condiciones/equipo apagado)"
+    if uses_robocopy_directly:
+        return ("SUCCESS", f"robocopy código {code}") if code < 8 else ("FAILED", f"robocopy código {code} (errores de copia)")
+    if code == 0:
+        return "SUCCESS", "código 0"
+    return "FAILED", f"terminó con código {code} (0x{code:X})"
+
+
+def detect_scheduled_backup_jobs() -> list[dict[str, Any]]:
+    script = PS_BACKUP_TASKS.replace("__PATTERN__", BACKUP_TASK_PATTERN.replace("'", "''")).replace("__EXCLUDE__", BACKUP_TASK_EXCLUDE)
+    tasks = run_powershell_json(script, timeout=90)
+    jobs = []
+    for t in tasks:
+        actions = t.get("actions") or []
+        texts = []
+        base_dir = None
+        direct_robocopy = False
+        for a in actions:
+            exe = a.get("execute") or ""
+            args = a.get("arguments") or ""
+            base_dir = a.get("workingDirectory") or base_dir
+            texts.append(f"{exe} {args}")
+            if os.path.basename(exe.strip('"')).lower().startswith("robocopy"):
+                direct_robocopy = True
+            # Script invocado (bat/cmd/ps1/vbs): se lee para ver que hace.
+            for m in _RE_SCRIPT.finditer(f"{exe} {args}"):
+                path = _unquote(m.group(1))
+                if not os.path.isabs(path) and base_dir:
+                    path = os.path.join(base_dir, path)
+                content = _read_text_file(path)
+                if content:
+                    texts.append(content)
+                    base_dir = base_dir or os.path.dirname(path)
+        analysis = _analyze_commands("\n".join(texts), base_dir)
+
+        result, reason = _task_result(int(t.get("lastResult") or 0), direct_robocopy)
+        last_run = t.get("lastRun")
+        ran_ok = result == "SUCCESS"
+        job: dict[str, Any] = {
+            "method": "SCHEDULED_TASK",
+            "name": t.get("name"),
+            "tool": ", ".join(analysis["tools"]) or "script",
+            "enabled": bool(t.get("enabled", True)),
+            "lastRunAt": last_run,
+            "nextRunAt": t.get("nextRun"),
+            "missedRuns": t.get("missedRuns") or 0,
+            "runAs": t.get("user"),
+            "result": result,
+            "detail": f"Tarea programada: {reason}",
+            "targetPath": next((p for p in analysis["targets"] if "%" not in p and "$" not in p), analysis["targets"][0] if analysis["targets"] else None),
+        }
+
+        # Log de robocopy: archivos copiados / con error en la ultima corrida.
+        for log in analysis["logs"]:
+            if "%" in log or not os.path.exists(log):
+                continue
+            stats = parse_robocopy_log(log)
+            if stats:
+                job["stats"] = stats
+                if stats["filesFailed"] or stats["dirsFailed"]:
+                    job["result"] = "FAILED" if job["result"] == "SUCCESS" and stats["filesCopied"] == 0 else "WARNING"
+                    job["detail"] += f" · {stats['filesFailed']} archivo(s) no se pudieron copiar"
+                break
+
+        # Ultimo archivo de backup en los destinos (tamano real y fecha); si
+        # es una copia espejo (robocopy /MIR) se estima el tamano de la carpeta.
+        for target in [p for p in analysis["targets"] if "%" not in p and "$" not in p][:3]:
+            if not os.path.isdir(target):
+                continue
+            archive = latest_archive_in(target)
+            if archive:
+                job["lastFile"] = archive
+                job["sizeBytes"] = archive["sizeBytes"]
+                job["targetPath"] = target
+                break
+        if not job.get("sizeBytes") and job.get("targetPath") and "robocopy" in analysis["tools"] and os.path.isdir(job["targetPath"]):
+            job["sizeBytes"] = estimate_backup_size(job["targetPath"])
+
+        # La tarea corrio bien (aunque robocopy haya salteado algun archivo):
+        # hay un backup de esa fecha.
+        if ran_ok:
+            job["lastSuccessAt"] = last_run
+        hours = _hours_since(last_run)
+        if not job["enabled"]:
+            job["result"] = "WARNING"
+            job["detail"] = "La tarea de backup está DESHABILITADA. " + job["detail"]
+        elif hours is not None and hours > STALE_HOURS and t.get("nextRun"):
+            job["result"] = "WARNING" if job["result"] != "FAILED" else "FAILED"
+            job["detail"] += f" · no corre hace {int(hours)} h"
+        jobs.append(job)
+    return jobs
+
+
+def detect_file_history_jobs() -> list[dict[str, Any]]:
+    """Historial de archivos de Windows (por usuario)."""
+    jobs = []
+    users_dir = os.path.join(os.environ.get("SystemDrive", "C:") + "\\", "Users")
+    try:
+        users = os.listdir(users_dir)
+    except OSError:
+        return jobs
+    for user in users:
+        conf_dir = os.path.join(users_dir, user, "AppData", "Local", "Microsoft", "Windows", "FileHistory", "Configuration")
+        conf = os.path.join(conf_dir, "Config1.xml")
+        if not os.path.exists(conf):
+            continue
+        xml = _read_text_file(conf, 100_000)
+        target = re.search(r"<TargetUrl>(.*?)</TargetUrl>", xml)
+        name = re.search(r"<TargetName>(.*?)</TargetName>", xml)
+        freq = re.search(r"<DPFrequency>(\d+)</DPFrequency>", xml)
+        catalog = os.path.join(conf_dir, "Catalog1.edb")
+        last = _file_mtime_iso(catalog) or _file_mtime_iso(conf)
+        hours = _hours_since(last)
+        freq_h = int(freq.group(1)) / 3600 if freq else 1
+        stale = hours is not None and hours > max(72, freq_h * 3)
+        jobs.append(
+            {
+                "method": "FILE_HISTORY",
+                "name": f"Historial de archivos ({user})",
+                "tool": "Historial de archivos de Windows",
+                "lastRunAt": last,
+                "lastSuccessAt": None if stale else last,
+                "result": "WARNING" if stale else "SUCCESS",
+                "targetPath": target.group(1) if target else (name.group(1) if name else None),
+                "detail": (f"Sin copias hace {int(hours)} h" if stale else "Copias al día") + (f" · cada {round(freq_h, 1)} h" if freq else ""),
+            }
+        )
+    return jobs
+
+
+def detect_third_party_backup() -> list[dict[str, Any]]:
+    jobs: dict[str, dict[str, Any]] = {}
+    if not hasattr(psutil, "win_service_iter"):
+        return []
+    for svc in psutil.win_service_iter():
+        try:
+            info = svc.as_dict()
+        except Exception:
+            continue
+        text = f"{info.get('name', '')} {info.get('display_name', '')}".lower().replace(" ", "")
+        for key, product in THIRD_PARTY_BACKUP.items():
+            if key in text and product not in jobs:
+                running = info.get("status") == "running"
+                jobs[product] = {
+                    "method": "THIRD_PARTY",
+                    "name": product,
+                    "tool": product,
+                    "result": "UNKNOWN" if running else "WARNING",
+                    "detail": f"Servicio {info.get('display_name')} {'en ejecución' if running else 'DETENIDO'}",
+                    "lastRunAt": None,
+                }
+    # Veeam Agent informa cada trabajo en su propio registro de eventos (190).
+    veeam = jobs.get("Veeam Agent")
+    if veeam:
+        for xml in _evt_query("Veeam Agent", "*[System[(EventID=190)]]", max_events=10):
+            when = _evt_time_iso(xml)
+            data = " ".join(v for _, v in _EVT_DATA_RE.findall(xml)) + " " + " ".join(re.findall(r"<Data>([^<]*)</Data>", xml))
+            outcome = "FAILED" if re.search(r"fail", data, re.I) else "WARNING" if re.search(r"warn", data, re.I) else "SUCCESS" if re.search(r"success", data, re.I) else None
+            if outcome:
+                veeam.update(result=outcome, lastRunAt=when, detail=f"Último trabajo de Veeam: {outcome}")
+                if outcome == "SUCCESS":
+                    veeam["lastSuccessAt"] = when
+                break
+    return list(jobs.values())
+
+
+def detect_sql_backups() -> list[dict[str, Any]]:
+    """Backups de SQL Server segun msdb (ultima copia completa/diferencial/log por base)."""
+    instances = []
+    if hasattr(psutil, "win_service_iter"):
+        for svc in psutil.win_service_iter():
+            name = svc.name()
+            if name == "MSSQLSERVER" or name.upper().startswith("MSSQL$"):
+                try:
+                    if svc.status() == "running":
+                        instances.append(name.split("$", 1)[1] if "$" in name else "MSSQLSERVER")
+                except Exception:
+                    continue
+    if not instances:
+        return []
+    script = PS_SQL_BACKUPS.replace("__INSTANCES__", ",".join(f"'{i}'" for i in instances))
+    jobs = []
+    for inst in run_powershell_json(script, timeout=120):
+        label = f"SQL Server ({inst.get('instance')})"
+        if inst.get("error"):
+            jobs.append({"method": "SQL_SERVER", "name": label, "tool": "SQL Server", "result": "UNKNOWN",
+                         "detail": "No se pudo leer msdb con la cuenta SYSTEM: " + str(inst["error"])[:200]})
+            continue
+        dbs = [d for d in inst.get("databases") or [] if d.get("name") not in ("model",)]
+        problems, lasts = [], []
+        for d in dbs:
+            hours = _hours_since(d.get("lastFull"))
+            newest = max(filter(None, [d.get("lastFull"), d.get("lastDiff")]), default=None)
+            if newest:
+                lasts.append(newest)
+            newest_hours = _hours_since(newest)
+            if hours is None:
+                problems.append(f"{d['name']}: nunca tuvo backup completo")
+            elif newest_hours is not None and newest_hours > 8 * 24:
+                problems.append(f"{d['name']}: último backup hace {int(newest_hours / 24)} días")
+            if d.get("recovery") == "FULL" and ((_hours_since(d.get("lastLog")) or 1e9) > 24):
+                problems.append(f"{d['name']}: modo FULL sin backup de log en 24 h (el log crece)")
+        last = max(lasts) if lasts else None
+        jobs.append(
+            {
+                "method": "SQL_SERVER",
+                "name": label,
+                "tool": "SQL Server",
+                "result": "WARNING" if problems else "SUCCESS",
+                "lastRunAt": last,
+                "lastSuccessAt": last,
+                "detail": "; ".join(problems[:6]) if problems else f"{len(dbs)} base(s) con backup al día",
+                "databases": dbs[:30],
+            }
+        )
+    return jobs
+
+
+RESULT_RANK = {"SUCCESS": 0, "RUNNING": 0, "UNKNOWN": 1, "WARNING": 2, "FAILED": 3}
+METHOD_LABEL = {
+    "WINDOWS_SERVER_BACKUP": "Windows Server Backup",
+    "WBADMIN": "Copias de seguridad de Windows",
+    "SCHEDULED_TASK": "Tarea programada",
+    "FILE_HISTORY": "Historial de archivos",
+    "SQL_SERVER": "SQL Server",
+    "THIRD_PARTY": "Software de backup",
+}
+
+
+def collect_backup_jobs() -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for name, fn in (
+        ("tareas programadas", detect_scheduled_backup_jobs),
+        ("historial de archivos", detect_file_history_jobs),
+        ("software de terceros", detect_third_party_backup),
+        ("SQL Server", detect_sql_backups),
+    ):
+        try:
+            jobs.extend(fn())
+        except Exception as exc:
+            logger.warning("Deteccion de backups (%s) fallo: %s", name, exc)
+    return jobs[:25]
+
+
+def merge_backup_status(status: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Combina el backup nativo (Windows Server Backup / wbadmin) con los demas
+    metodos detectados en un unico estado: el peor resultado manda."""
+    native_configured = status.get("result") not in ("NOT_CONFIGURED", "UNKNOWN", None)
+    all_jobs = list(jobs)
+    if native_configured:
+        all_jobs.insert(0, {
+            "method": status.get("method"),
+            "name": METHOD_LABEL.get(status.get("method"), status.get("method")),
+            "tool": METHOD_LABEL.get(status.get("method"), status.get("method")),
+            "result": status.get("result"),
+            "lastRunAt": status.get("lastBackupAt"),
+            "lastSuccessAt": status.get("lastBackupAt") if status.get("result") == "SUCCESS" else None,
+            "targetPath": status.get("targetPath"),
+            "sizeBytes": status.get("sizeBytes"),
+            "durationSeconds": status.get("durationSeconds"),
+            "detail": (status.get("detail") or "")[:300],
+        })
+    if not all_jobs:
+        return status
+
+    status["jobs"] = all_jobs
+    known = [j for j in all_jobs if j.get("result") != "UNKNOWN"]
+    worst = max(known, key=lambda j: RESULT_RANK.get(j.get("result"), 1)) if known else all_jobs[0]
+    overall = worst.get("result") if known else "UNKNOWN"
+    status["result"] = "SUCCESS" if overall == "RUNNING" else overall
+    status["method"] = worst.get("method") if len(all_jobs) == 1 or not native_configured else status.get("method")
+
+    successes = [j["lastSuccessAt"] for j in all_jobs if j.get("lastSuccessAt")]
+    if successes:
+        status["lastBackupAt"] = max(successes)
+    principal = next((j for j in all_jobs if j.get("targetPath")), None)
+    if principal and not status.get("targetPath"):
+        status["targetPath"] = principal["targetPath"]
+    if not status.get("sizeBytes"):
+        size = next((j.get("sizeBytes") for j in all_jobs if j.get("sizeBytes")), None)
+        if size:
+            status["sizeBytes"] = size
+
+    lines = []
+    for j in all_jobs:
+        when = j.get("lastRunAt")
+        hours = _hours_since(when)
+        ago = f"hace {int(hours)} h" if hours is not None and hours < 72 else (f"hace {int(hours / 24)} días" if hours is not None else "sin ejecuciones")
+        lines.append(f"[{j.get('result')}] {j.get('name')} ({j.get('tool')}): {ago}. {j.get('detail') or ''}".strip())
+    status["detail"] = "\n".join(lines)[:1000]
+    return status
+
+
 def get_backup_status() -> dict[str, Any]:
     """Determina el estado del backup nativo probando varios metodos en orden.
 
@@ -1163,6 +1683,12 @@ def get_backup_status() -> dict[str, Any]:
         except Exception as exc:
             logger.warning("No se pudo estimar el tamano del backup en %s: %s", status.get("targetPath"), exc)
 
+    # Demas metodos del equipo (scripts, Historial de archivos, SQL, terceros).
+    try:
+        status = merge_backup_status(status, collect_backup_jobs())
+    except Exception as exc:
+        logger.warning("No se pudieron combinar los metodos de backup detectados: %s", exc)
+
     return status
 
 
@@ -1186,7 +1712,7 @@ def build_backup_payload() -> dict[str, Any]:
         payload["sizeBytes"] = status["sizeBytes"]
 
     metadata: dict[str, Any] = {}
-    for key in ("runs", "versions", "durationSeconds"):
+    for key in ("runs", "versions", "durationSeconds", "jobs"):
         if status.get(key):
             metadata[key] = status[key]
     if metadata:
@@ -1354,11 +1880,13 @@ def check_and_apply_update(latest_version: str | None) -> None:
         new_exe.rename(current_exe)
 
         logger.info("Actualización descargada y aplicada. Reiniciando para tomar la versión %s...", latest_version)
-        # Exit code distinto de 0 a proposito: la Tarea Programada (ver
-        # install-agent.ps1, -RestartCount/-RestartInterval) relanza el
-        # proceso automaticamente ante una salida no exitosa, y con eso
-        # arranca de nuevo ya con el .exe nuevo en su lugar.
-        sys.exit(75)
+        # La opcion "reiniciar si falla" del Programador de tareas NO reacciona
+        # al codigo de salida (solo a fallas al iniciar): antes de salir se
+        # asegura el disparador "vigilante" que relanza la tarea cada minuto
+        # si no esta corriendo, y se sale limpio. Arranca de nuevo ya con el
+        # .exe nuevo en menos de un minuto.
+        ensure_task_watchdog(force=True)
+        sys.exit(0)
     except SystemExit:
         raise
     except Exception as exc:
@@ -2119,6 +2647,73 @@ def inventory_loop() -> None:
         time.sleep(INVENTORY_INTERVAL_SECONDS)
 
 
+# ---------------------------------------------------------------------------
+# Tarea programada: vigilante e instancia unica
+# ---------------------------------------------------------------------------
+TASK_NAME = os.getenv("AGENT_TASK_NAME", "EnterpriseSOCAgent")
+
+# Disparador diario que se repite cada minuto durante 24 h (en la practica,
+# siempre): si el agente no esta corriendo (se cerro, se actualizo, fallo),
+# el Programador de tareas lo vuelve a lanzar en menos de un minuto. Con
+# "IgnoreNew" (valor por defecto) nunca abre una segunda instancia. Se usa
+# esta forma y no "-RepetitionDuration indefinido" porque funciona igual en
+# Windows 7/2012 R2 y en Windows 11/Server 2022.
+PS_TASK_WATCHDOG = r"""
+$name = '__TASK__'
+$t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+if (-not $t) { ConvertTo-Json -InputObject @([pscustomobject]@{ status = 'missing' }) -Compress; return }
+$has = @($t.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval }).Count -gt 0
+if ($has -and -not $__FORCE__) { ConvertTo-Json -InputObject @([pscustomobject]@{ status = 'ok' }) -Compress; return }
+$boot = New-ScheduledTaskTrigger -AtStartup
+$daily = New-ScheduledTaskTrigger -Daily -At '00:00'
+$daily.Repetition = (New-ScheduledTaskTrigger -Once -At '00:00' -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
+$settings = $t.Settings
+$settings.MultipleInstances = 'IgnoreNew'
+$settings.StartWhenAvailable = $true
+$settings.DisallowStartIfOnBatteries = $false
+$settings.StopIfGoingOnBatteries = $false
+$settings.ExecutionTimeLimit = 'PT0S'
+Set-ScheduledTask -TaskName $name -Trigger $boot, $daily -Settings $settings | Out-Null
+ConvertTo-Json -InputObject @([pscustomobject]@{ status = 'fixed' }) -Compress
+"""
+
+
+def ensure_task_watchdog(force: bool = False) -> None:
+    """Agrega a la tarea programada del agente el disparador que la relanza
+    cada minuto (instalaciones hechas con install-agent.ps1 anterior a 1.5.0
+    no lo tienen, y tras una auto-actualizacion la tarea quedaba detenida)."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    try:
+        script = PS_TASK_WATCHDOG.replace("__TASK__", TASK_NAME).replace("$__FORCE__", "$true" if force else "$false")
+        result = run_powershell_json(script, timeout=60)
+        status = result[0].get("status") if result else None
+        if status == "fixed":
+            logger.info("Tarea programada '%s': vigilante de reinicio configurado", TASK_NAME)
+        elif status == "missing":
+            logger.warning("No existe la tarea programada '%s' (¿se instaló a mano?): el agente no se relanzará solo", TASK_NAME)
+    except Exception as exc:
+        logger.warning("No se pudo configurar el vigilante de la tarea programada: %s", exc)
+
+
+_instance_mutex = None
+
+
+def acquire_single_instance() -> bool:
+    """Evita dos agentes a la vez (por ej. uno lanzado a mano y otro por la
+    tarea programada): mandarian todo duplicado."""
+    global _instance_mutex
+    if sys.platform != "win32":
+        return True
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        _instance_mutex = kernel32.CreateMutexW(None, False, "Global\\EnterpriseSOCAgent")
+        return kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+    except Exception:
+        return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Agente de monitoreo Enterprise SOC")
     parser.add_argument(
@@ -2214,7 +2809,14 @@ def main() -> None:
         _console_handler.setLevel(logging.DEBUG)
 
     validate_config()
+
+    if not args.once and not args.inventory and not acquire_single_instance():
+        logger.info("Ya hay otra instancia del agente corriendo; esta se cierra.")
+        return
+
     _cleanup_previous_update()
+    if not args.once and not args.inventory:
+        threading.Thread(target=ensure_task_watchdog, daemon=True).start()
 
     if args.inventory:
         global _inventory_roles

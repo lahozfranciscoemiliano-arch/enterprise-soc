@@ -153,6 +153,11 @@ class AlertService : Service() {
                 val severity = ev.optString("severity", "LOW")
                 val status = ev.optString("status", "OPEN")
                 if (status == "RESOLVED" || !prefs.severityAllowed(severity)) return
+                // Silenciada desde el NOC: no molestar hasta que venza.
+                val snoozed = ev.optString("snoozedUntil", "")
+                if (snoozed.isNotEmpty() && snoozed != "null" &&
+                    runCatching { java.time.Instant.parse(snoozed).isAfter(java.time.Instant.now()) }.getOrDefault(false)
+                ) return
                 // Una actualizacion solo notifica si la alerta empeoro; una nueva, siempre.
                 val isNew = msg.optString("type") == "SECURITY_ALERT"
                 if (!isNew && Prefs.rank(severity) < 2) return

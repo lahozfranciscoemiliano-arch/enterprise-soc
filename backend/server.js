@@ -57,6 +57,7 @@ const { processAgentExtras, summarizeNetwork } = require('./src/services/prevent
 const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
 const registerInventoryRoutes = require('./src/routes/inventory');
 const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
+const { seedMissingPlaybooks } = require('./src/services/recommendations');
 const { runUnifiPoll, listUnifiDevices, listUnifiSites, getLastRun: getUnifiLastRun, scheduleUnifiPoll } = require('./src/services/unifi');
 const { createAndDispatchEvent, resolveCleared, defaultDedupKey, toClientEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
@@ -568,6 +569,10 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
           description: alert.description,
           metadata: alert.metadata,
           dedupKey: alert.dedupKey,
+          // Anti-fatiga: un pico de CPU/RAM de un minuto no es un incidente;
+          // se alerta solo si sigue en 3 telemetrias seguidas (~3 min). El
+          // disco no tiene picos: alerta enseguida.
+          confirmations: alert.type === 'DISK_THRESHOLD' ? 1 : 3,
         })
       )
     );
@@ -742,6 +747,9 @@ app.get('/api/servers', authUser, async (req, res) => {
                 detail: backup.detail,
                 recordedAt: backup.recordedAt,
                 durationSeconds: backup.metadata?.durationSeconds ?? null,
+                // Todos los metodos detectados en el equipo (agente >= 1.5.0):
+                // tareas con scripts, Historial de archivos, SQL, terceros.
+                jobs: Array.isArray(backup.metadata?.jobs) ? backup.metadata.jobs : null,
                 successfulRuns: Array.isArray(backup.metadata?.versions)
                   ? backup.metadata.versions.length
                   : Array.isArray(backup.metadata?.runs)
@@ -1037,6 +1045,30 @@ app.get('/api/events', authUser, async (req, res) => {
     return res.json(events.map((e) => toClientEvent(e)));
   } catch (err) {
     console.error('Error listando alertas', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Silenciar una alerta: sigue visible y actualizandose, pero no vuelve a
+// notificar (ni si empeora) hasta que pase el tiempo. minutes = 0 la reactiva.
+app.post('/api/events/:id/snooze', authUser, requireRole('ADMIN', 'ANALYST'), async (req, res) => {
+  const minutes = Number(req.body?.minutes);
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > 30 * 24 * 60) {
+    return res.status(400).json({ error: 'minutes debe ser un entero entre 0 y 43200' });
+  }
+  try {
+    const event = await prisma.securityEvent.update({
+      where: { id: req.params.id },
+      data: { snoozedUntil: minutes === 0 ? null : new Date(Date.now() + minutes * 60 * 1000) },
+      include: { server: { select: { name: true } }, acknowledgedBy: { select: { name: true } } },
+    });
+    logAudit({ userId: req.user.sub, action: minutes ? 'EVENT_SNOOZE' : 'EVENT_UNSNOOZE', targetType: 'SecurityEvent', targetId: event.id, metadata: { minutes } });
+    const enriched = toClientEvent(event);
+    broadcastAlertUpdate(enriched);
+    return res.json(enriched);
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Alerta no encontrada' });
+    console.error('Error silenciando alerta', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -2224,6 +2256,7 @@ scheduleSyntheticMonitor();
 scheduleDiskForecast();
 scheduleUnifiPoll();
 scheduleServiceMonitor();
+seedMissingPlaybooks();
 
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();

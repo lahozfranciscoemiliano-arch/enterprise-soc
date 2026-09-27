@@ -319,7 +319,13 @@ async function processAgentExtras(server, metadata) {
 
   if (network) {
     const { alerts, managed } = evaluateNetwork(server, network);
-    await Promise.all(alerts.map((a) => createAndDispatchEvent({ serverId: server.id, serverName: server.name, ...a })));
+    // Anti-fatiga: la red degradada se confirma en 3 mediciones seguidas y el
+    // failover en 2 (un cambio de IP publica momentaneo no es un failover).
+    await Promise.all(
+      alerts.map((a) =>
+        createAndDispatchEvent({ serverId: server.id, serverName: server.name, ...a, confirmations: a.type === 'ISP_FAILOVER' ? 2 : 3 })
+      )
+    );
     await resolveCleared(server.id, managed, alerts.map((a) => a.dedupKey), server.name);
     if (Array.isArray(network.outages) && network.outages.length > 0) await recordOutages(server, network.outages);
   }

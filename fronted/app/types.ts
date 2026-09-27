@@ -50,6 +50,10 @@ export type SecurityAlert = {
   lastSeenAt?: string;
   /** La cerro el sistema porque la condicion se normalizo. */
   autoResolved?: boolean;
+  /** Silenciada: no vuelve a notificar hasta esta fecha. */
+  snoozedUntil?: string | null;
+  /** Recomendacion experta por tipo de alerta (pasos y prevencion). */
+  recommendation?: { title: string; steps: string[]; prevention: string } | null;
   createdAt: string;
   resolvedAt?: string | null;
 };
@@ -67,6 +71,38 @@ export type BackupInfo = {
   durationSeconds?: number | null;
   /** Cantidad de backups exitosos que Windows conserva. */
   successfulRuns?: number | null;
+  /** Todos los metodos de backup detectados en el equipo (agente >= 1.5.0). */
+  jobs?: BackupJob[] | null;
+};
+
+export type BackupJob = {
+  method: string;
+  name: string;
+  tool?: string | null;
+  result: string;
+  enabled?: boolean;
+  lastRunAt?: string | null;
+  lastSuccessAt?: string | null;
+  nextRunAt?: string | null;
+  missedRuns?: number;
+  runAs?: string | null;
+  targetPath?: string | null;
+  sizeBytes?: number | null;
+  durationSeconds?: number | null;
+  detail?: string | null;
+  lastFile?: { file: string; modifiedAt: string; sizeBytes: number } | null;
+  stats?: {
+    logPath: string;
+    finishedAt: string | null;
+    filesTotal: number;
+    filesCopied: number;
+    filesSkipped: number;
+    filesFailed: number;
+    dirsFailed: number;
+    bytesTotal: string;
+    bytesCopied: string;
+  } | null;
+  databases?: { name: string; recovery: string; lastFull: string | null; lastDiff: string | null; lastLog: string | null }[];
 };
 
 /** Una corrida de backup (no un chequeo): GET /api/servers/:id/backup-status. */
@@ -377,6 +413,8 @@ export type SystemSettings = {
   GEMINI_API_KEY: SensitiveSetting;
   GEMINI_MODEL: PlainSetting<string>;
   CRITICAL_SERVICES: PlainSetting<string>;
+  NOTIFY_QUIET_HOURS: PlainSetting<string>;
+  NOTIFY_BATCH_MINUTES: PlainSetting<number>;
   INVENTORY_COLLECTOR: PlainSetting<string>;
   PATCH_MAX_AGE_DAYS: PlainSetting<number>;
   UNIFI_MODE: PlainSetting<string>;

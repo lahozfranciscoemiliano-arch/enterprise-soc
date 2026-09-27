@@ -398,6 +398,9 @@ model SecurityEvent {
   occurrences      Int           @default(1)
   lastSeenAt       DateTime      @default(now())
   autoResolved     Boolean       @default(false)
+  // Silenciada hasta esta fecha: sigue visible y se actualiza, pero no
+  // vuelve a notificar (ni si empeora) hasta entonces.
+  snoozedUntil     DateTime?
   acknowledgedById String?
   acknowledgedBy   User?         @relation("AcknowledgedBy", fields: [acknowledgedById], references: [id])
   createdAt        DateTime      @default(now())

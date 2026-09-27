@@ -548,7 +548,9 @@ async function evaluateInventoryAlerts(server, ctx) {
     }
   }
 
-  await Promise.all(alerts.map((a) => createAndDispatchEvent({ ...base, ...a })));
+  // Impresoras: se confirma en 2 inventarios seguidos (~10 min): un atasco
+  // que alguien resolvio enseguida no llega a ser alerta.
+  await Promise.all(alerts.map((a) => createAndDispatchEvent({ ...base, ...a, confirmations: a.type === 'PRINTER_ISSUE' ? 2 : 1 })));
   await resolveCleared(
     server.id,
     [...new Set(managed.filter(Boolean))],

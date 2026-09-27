@@ -19,6 +19,11 @@ const SETTING_DEFS = {
   TELEGRAM_BOT_TOKEN: { envFallback: 'TELEGRAM_BOT_TOKEN', type: 'string', sensitive: true },
   TELEGRAM_CHAT_ID: { envFallback: 'TELEGRAM_CHAT_ID', type: 'string', sensitive: false },
   NOTIFY_MIN_SEVERITY: { envFallback: 'NOTIFY_MIN_SEVERITY', type: 'string', sensitive: false },
+  // Anti-fatiga (services/notifications.js): horario silencioso ("22-07":
+  // solo CRITICAL, el resto en un resumen al terminar) y minutos de
+  // agrupacion de alertas no criticas en un solo mensaje.
+  NOTIFY_QUIET_HOURS: { envFallback: null, type: 'string', sensitive: false },
+  NOTIFY_BATCH_MINUTES: { envFallback: null, type: 'number', sensitive: false },
 
   // Sesion
   JWT_EXPIRES_IN: { envFallback: 'JWT_EXPIRES_IN', type: 'string', sensitive: false },

@@ -113,23 +113,36 @@ function evaluateTelemetry(server, telemetry, defaults = DEFAULT_THRESHOLDS) {
   return alerts;
 }
 
+// Resumen legible de los trabajos de backup con problemas (agente >= 1.5.0
+// manda cada metodo detectado en metadata.jobs).
+function describeBackupJobs(backup, results) {
+  const jobs = Array.isArray(backup.metadata?.jobs) ? backup.metadata.jobs : [];
+  return jobs
+    .filter((j) => results.includes(j.result))
+    .slice(0, 4)
+    .map((j) => `"${j.name}" (${j.tool ?? j.method}): ${j.detail ?? j.result}`)
+    .join(' | ');
+}
+
 function evaluateBackup(server, backup) {
   if (isInMaintenance(server)) return null;
 
   if (backup.result === 'FAILED') {
+    const jobs = describeBackupJobs(backup, ['FAILED']);
     return {
       type: 'BACKUP_FAILED',
       severity: 'HIGH',
-      description: `${server.name}: el backup falló (${backup.method}). ${backup.detail ?? ''}`.trim(),
+      description: `${server.name}: backup FALLIDO. ${jobs || `${backup.method}: ${backup.detail ?? ''}`}`.trim().slice(0, 900),
       metadata: { method: backup.method, detail: backup.detail, serverId: server.id },
     };
   }
 
   if (backup.result === 'WARNING' || (backup.result === 'SUCCESS' && !backup.vssServiceOk)) {
+    const jobs = describeBackupJobs(backup, ['WARNING']);
     return {
       type: 'BACKUP_WARNING',
       severity: 'MEDIUM',
-      description: `${server.name}: backup con advertencias (${backup.method})${backup.vssServiceOk ? '' : ' — servicio VSS detenido'}.`,
+      description: `${server.name}: backup con advertencias. ${jobs || backup.method}${backup.vssServiceOk ? '' : ' — servicio VSS (instantáneas) detenido'}.`.slice(0, 900),
       metadata: { method: backup.method, detail: backup.detail, serverId: server.id },
     };
   }

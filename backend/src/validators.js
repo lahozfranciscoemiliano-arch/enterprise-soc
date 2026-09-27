@@ -128,6 +128,8 @@ const settingsSchema = z
     GEMINI_API_KEY: z.string().max(500).optional(),
     GEMINI_MODEL: z.string().max(100).optional(),
     CRITICAL_SERVICES: z.string().max(2000).optional(),
+    NOTIFY_QUIET_HOURS: z.union([z.literal(''), z.string().regex(/^\d{1,2}\s*-\s*\d{1,2}$/, 'Formato: 22-07')]).optional(),
+    NOTIFY_BATCH_MINUTES: z.coerce.number().int().min(0).max(60).optional(),
     INVENTORY_COLLECTOR: z.string().max(200).optional(),
     PATCH_MAX_AGE_DAYS: z.coerce.number().int().min(7).max(365).optional(),
     UNIFI_MODE: z.enum(['off', 'cloud', 'local']).optional(),

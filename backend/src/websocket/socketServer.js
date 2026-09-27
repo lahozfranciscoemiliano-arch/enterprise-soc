@@ -129,6 +129,7 @@ function broadcastBackupStatus(server, backup) {
       detail: backup.detail,
       recordedAt: backup.recordedAt,
       durationSeconds: backup.metadata?.durationSeconds ?? null,
+      jobs: Array.isArray(backup.metadata?.jobs) ? backup.metadata.jobs : null,
       successfulRuns: Array.isArray(backup.metadata?.versions)
         ? backup.metadata.versions.length
         : Array.isArray(backup.metadata?.runs)

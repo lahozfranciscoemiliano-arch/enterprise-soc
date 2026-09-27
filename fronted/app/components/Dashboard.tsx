@@ -288,6 +288,7 @@ export default function Dashboard({
                     recordedAt,
                     durationSeconds: d.durationSeconds ?? existing?.backup?.durationSeconds ?? null,
                     successfulRuns: d.successfulRuns ?? existing?.backup?.successfulRuns ?? null,
+                    jobs: d.jobs ?? existing?.backup?.jobs ?? null,
                   },
                 },
               };

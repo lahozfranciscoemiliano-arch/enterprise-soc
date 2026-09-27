@@ -137,10 +137,19 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
 }
 
 $action = New-ScheduledTaskAction -Execute (Join-Path $InstallDir "enterprise-soc-agent.exe") -WorkingDirectory $InstallDir
-$trigger = New-ScheduledTaskTrigger -AtStartup
+# Dos disparadores: al iniciar Windows, y uno diario que se repite cada
+# minuto (vigilante): si el agente se cierra (auto-actualizacion, falla), el
+# Programador de tareas lo vuelve a lanzar en menos de un minuto. Con
+# MultipleInstances=IgnoreNew nunca abre una segunda instancia.
+$bootTrigger = New-ScheduledTaskTrigger -AtStartup
+$watchdogTrigger = New-ScheduledTaskTrigger -Daily -At '00:00'
+$watchdogTrigger.Repetition = (New-ScheduledTaskTrigger -Once -At '00:00' `
+    -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
+$trigger = @($bootTrigger, $watchdogTrigger)
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Days 0)
 

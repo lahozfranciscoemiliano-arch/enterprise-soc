@@ -4,6 +4,7 @@ import { Fragment, useCallback, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, Clock, DatabaseBackup, FolderOpen, HardDrive, Percent, ShieldOff, Timer, XCircle } from 'lucide-react';
 import StatCard from '../StatCard';
+import BackupJobsList from '../BackupJobsList';
 import { BACKUP_METHOD_LABELS, BACKUP_STYLES, backupAgeLevel, formatBytes, formatDuration } from '../../lib/health';
 import type { BackupHistoryEntry, BackupResult, ServerSummary } from '../../types';
 
@@ -235,7 +236,8 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
                                     <span className="break-all font-mono">{backup.targetPath}</span>
                                   </p>
                                 )}
-                                {backup?.detail && (
+                                {backup?.jobs && backup.jobs.length > 0 && <BackupJobsList jobs={backup.jobs} />}
+                                {backup?.detail && !backup?.jobs?.length && (
                                   <pre className="whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 font-sans text-[11px] text-slate-600">
                                     {backup.detail}
                                   </pre>

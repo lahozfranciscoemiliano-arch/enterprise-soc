@@ -4,6 +4,7 @@ import { Bot, BookOpen, CircleDot, CheckCircle2, Eye, ListFilter, Regex, Sparkle
 import { EVENT_STATUS_STYLES, SEVERITY_STYLES } from '../../lib/health';
 import type { EventStatus, Playbook, SecurityAlert } from '../../types';
 import AlertRepeatInfo from '../AlertRepeatInfo';
+import { AlertRecommendation, SnoozeButton } from '../AlertActionsExtra';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -259,9 +260,10 @@ export default function LogsRegexTab({
                         {a.aiTriage && (
                           <p className="mt-1 flex items-start gap-1 text-[11px] text-sky-700/90">
                             <Bot className="mt-0.5 h-3 w-3 shrink-0" />
-                            <span>{a.aiTriage}</span>
+                            <span className="whitespace-pre-line">{a.aiTriage}</span>
                           </p>
                         )}
+                        {a.status !== 'RESOLVED' && <AlertRecommendation alert={a} />}
                       </td>
                       <td className="py-2 pr-4">
                         <div className="flex gap-1">
@@ -280,6 +282,7 @@ export default function LogsRegexTab({
                               Reconocer
                             </button>
                           )}
+                          {a.status !== 'RESOLVED' && <SnoozeButton alert={a} />}
                           {a.status !== 'RESOLVED' && (
                             <button
                               onClick={() => onUpdateStatus(a.id, 'RESOLVED')}

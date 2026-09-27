@@ -45,6 +45,8 @@ export default function SettingsPanel() {
         SLACK_WEBHOOK_URL: '',
         WEBHOOK_URL: '',
         NOTIFY_MIN_SEVERITY: plainField(data, 'NOTIFY_MIN_SEVERITY') || 'HIGH',
+        NOTIFY_QUIET_HOURS: plainField(data, 'NOTIFY_QUIET_HOURS'),
+        NOTIFY_BATCH_MINUTES: plainField(data, 'NOTIFY_BATCH_MINUTES') || '3',
         JWT_EXPIRES_IN: plainField(data, 'JWT_EXPIRES_IN') || '8h',
         DEFAULT_CPU_HIGH: plainField(data, 'DEFAULT_CPU_HIGH'),
         DEFAULT_CPU_MEDIUM: plainField(data, 'DEFAULT_CPU_MEDIUM'),
@@ -119,6 +121,7 @@ export default function SettingsPanel() {
             'REPORT_HOUR',
             'AGENT_STALE_THRESHOLD_SECONDS',
             'PATCH_MAX_AGE_DAYS',
+            'NOTIFY_BATCH_MINUTES',
           ];
           payload[key] = numericKeys.includes(key) ? Number(value) : value;
         }
@@ -242,6 +245,17 @@ export default function SettingsPanel() {
           </select>
         </div>
         <div className="mt-2 flex items-center gap-1 checkbox">{checkbox('SMTP_SECURE', 'SMTP con TLS implícito (puerto 465)')}</div>
+        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <p className="mb-2 text-xs font-semibold text-slate-700">Menos fatiga de notificaciones</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {input('NOTIFY_QUIET_HOURS', 'Horario silencioso, ej. 22-07 (vacío = sin horario)')}
+            {input('NOTIFY_BATCH_MINUTES', 'Agrupar alertas no críticas cada N minutos (3)')}
+          </div>
+          <p className="mt-2 text-[11px] text-slate-400">
+            Las CRITICAL salen siempre al instante. Las demás se juntan en un solo mensaje cada N minutos (0 = una por una). En el horario
+            silencioso solo llegan las CRITICAL y el resto se envía en un resumen al terminar.
+          </p>
+        </div>
         <div className="mt-3">
           {saveBtn('notificaciones', [
             'SMTP_HOST',
@@ -256,6 +270,8 @@ export default function SettingsPanel() {
             'TELEGRAM_BOT_TOKEN',
             'TELEGRAM_CHAT_ID',
             'NOTIFY_MIN_SEVERITY',
+            'NOTIFY_QUIET_HOURS',
+            'NOTIFY_BATCH_MINUTES',
           ])}
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
