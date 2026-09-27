@@ -40,12 +40,22 @@ param(
 
     [string]$InstallDir = "C:\Program Files\EnterpriseSOC\Agent",
 
-    [string]$AgentExePath = (Join-Path $PSScriptRoot "enterprise-soc-agent.exe"),
+    # Vacio = buscar enterprise-soc-agent.exe junto a este script (y si no
+    # esta, descargarlo del backend). Se resuelve mas abajo: en Windows
+    # PowerShell 5.1 $PSScriptRoot puede venir vacio dentro de param().
+    [string]$AgentExePath = "",
 
     [string]$TaskName = "EnterpriseSOCAgent"
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $AgentExePath) {
+    $scriptDir = $PSScriptRoot
+    if (-not $scriptDir -and $MyInvocation.MyCommand.Path) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
+    $AgentExePath = Join-Path $scriptDir "enterprise-soc-agent.exe"
+}
 
 function Write-Step($message) {
     Write-Host ""
