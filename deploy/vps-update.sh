@@ -138,6 +138,16 @@ else
   rm -f "$tmp_exe"
 fi
 
+# El instalador (install-agent.ps1) tambien se publica en /downloads/ para
+# poder instalar servidores nuevos con un solo comando de PowerShell. No
+# depende de que el repo este publico: sale del codigo ya descargado.
+if docker cp agent/install-agent.ps1 "$BACKEND_CONTAINER:/app/downloads/install-agent.ps1" >/dev/null \
+  && [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/downloads/install-agent.ps1)" = "200" ]; then
+  ok "Instalador publicado en /downloads/install-agent.ps1"
+else
+  fail "No se pudo publicar install-agent.ps1 en /downloads/"
+fi
+
 # ---------------------------------------------------------------------------
 step "4/4 Auto-monitoreo del propio VPS (host-monitor)"
 # ---------------------------------------------------------------------------

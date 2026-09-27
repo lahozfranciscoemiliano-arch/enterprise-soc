@@ -6,7 +6,7 @@
 .DESCRIPTION
     1. Consigue enterprise-soc-agent.exe: lo copia desde AgentExePath si ya esta
        compilado localmente, o si no existe lo descarga directamente del backend
-       (GET /downloads/enterprise-soc-agent.exe) — asi no hace falta compilar ni
+       (GET /downloads/enterprise-soc-agent.exe) -- asi no hace falta compilar ni
        copiar el binario a mano en cada servidor nuevo.
     2. Llama a POST /api/servers/enroll en el backend con el secreto compartido
        (AGENT_ENROLLMENT_SECRET) para auto-registrar este servidor y obtener

@@ -606,6 +606,20 @@ facturación, web, VPN). Uptime 24 h / 7 d / 30 d, latencia, historial, aviso
 de caída (confirmada con 2 fallos) y de vencimiento del certificado SSL
 (30, 14 y 3 días antes).
 
+## 36. Instalar el agente en un servidor nuevo con un solo comando
+
+`vps-update.sh` publica el instalador en `/downloads/install-agent.ps1`. En el
+servidor Windows, en **PowerShell como Administrador**:
+
+```powershell
+$noc='http://203.161.39.123'; $s="$env:TEMP\install-agent.ps1"; Invoke-WebRequest "$noc/downloads/install-agent.ps1" -OutFile $s -UseBasicParsing; Unblock-File $s; powershell -NoProfile -ExecutionPolicy Bypass -File $s -BackendUrl $noc -EnrollmentSecret 'EL_SECRETO'
+```
+
+Descarga el instalador y la última versión del agente desde el NOC, registra
+el servidor (auto-enrolamiento), escribe la configuración y deja el agente
+corriendo como SYSTEM con arranque automático. Repetirlo en el mismo servidor
+lo reinstala/actualiza sin duplicarlo.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

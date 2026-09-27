@@ -462,6 +462,21 @@ app.get('/downloads/enterprise-soc-agent.exe', downloadLimiter, (req, res) => {
   return res.download(filePath, 'enterprise-soc-agent.exe');
 });
 
+// Instalador del agente (lo publica deploy/vps-update.sh en la carpeta de
+// descargas junto al .exe). Permite instalar un servidor nuevo con un solo
+// comando de PowerShell, sin copiar archivos a mano:
+//   iwr <NOC>/downloads/install-agent.ps1 ... ; & $s -BackendUrl ... -EnrollmentSecret ...
+app.get('/downloads/install-agent.ps1', downloadLimiter, (req, res) => {
+  const filePath = path.join(DOWNLOADS_DIR, 'install-agent.ps1');
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'El instalador todavía no se publicó: correr deploy/vps-update.sh en la VPS' });
+  }
+
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  return res.download(filePath, 'install-agent.ps1');
+});
+
 const telemetryLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
