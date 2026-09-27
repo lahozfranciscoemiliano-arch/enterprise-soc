@@ -72,7 +72,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.4.0"
+AGENT_VERSION = "1.4.1"
 
 
 def get_base_dir() -> Path:
@@ -129,6 +129,22 @@ _console_handler.setFormatter(_formatter)
 _file_handler.setFormatter(_formatter)
 logger.addHandler(_console_handler)
 logger.addHandler(_file_handler)
+
+
+def windows_exe(name: str, *subdirs: str) -> str:
+    """Ruta absoluta de una herramienta de Windows (powershell, route, arp,
+    wbadmin). Como tarea programada con la cuenta SYSTEM el PATH puede venir
+    recortado y llamarlas por nombre falla con "WinError 2". Si el agente
+    corre en 32 bits sobre un Windows de 64, usa Sysnative para llegar a las
+    versiones de 64 bits (los modulos de AD y DHCP solo existen ahi)."""
+    if sys.platform != "win32":
+        return name
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    for system_dir in ("Sysnative", "System32"):
+        candidate = os.path.join(root, system_dir, *subdirs, name)
+        if os.path.exists(candidate):
+            return candidate
+    return name
 
 
 @dataclass
@@ -264,7 +280,7 @@ def get_default_gateway() -> str | None:
     if sys.platform != "win32":
         return None
     try:
-        proc = subprocess.run(["route", "print", "-4", "0.0.0.0"], capture_output=True, timeout=10)
+        proc = subprocess.run([windows_exe("route.exe"), "print", "-4", "0.0.0.0"], capture_output=True, timeout=10)
     except Exception:
         return None
     routes = _ROUTE_RE.findall(_decode_console_bytes(proc.stdout or b""))
@@ -838,7 +854,7 @@ def check_wbadmin() -> dict[str, Any]:
     """
     try:
         proc = subprocess.run(
-            ["wbadmin", "get", "versions"],
+            [windows_exe("wbadmin.exe"), "get", "versions"],
             capture_output=True,
             timeout=60,
         )
@@ -1527,7 +1543,7 @@ def run_powershell_json(script: str, timeout: int = 180) -> list[Any]:
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + script
     )
     proc = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", full],
+        [windows_exe("powershell.exe", "WindowsPowerShell", "v1.0"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", full],
         capture_output=True,
         timeout=timeout,
         creationflags=_CREATE_NO_WINDOW if sys.platform == "win32" else 0,
@@ -1745,7 +1761,7 @@ def read_arp_table() -> dict[str, str]:
     if sys.platform != "win32":
         return {}
     try:
-        proc = subprocess.run(["arp", "-a"], capture_output=True, timeout=15, creationflags=_CREATE_NO_WINDOW)
+        proc = subprocess.run([windows_exe("arp.exe"), "-a"], capture_output=True, timeout=15, creationflags=_CREATE_NO_WINDOW)
     except Exception:
         return {}
     out = _decode_console_bytes(proc.stdout or b"")
