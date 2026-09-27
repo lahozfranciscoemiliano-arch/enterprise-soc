@@ -57,7 +57,7 @@ const { processAgentExtras, summarizeNetwork } = require('./src/services/prevent
 const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
 const registerInventoryRoutes = require('./src/routes/inventory');
 const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
-const { runUnifiPoll, listUnifiDevices, getLastRun: getUnifiLastRun, scheduleUnifiPoll } = require('./src/services/unifi');
+const { runUnifiPoll, listUnifiDevices, listUnifiSites, getLastRun: getUnifiLastRun, scheduleUnifiPoll } = require('./src/services/unifi');
 const { createAndDispatchEvent, resolveCleared, defaultDedupKey, toClientEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
 const { ingestFortiEvent } = require('./src/services/fortinet');
@@ -872,9 +872,10 @@ app.get('/api/servers/:id/metrics', authUser, async (req, res) => {
 // UniFi. Un solo request para toda la vista.
 app.get('/api/network/overview', authUser, async (req, res) => {
   try {
-    const [servers, devices, openOutages] = await Promise.all([
+    const [servers, devices, unifiSites, openOutages] = await Promise.all([
       prisma.server.findMany({ orderBy: { name: 'asc' } }),
       listUnifiDevices(),
+      listUnifiSites(),
       prisma.securityEvent.findMany({
         where: {
           type: { in: ['INTERNET_OUTAGE', 'ISP_FAILOVER', 'NETWORK_DEGRADED', 'NETWORK_UNREACHABLE'] },
@@ -898,7 +899,7 @@ app.get('/api/network/overview', authUser, async (req, res) => {
         ispSecondaryPublicIp: s.ispSecondaryPublicIp,
         network: summarizeNetwork(s, s.network, s.networkAt),
       })),
-      unifi: { lastRun: getUnifiLastRun(), devices },
+      unifi: { lastRun: getUnifiLastRun(), devices, sites: unifiSites },
       recentEvents: openOutages.map((e) => toClientEvent(e)),
     });
   } catch (err) {

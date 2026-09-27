@@ -191,6 +191,11 @@ export default function SettingsPanel() {
       const body = await res.json();
       if (body.error) setUnifiTest({ ok: false, text: body.error });
       else if (body.mode === 'off') setUnifiTest({ ok: false, text: 'La integración está desactivada (elegí un modo y cargá la API key).' });
+      else if (body.detail === 'sites')
+        setUnifiTest({
+          ok: true,
+          text: `Conexión OK: ${body.sites} sitio(s)${body.sitesOffline ? ` (${body.sitesOffline} con el controlador desconectado)` : ''} con ${body.devices} equipo(s) — ${body.offline} caído(s). Tus controladores son autoalojados: la nube da el resumen por sitio, no cada AP.`,
+        });
       else setUnifiTest({ ok: true, text: `Conexión OK: ${body.devices} dispositivo(s) — ${body.online} online, ${body.offline} offline.` });
     } catch {
       setUnifiTest({ ok: false, text: 'No se pudo contactar al backend.' });

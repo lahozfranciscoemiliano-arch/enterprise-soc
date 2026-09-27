@@ -22,7 +22,7 @@ import StatCard from '../StatCard';
 import AlertRepeatInfo from '../AlertRepeatInfo';
 import ServiceMonitorsPanel from '../ServiceMonitorsPanel';
 import { formatUptime, internetLevel, ISP_LABEL, RESOURCE_LEVEL_COLOR, SEVERITY_STYLES, timeAgo } from '../../lib/health';
-import type { NetworkOverview, ServerSummary, UnifiDevice } from '../../types';
+import type { NetworkOverview, ServerSummary, UnifiDevice, UnifiSiteRow } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -118,16 +118,36 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
   }, [sites]);
 
   const devices = overview?.unifi.devices ?? [];
+  const unifiSites = overview?.unifi.sites ?? [];
   const lastRun = overview?.unifi.lastRun ?? null;
+  // Con controladores autoalojados no hay lista de equipos: los totales
+  // salen de los contadores de cada sitio.
+  const bySites = devices.length === 0 && unifiSites.length > 0;
   const deviceStats = useMemo(
-    () => ({
-      aps: devices.filter((d) => d.deviceType === 'ap').length,
-      apsOnline: devices.filter((d) => d.deviceType === 'ap' && d.status === 'online').length,
-      offline: devices.filter((d) => d.status === 'offline').length,
-      clients: devices.reduce((sum, d) => sum + (d.clients ?? 0), 0),
-    }),
-    [devices]
+    () =>
+      bySites
+        ? {
+            aps: unifiSites.reduce((a, s) => a + s.wifiDevices, 0),
+            apsOnline: unifiSites.reduce((a, s) => a + s.wifiDevices - s.offlineWifi, 0),
+            offline: unifiSites.reduce((a, s) => a + s.offlineDevices, 0),
+            clients: unifiSites.reduce((a, s) => a + s.wifiClients, 0),
+          }
+        : {
+            aps: devices.filter((d) => d.deviceType === 'ap').length,
+            apsOnline: devices.filter((d) => d.deviceType === 'ap' && d.status === 'online').length,
+            offline: devices.filter((d) => d.status === 'offline').length,
+            clients: devices.reduce((sum, d) => sum + (d.clients ?? 0), 0),
+          },
+    [devices, unifiSites, bySites]
   );
+  const sortedSites = useMemo(() => {
+    const q = search.toLowerCase();
+    const rank = (s: UnifiSiteRow) => (s.hostOnline === false ? 0 : s.offlineDevices > 0 ? 1 : 2);
+    return unifiSites
+      .filter((s) => !q || [s.hostName, s.siteName, s.ispName].some((v) => v?.toLowerCase().includes(q)))
+      .filter((s) => deviceFilter !== 'offline' || s.hostOnline === false || s.offlineDevices > 0)
+      .sort((a, b) => rank(a) - rank(b) || a.hostName.localeCompare(b.hostName));
+  }, [unifiSites, search, deviceFilter]);
 
   const filteredDevices = useMemo(() => {
     const q = search.toLowerCase();
@@ -282,7 +302,93 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
           </p>
         )}
 
-        {(!lastRun || lastRun.mode === 'off') && devices.length === 0 ? (
+        {bySites ? (
+          <>
+            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+              {[
+                { id: 'all' as DeviceFilter, label: 'Todos los sitios', count: unifiSites.length },
+                { id: 'offline' as DeviceFilter, label: 'Con problemas', count: unifiSites.filter((s) => s.hostOnline === false || s.offlineDevices > 0).length },
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setDeviceFilter(f.id)}
+                  className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    deviceFilter === f.id ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  {f.label}
+                  <span className={deviceFilter === f.id ? 'text-white/80' : f.id === 'offline' && f.count > 0 ? 'text-red-600' : 'text-slate-400'}>{f.count}</span>
+                </button>
+              ))}
+              <span className="ml-1 text-[10px] text-slate-400">
+                Controladores UniFi autoalojados: la nube informa el resumen de cada sitio (no el detalle de cada AP).
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {sortedSites.map((s, i) => {
+                const hostDown = s.hostOnline === false;
+                const tone = hostDown ? 'border-red-200 bg-red-50/40' : s.offlineDevices > 0 ? 'border-amber-200 bg-amber-50/30' : 'border-slate-200';
+                const apsOnline = s.wifiDevices - s.offlineWifi;
+                return (
+                  <motion.div
+                    key={s.id}
+                    layout
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: Math.min(i * 0.02, 0.3) }}
+                    className={`rounded-xl border p-3 ${tone}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-800">{s.hostName}</p>
+                        <p className="truncate text-[10px] text-slate-400">
+                          {s.siteName ? `${s.siteName} · ` : ''}Network {s.version ?? '—'}
+                          {s.updateAvailable ? ' · actualización disponible' : ''}
+                        </p>
+                      </div>
+                      <span className={`flex shrink-0 items-center gap-1 text-[11px] font-medium ${hostDown ? 'text-red-700' : s.offlineDevices ? 'text-amber-700' : 'text-emerald-700'}`}>
+                        <span className={`h-2 w-2 rounded-full ${hostDown ? 'animate-pulse bg-red-500' : s.offlineDevices ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                        {hostDown ? 'Controlador offline' : s.offlineDevices ? `${s.offlineDevices} caído(s)` : s.hostOnline === null ? 'Sin estado' : 'OK'}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-lg bg-white/70 py-1.5 ring-1 ring-slate-100">
+                        <p className={`text-sm font-semibold tabular-nums ${s.offlineWifi ? 'text-red-700' : 'text-slate-800'}`}>
+                          {s.wifiDevices ? `${apsOnline}/${s.wifiDevices}` : '—'}
+                        </p>
+                        <p className="text-[10px] text-slate-400">APs online</p>
+                      </div>
+                      <div className="rounded-lg bg-white/70 py-1.5 ring-1 ring-slate-100">
+                        <p className={`text-sm font-semibold tabular-nums ${s.offlineWired ? 'text-red-700' : 'text-slate-800'}`}>
+                          {s.wiredDevices ? `${s.wiredDevices - s.offlineWired}/${s.wiredDevices}` : '—'}
+                        </p>
+                        <p className="text-[10px] text-slate-400">switches</p>
+                      </div>
+                      <div className="rounded-lg bg-white/70 py-1.5 ring-1 ring-slate-100">
+                        <p className="text-sm font-semibold tabular-nums text-slate-800">{s.wifiClients}</p>
+                        <p className="text-[10px] text-slate-400">clientes WiFi</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-slate-500">
+                      {s.ispName && <span>ISP: {s.ispName}</span>}
+                      {s.wanUptime !== null && <span>WAN arriba {Number(s.wanUptime).toFixed(1)}%</span>}
+                      {s.pendingUpdates > 0 && <span className="text-amber-700">{s.pendingUpdates} equipo(s) con firmware pendiente</span>}
+                      {hostDown && s.hostOfflineSince && <span className="text-red-700">desconectado {timeAgo(s.hostOfflineSince)}</span>}
+                      {!hostDown && s.devicesDownSince && <span className="text-amber-700">caídos {timeAgo(s.devicesDownSince)}</span>}
+                    </div>
+                  </motion.div>
+                );
+              })}
+              {sortedSites.length === 0 && (
+                <p className="col-span-full flex items-center justify-center gap-1.5 py-6 text-sm text-emerald-700">
+                  <CheckCircle2 className="h-4 w-4" /> Ningún sitio con problemas
+                </p>
+              )}
+            </div>
+          </>
+        ) : (!lastRun || lastRun.mode === 'off') && devices.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-xs text-slate-500">
             <Wifi className="mx-auto mb-2 h-6 w-6 text-slate-300" />
             La integración con UniFi no está configurada.

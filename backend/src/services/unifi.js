@@ -98,7 +98,7 @@ function normalizeStatus(value) {
   return v || 'unknown'; // updating, adopting, pending_adoption, getting_ready...
 }
 
-async function fetchCloudDevices(apiKey) {
+async function fetchCloudDevices(apiKey, hostNames = new Map()) {
   const devices = [];
   let nextToken = null;
   for (let page = 0; page < 20; page += 1) {
@@ -108,6 +108,7 @@ async function fetchCloudDevices(apiKey) {
     // eslint-disable-next-line no-await-in-loop
     const body = await requestJson(url, { apiKey });
     for (const host of body.data ?? []) {
+      if (host.hostId && host.hostName) hostNames.set(host.hostId, host.hostName);
       for (const d of host.devices ?? []) {
         const mac = String(d.mac ?? d.id ?? '').toLowerCase();
         if (!mac) continue;
@@ -132,6 +133,159 @@ async function fetchCloudDevices(apiKey) {
     if (!nextToken) break;
   }
   return devices;
+}
+
+async function fetchCloudList(path, apiKey) {
+  const items = [];
+  let nextToken = null;
+  for (let page = 0; page < 20; page += 1) {
+    const url = new URL(`https://api.ui.com${path}`);
+    url.searchParams.set('pageSize', '200');
+    if (nextToken) url.searchParams.set('nextToken', nextToken);
+    // eslint-disable-next-line no-await-in-loop
+    const body = await requestJson(url, { apiKey });
+    items.push(...(body.data ?? []));
+    nextToken = body.nextToken;
+    if (!nextToken) break;
+  }
+  return items;
+}
+
+function hostOnline(host) {
+  const rs = host.reportedState ?? {};
+  const state = String(rs.state ?? rs.status ?? host.state ?? '').toLowerCase();
+  if (['connected', 'online', 'ok', 'running'].includes(state)) return true;
+  if (['disconnected', 'offline', 'unreachable', 'down'].includes(state)) return false;
+  if (host.isBlocked) return false;
+  return null;
+}
+
+function hostVersion(host) {
+  const rs = host.reportedState ?? {};
+  const network = Array.isArray(rs.controllers) ? rs.controllers.find((c) => c.name === 'network') : null;
+  return {
+    version: network?.version ?? rs.version ?? rs.firmwareVersion ?? null,
+    updateAvailable: network?.updateAvailable ?? (rs.firmwareUpdate?.latestAvailableVersion ? true : null) ?? null,
+  };
+}
+
+const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+// Resumen por sitio: /v1/hosts (estado del controlador) + /v1/sites
+// (contadores de equipos y clientes). Unico dato disponible para
+// controladores "Network Server" autoalojados.
+async function fetchCloudSites(apiKey, hostNames) {
+  const [hosts, sites] = await Promise.all([fetchCloudList('/v1/hosts', apiKey), fetchCloudList('/v1/sites', apiKey)]);
+  const hostById = new Map(hosts.map((h) => [h.id, h]));
+  const sitesPerHost = new Map();
+  for (const site of sites) sitesPerHost.set(site.hostId, (sitesPerHost.get(site.hostId) ?? 0) + 1);
+
+  const rows = sites.map((site) => {
+    const host = hostById.get(site.hostId) ?? {};
+    const rs = host.reportedState ?? {};
+    const counts = site.statistics?.counts ?? {};
+    const hostName = hostNames.get(site.hostId) || rs.name || rs.hostname || host.userData?.name || site.hostId;
+    const desc = site.meta?.desc || site.meta?.name || null;
+    const { version, updateAvailable } = hostVersion(host);
+    return {
+      id: site.siteId,
+      hostId: site.hostId,
+      hostName,
+      hostType: host.type ?? rs.host_type ?? null,
+      // Con un solo sitio por controlador ("Default") alcanza con el nombre del host.
+      siteName: sitesPerHost.get(site.hostId) > 1 && desc ? desc : null,
+      hostOnline: hostOnline(host),
+      version,
+      updateAvailable,
+      totalDevices: num(counts.totalDevice),
+      offlineDevices: num(counts.offlineDevice),
+      wifiDevices: num(counts.wifiDevice),
+      offlineWifi: num(counts.offlineWifiDevice),
+      wiredDevices: num(counts.wiredDevice),
+      offlineWired: num(counts.offlineWiredDevice),
+      gatewayDevices: num(counts.gatewayDevice),
+      offlineGateways: num(counts.offlineGatewayDevice),
+      wifiClients: num(counts.wifiClient),
+      wiredClients: num(counts.wiredClient),
+      guestClients: num(counts.guestClient),
+      pendingUpdates: num(counts.pendingUpdateDevice),
+      criticalAlerts: num(counts.criticalNotification),
+      ispName: site.statistics?.ispInfo?.name ?? site.statistics?.ispInfo?.organization ?? null,
+      wanUptime: site.statistics?.percentages?.wanUptime ?? null,
+      txRetry: site.statistics?.percentages?.txRetry ?? null,
+    };
+  });
+
+  // Diagnostico sin datos sensibles: solo nombres de campos, para ajustar el
+  // parseo si Ubiquiti cambia el formato.
+  const diag = {
+    hosts: hosts.length,
+    sites: sites.length,
+    hostTypes: [...new Set(hosts.map((h) => h.type).filter(Boolean))],
+    reportedStateKeys: Object.keys(hosts[0]?.reportedState ?? {}).slice(0, 40),
+    siteCountKeys: Object.keys(sites[0]?.statistics?.counts ?? {}),
+  };
+  return { rows, diag };
+}
+
+async function syncSites(rows) {
+  const now = new Date();
+  const existing = new Map((await prisma.unifiSite.findMany()).map((s) => [s.id, s]));
+  const notifications = [];
+  const tz = process.env.APP_TIMEZONE || undefined;
+
+  for (const r of rows) {
+    const prev = existing.get(r.id);
+    const data = {
+      ...r,
+      lastSyncAt: now,
+      devicesDownSince: r.offlineDevices > 0 ? prev?.devicesDownSince ?? now : null,
+      notifiedDown: prev?.notifiedDown ?? 0,
+      hostOfflineSince: r.hostOnline === false ? prev?.hostOfflineSince ?? now : null,
+      notifiedHostDown: prev?.notifiedHostDown ?? false,
+    };
+    const label = r.siteName ? `${r.hostName} (${r.siteName})` : r.hostName;
+
+    // Controlador del sitio desconectado de la nube (PC/servidor apagado o sin internet).
+    if (r.hostOnline === false && !data.notifiedHostDown && now - data.hostOfflineSince >= OFFLINE_GRACE_MS) {
+      data.notifiedHostDown = true;
+      notifications.push({
+        severity: 'HIGH',
+        subject: `UniFi: controlador de "${label}" desconectado`,
+        text: `El controlador UniFi Network de ${label} no reporta a unifi.ui.com desde ${data.hostOfflineSince.toLocaleString('es', { timeZone: tz })}. Mientras tanto no se ve el estado de sus Access Points: revisar que el equipo donde corre esté encendido y con internet.`,
+      });
+    } else if (r.hostOnline === true && data.notifiedHostDown) {
+      data.notifiedHostDown = false;
+      notifications.push({ severity: 'HIGH', subject: `UniFi: controlador de "${label}" reconectado`, text: `${label} volvió a reportar.` });
+    }
+
+    // Equipos caidos en el sitio: aviso cuando aparecen (o aumentan) y al normalizarse.
+    if (r.hostOnline !== false) {
+      if (r.offlineDevices > data.notifiedDown && now - data.devicesDownSince >= OFFLINE_GRACE_MS) {
+        data.notifiedDown = r.offlineDevices;
+        const parts = [
+          r.offlineWifi && `${r.offlineWifi} Access Point(s)`,
+          r.offlineWired && `${r.offlineWired} switch(es)`,
+          r.offlineGateways && `${r.offlineGateways} gateway(s)`,
+        ].filter(Boolean);
+        notifications.push({
+          severity: r.offlineGateways ? 'CRITICAL' : 'HIGH',
+          subject: `UniFi: ${r.offlineDevices} equipo(s) caído(s) en ${label}`,
+          text: `${label}: ${parts.join(', ') || `${r.offlineDevices} equipo(s)`} sin conexión (de ${r.totalDevices}). Revisar energía/PoE y el cable hacia el switch.`,
+        });
+      } else if (r.offlineDevices === 0 && data.notifiedDown > 0) {
+        data.notifiedDown = 0;
+        notifications.push({ severity: 'HIGH', subject: `UniFi: ${label} sin equipos caídos`, text: `Todos los equipos UniFi de ${label} volvieron a estar online.` });
+      }
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    await prisma.unifiSite.upsert({ where: { id: r.id }, create: data, update: data });
+  }
+  await prisma.unifiSite.deleteMany({ where: { lastSyncAt: { lt: new Date(now.getTime() - STALE_DELETE_DAYS * 86400000) } } });
+
+  for (const n of notifications) notifyGeneric({ ...n, source: 'unifi' }).catch(() => {});
+  return notifications.length;
 }
 
 async function fetchPaged(baseUrl, opts) {
@@ -255,21 +409,33 @@ async function runUnifiPoll() {
 
   try {
     let devices;
+    let siteRows = [];
+    let diag = null;
     if (mode === 'local') {
       if (!cfg.UNIFI_CONTROLLER_URL) throw new Error('Falta la URL de la consola UniFi (modo local)');
       devices = await fetchLocalDevices(cfg.UNIFI_CONTROLLER_URL, cfg.UNIFI_API_KEY, Boolean(cfg.UNIFI_VERIFY_TLS));
     } else {
-      devices = await fetchCloudDevices(cfg.UNIFI_API_KEY);
+      const hostNames = new Map();
+      devices = await fetchCloudDevices(cfg.UNIFI_API_KEY, hostNames);
+      ({ rows: siteRows, diag } = await fetchCloudSites(cfg.UNIFI_API_KEY, hostNames));
     }
 
-    const notified = await syncDevices(devices);
+    const notified = (await syncDevices(devices)) + (siteRows.length ? await syncSites(siteRows) : 0);
+    // Sin lista de equipos (controladores autoalojados), los totales salen
+    // de los contadores de cada sitio.
+    const fromSites = devices.length === 0 && siteRows.length > 0;
+    const sum = (k) => siteRows.reduce((a, r) => a + r[k], 0);
     lastRun = {
       at: new Date(),
       mode,
-      devices: devices.length,
-      online: devices.filter((d) => d.status === 'online').length,
-      offline: devices.filter((d) => d.status === 'offline').length,
+      devices: fromSites ? sum('totalDevices') : devices.length,
+      online: fromSites ? sum('totalDevices') - sum('offlineDevices') : devices.filter((d) => d.status === 'online').length,
+      offline: fromSites ? sum('offlineDevices') : devices.filter((d) => d.status === 'offline').length,
+      sites: siteRows.length,
+      sitesOffline: siteRows.filter((r) => r.hostOnline === false).length,
+      detail: fromSites ? 'sites' : 'devices',
       notified,
+      diag,
       error: null,
     };
   } catch (err) {
@@ -279,6 +445,10 @@ async function runUnifiPoll() {
 
   broadcast({ type: 'UNIFI_UPDATE', lastRun });
   return lastRun;
+}
+
+async function listUnifiSites() {
+  return prisma.unifiSite.findMany({ orderBy: [{ hostName: 'asc' }] });
 }
 
 async function listUnifiDevices() {
@@ -294,4 +464,4 @@ function scheduleUnifiPoll() {
   }, 20 * 1000);
 }
 
-module.exports = { runUnifiPoll, listUnifiDevices, getLastRun, scheduleUnifiPoll, syncDevices, classify, normalizeStatus };
+module.exports = { runUnifiPoll, listUnifiDevices, listUnifiSites, syncSites, fetchCloudSites, getLastRun, scheduleUnifiPoll, syncDevices, classify, normalizeStatus };

@@ -1,0 +1,35 @@
+-- CreateTable
+CREATE TABLE "unifi_sites" (
+    "id" TEXT NOT NULL,
+    "hostId" TEXT NOT NULL,
+    "hostName" TEXT NOT NULL,
+    "hostType" TEXT,
+    "siteName" TEXT,
+    "hostOnline" BOOLEAN,
+    "version" TEXT,
+    "updateAvailable" BOOLEAN,
+    "totalDevices" INTEGER NOT NULL DEFAULT 0,
+    "offlineDevices" INTEGER NOT NULL DEFAULT 0,
+    "wifiDevices" INTEGER NOT NULL DEFAULT 0,
+    "offlineWifi" INTEGER NOT NULL DEFAULT 0,
+    "wiredDevices" INTEGER NOT NULL DEFAULT 0,
+    "offlineWired" INTEGER NOT NULL DEFAULT 0,
+    "gatewayDevices" INTEGER NOT NULL DEFAULT 0,
+    "offlineGateways" INTEGER NOT NULL DEFAULT 0,
+    "wifiClients" INTEGER NOT NULL DEFAULT 0,
+    "wiredClients" INTEGER NOT NULL DEFAULT 0,
+    "guestClients" INTEGER NOT NULL DEFAULT 0,
+    "pendingUpdates" INTEGER NOT NULL DEFAULT 0,
+    "criticalAlerts" INTEGER NOT NULL DEFAULT 0,
+    "ispName" TEXT,
+    "wanUptime" DOUBLE PRECISION,
+    "txRetry" DOUBLE PRECISION,
+    "devicesDownSince" TIMESTAMP(3),
+    "notifiedDown" INTEGER NOT NULL DEFAULT 0,
+    "hostOfflineSince" TIMESTAMP(3),
+    "notifiedHostDown" BOOLEAN NOT NULL DEFAULT false,
+    "lastSyncAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "unifi_sites_pkey" PRIMARY KEY ("id")
+);
+

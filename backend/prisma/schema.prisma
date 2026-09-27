@@ -597,3 +597,40 @@ model ServiceCheckResult {
   @@index([checkId, at])
   @@map("service_check_results")
 }
+
+// Resumen por sitio de UniFi Site Manager (/v1/hosts + /v1/sites). Es lo que
+// la API en la nube da para controladores "Network Server" autoalojados, que
+// no exponen la lista de equipos individuales.
+model UnifiSite {
+  id                String    @id // siteId
+  hostId            String
+  hostName          String
+  hostType          String?
+  siteName          String?
+  hostOnline        Boolean?
+  version           String?
+  updateAvailable   Boolean?
+  totalDevices      Int       @default(0)
+  offlineDevices    Int       @default(0)
+  wifiDevices       Int       @default(0)
+  offlineWifi       Int       @default(0)
+  wiredDevices      Int       @default(0)
+  offlineWired      Int       @default(0)
+  gatewayDevices    Int       @default(0)
+  offlineGateways   Int       @default(0)
+  wifiClients       Int       @default(0)
+  wiredClients      Int       @default(0)
+  guestClients      Int       @default(0)
+  pendingUpdates    Int       @default(0)
+  criticalAlerts    Int       @default(0)
+  ispName           String?
+  wanUptime         Float?
+  txRetry           Float?
+  devicesDownSince  DateTime?
+  notifiedDown      Int       @default(0)
+  hostOfflineSince  DateTime?
+  notifiedHostDown  Boolean   @default(false)
+  lastSyncAt        DateTime  @default(now())
+
+  @@map("unifi_sites")
+}

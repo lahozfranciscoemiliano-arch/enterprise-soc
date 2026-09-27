@@ -235,8 +235,42 @@ export type UnifiRun = {
   devices: number;
   online: number;
   offline: number;
+  sites?: number;
+  sitesOffline?: number;
+  detail?: 'sites' | 'devices';
   error: string | null;
 } | null;
+
+/** Resumen por sitio de Site Manager (controladores Network Server autoalojados). */
+export type UnifiSiteRow = {
+  id: string;
+  hostId: string;
+  hostName: string;
+  hostType: string | null;
+  siteName: string | null;
+  hostOnline: boolean | null;
+  version: string | null;
+  updateAvailable: boolean | null;
+  totalDevices: number;
+  offlineDevices: number;
+  wifiDevices: number;
+  offlineWifi: number;
+  wiredDevices: number;
+  offlineWired: number;
+  gatewayDevices: number;
+  offlineGateways: number;
+  wifiClients: number;
+  wiredClients: number;
+  guestClients: number;
+  pendingUpdates: number;
+  criticalAlerts: number;
+  ispName: string | null;
+  wanUptime: number | null;
+  txRetry: number | null;
+  devicesDownSince: string | null;
+  hostOfflineSince: string | null;
+  lastSyncAt: string;
+};
 
 export type NetworkOverview = {
   sites: {
@@ -250,7 +284,7 @@ export type NetworkOverview = {
     ispSecondaryPublicIp: string | null;
     network: NetworkSummary | null;
   }[];
-  unifi: { lastRun: UnifiRun; devices: UnifiDevice[] };
+  unifi: { lastRun: UnifiRun; devices: UnifiDevice[]; sites?: UnifiSiteRow[] };
   recentEvents: SecurityAlert[];
 };
 
