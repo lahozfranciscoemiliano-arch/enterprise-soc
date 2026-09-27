@@ -10,7 +10,7 @@ import androidx.appcompat.app.AppCompatActivity
 import okhttp3.Request
 import kotlin.concurrent.thread
 
-/** Primera pantalla: direccion del servidor NOC (se valida contra /health). */
+/** Primera pantalla: direccion del servidor NOC (se valida contra /api/auth/me). */
 class SetupActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,8 +29,12 @@ class SetupActivity : AppCompatActivity() {
             button.text = "Verificando…"
             thread {
                 val result = try {
-                    NocApi.http.newCall(Request.Builder().url("$url/health").build()).execute().use { res ->
-                        if (res.isSuccessful) null else "El servidor respondió HTTP ${res.code}. ¿Es la dirección del NOC?"
+                    // /api/auth/me pasa por el proxy (Nginx) igual que el resto de la
+                    // API: 200 = sesion ya iniciada, 401 = falta iniciar sesion.
+                    // Cualquiera de los dos confirma que es el NOC.
+                    NocApi.http.newCall(Request.Builder().url("$url/api/auth/me").build()).execute().use { res ->
+                        if (res.code == 200 || res.code == 401) null
+                        else "El servidor respondió HTTP ${res.code}. ¿Es la dirección del NOC?"
                     }
                 } catch (e: Exception) {
                     "No se pudo conectar: ${e.message ?: "sin respuesta"}. Revisá la dirección y la conexión a internet."
