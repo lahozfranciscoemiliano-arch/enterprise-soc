@@ -50,6 +50,9 @@ const SETTING_DEFS = {
   // caida genera alerta: nombres separados por coma, admite comodin al final
   // (MSSQL$* = cualquier instancia de SQL Server).
   CRITICAL_SERVICES: { envFallback: null, type: 'string', sensitive: false },
+  // Unico servidor que hace el inventario de red (DHCP/AD/impresoras/IPs).
+  // Vacio = se asigna solo al primer servidor con rol DHCP que reporte.
+  INVENTORY_COLLECTOR: { envFallback: null, type: 'string', sensitive: false },
   PATCH_MAX_AGE_DAYS: { envFallback: null, type: 'number', sensitive: false },
 
   // Ubiquiti UniFi (services/unifi.js). Modo "cloud" = Site Manager API

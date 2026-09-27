@@ -72,7 +72,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.4.1"
+AGENT_VERSION = "1.4.2"
 
 
 def get_base_dir() -> Path:
@@ -2083,6 +2083,14 @@ def send_inventory(payload: dict[str, Any]) -> None:
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
+        body = response.json() if response.content else {}
+        if body.get("inventoryEnabled") is False:
+            # Otro servidor es el recolector: no volver a escanear la red por
+            # 6 horas (despues se vuelve a preguntar, por si cambio la config).
+            global _inventory_paused_until
+            _inventory_paused_until = time.monotonic() + 6 * 3600
+            logger.info("Inventario de red desactivado para este servidor: %s", body.get("reason", "no es el recolector"))
+            return
         logger.info(
             "Inventario enviado OK: %d ambito(s), %d equipo(s) AD, %d IP(s) activas de %d, %d impresora(s), %d inicio(s) de sesion (%.0fs)",
             len(payload.get("scopes", [])),
@@ -2098,10 +2106,13 @@ def send_inventory(payload: dict[str, Any]) -> None:
         logger.error("Fallo al enviar el inventario (HTTP %s): %s", status, exc)
 
 
+_inventory_paused_until: float = 0.0
+
+
 def inventory_loop() -> None:
     while True:
         try:
-            if inventory_should_run():
+            if time.monotonic() >= _inventory_paused_until and inventory_should_run():
                 send_inventory(build_inventory_payload())
         except Exception:
             logger.exception("Error en el ciclo de inventario de red")

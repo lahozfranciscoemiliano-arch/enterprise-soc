@@ -377,6 +377,7 @@ export type SystemSettings = {
   GEMINI_API_KEY: SensitiveSetting;
   GEMINI_MODEL: PlainSetting<string>;
   CRITICAL_SERVICES: PlainSetting<string>;
+  INVENTORY_COLLECTOR: PlainSetting<string>;
   PATCH_MAX_AGE_DAYS: PlainSetting<number>;
   UNIFI_MODE: PlainSetting<string>;
   UNIFI_API_KEY: SensitiveSetting;

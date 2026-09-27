@@ -72,6 +72,7 @@ export default function SettingsPanel() {
         TELEGRAM_BOT_TOKEN: '',
         TELEGRAM_CHAT_ID: plainField(data, 'TELEGRAM_CHAT_ID'),
         CRITICAL_SERVICES: plainField(data, 'CRITICAL_SERVICES'),
+        INVENTORY_COLLECTOR: plainField(data, 'INVENTORY_COLLECTOR'),
         PATCH_MAX_AGE_DAYS: plainField(data, 'PATCH_MAX_AGE_DAYS') || '45',
         UNIFI_MODE: plainField(data, 'UNIFI_MODE') || 'off',
         UNIFI_API_KEY: '',
@@ -377,7 +378,14 @@ export default function SettingsPanel() {
           Nombres de servicio de Windows separados por coma; un <code>*</code> al final funciona como comodín (MSSQL$* = cualquier instancia de SQL
           Server). Si uno de estos servicios de inicio automático se detiene, se genera una alerta. Vacío = lista por defecto.
         </p>
-        <div className="mt-3">{saveBtn('preventivo', ['CRITICAL_SERVICES', 'PATCH_MAX_AGE_DAYS'])}</div>
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {input('INVENTORY_COLLECTOR', 'Recolector de inventario (ej. BSFS2)')}
+          <p className="text-[11px] text-slate-400 sm:col-span-2 sm:self-center">
+            Único servidor que inventaría la red (DHCP, AD, impresoras, IPs). Los inventarios de otros servidores se ignoran y sus agentes dejan de
+            escanear. Vacío = el primer servidor con DHCP que reporte.
+          </p>
+        </div>
+        <div className="mt-3">{saveBtn('preventivo', ['CRITICAL_SERVICES', 'PATCH_MAX_AGE_DAYS', 'INVENTORY_COLLECTOR'])}</div>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">

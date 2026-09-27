@@ -10,6 +10,8 @@
 // impresora con problemas, cuenta bloqueada, fuerza bruta, alguien agregado
 // a un grupo privilegiado).
 const prisma = require('../prismaClient');
+const { Prisma } = require('@prisma/client');
+const { getSetting, setSettings } = require('./settings');
 const { createAndDispatchEvent, resolveCleared } = require('./eventPipeline');
 const { broadcast } = require('../websocket/socketServer');
 
@@ -555,7 +557,51 @@ async function evaluateInventoryAlerts(server, ctx) {
   );
 }
 
+// --- Un solo recolector ------------------------------------------------------
+// Varios servidores pueden tener el rol de AD (controladores de dominio
+// secundarios) o de impresion; si todos hicieran inventario, cada impresora,
+// ambito y cuenta bloqueada se alertaria una vez por servidor. Solo se acepta
+// el del recolector configurado (Admin -> Configuracion -> Monitoreo
+// preventivo), o si no hay uno, el primer servidor con DHCP que reporte.
+const INVENTORY_ALERT_TYPES = ['PRINTER_ISSUE', 'DHCP_SCOPE_EXHAUSTED', 'IP_CONFLICT', 'AD_ACCOUNT_LOCKOUT', 'PRIVILEGED_GROUP_CHANGE'];
+
+async function isInventoryCollector(server, payload) {
+  const configured = (await getSetting('INVENTORY_COLLECTOR'))?.trim();
+  if (configured) return configured.toLowerCase() === server.name.toLowerCase();
+  if (payload.roles?.dhcp) {
+    await setSettings({ INVENTORY_COLLECTOR: server.name });
+    console.log(`Inventario de red: ${server.name} queda como recolector (primer servidor con DHCP)`);
+    return true;
+  }
+  return false;
+}
+
+// Borra lo que generaron los servidores que no son el recolector (alertas
+// duplicadas, ambitos, estado de inventario).
+async function purgeNonCollectorData(collectorId) {
+  const [events, , others] = await Promise.all([
+    prisma.securityEvent.deleteMany({
+      where: {
+        serverId: { not: collectorId },
+        OR: [{ type: { in: INVENTORY_ALERT_TYPES } }, { dedupKey: { startsWith: 'LOGIN_FAILURE:ad:' } }],
+      },
+    }),
+    prisma.dhcpScope.deleteMany({ where: { serverId: { not: collectorId } } }),
+    prisma.server.updateMany({
+      where: { id: { not: collectorId }, inventoryAt: { not: null } },
+      data: { inventoryAt: null, inventorySummary: Prisma.DbNull },
+    }),
+  ]);
+  if (events.count > 0) console.log(`Inventario de red: ${events.count} alerta(s) duplicada(s) de otros servidores eliminadas`);
+  // Habia otros recolectores: sus impresoras pueden no ser alcanzables desde
+  // el recolector y quedarian como "sin respuesta" para siempre. Se vacia la
+  // lista; el recolector la vuelve a armar en su proximo ciclo.
+  if (others.count > 0) await prisma.printer.deleteMany({});
+}
+
 module.exports = {
+  isInventoryCollector,
+  purgeNonCollectorData,
   processInventory,
   buildAddressMap,
   compressRanges,

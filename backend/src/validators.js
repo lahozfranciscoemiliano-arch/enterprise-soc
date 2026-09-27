@@ -128,6 +128,7 @@ const settingsSchema = z
     GEMINI_API_KEY: z.string().max(500).optional(),
     GEMINI_MODEL: z.string().max(100).optional(),
     CRITICAL_SERVICES: z.string().max(2000).optional(),
+    INVENTORY_COLLECTOR: z.string().max(200).optional(),
     PATCH_MAX_AGE_DAYS: z.coerce.number().int().min(7).max(365).optional(),
     UNIFI_MODE: z.enum(['off', 'cloud', 'local']).optional(),
     UNIFI_API_KEY: z.string().max(500).optional(),

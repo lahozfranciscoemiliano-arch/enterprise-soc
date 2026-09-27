@@ -3,7 +3,7 @@
 const rateLimit = require('express-rate-limit');
 const prisma = require('../prismaClient');
 const { inventorySchema, serviceCheckSchema } = require('../validators');
-const { processInventory, compressRanges, countStatuses } = require('../services/inventory');
+const { processInventory, compressRanges, countStatuses, isInventoryCollector, purgeNonCollectorData } = require('../services/inventory');
 const { listServiceChecks } = require('../services/serviceMonitor');
 const { logAudit } = require('../services/auditLog');
 
@@ -60,8 +60,13 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
       if (!parsed.success) {
         return res.status(400).json({ error: 'Inventario inválido', details: parsed.error.flatten() });
       }
+      if (!(await isInventoryCollector(req.server, parsed.data))) {
+        // El agente >= 1.4.2 deja de escanear la red al recibir esto.
+        return res.json({ ok: true, ignored: true, inventoryEnabled: false, reason: 'Este servidor no es el recolector de inventario' });
+      }
+      await purgeNonCollectorData(req.server.id);
       const summary = await processInventory(req.server, parsed.data);
-      return res.status(201).json({ ok: true, summary });
+      return res.status(201).json({ ok: true, inventoryEnabled: true, summary });
     })
   );
 
