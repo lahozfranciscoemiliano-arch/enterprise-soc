@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item android:id="@+id/action_reload" android:title="Recargar" app:showAsAction="never" />
+    <item android:id="@+id/action_live_alerts" android:title="Alertas en tiempo real (segundo plano)" android:checkable="true" app:showAsAction="never" />
+    <item android:id="@+id/action_min_severity" android:title="Nivel mínimo de alerta…" app:showAsAction="never" />
+    <item android:id="@+id/action_test_notification" android:title="Probar notificación" app:showAsAction="never" />
+    <item android:id="@+id/action_battery" android:title="Evitar que Android corte las alertas" app:showAsAction="never" />
+    <item android:id="@+id/action_server" android:title="Cambiar servidor" app:showAsAction="never" />
+    <item android:id="@+id/action_about" android:title="Acerca de" app:showAsAction="never" />
+</menu>

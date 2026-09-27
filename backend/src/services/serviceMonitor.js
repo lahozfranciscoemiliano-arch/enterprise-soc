@@ -147,7 +147,7 @@ async function runCheck(check) {
     }).catch(() => {});
   }
 
-  broadcast({ type: 'SERVICE_CHECK', check: { id: check.id, status, lastLatencyMs: data.lastLatencyMs, lastCheckedAt: now, lastError: data.lastError } });
+  broadcast({ type: 'SERVICE_CHECK', check: { id: check.id, name: check.name, target: check.target, status, lastLatencyMs: data.lastLatencyMs, lastCheckedAt: now, lastError: data.lastError } });
 }
 
 async function tick() {

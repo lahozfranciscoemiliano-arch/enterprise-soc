@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- El NOC hoy se sirve por HTTP en la IP de la VPS: se permite trafico sin
+     TLS. Cuando se agregue un dominio con HTTPS (certbot), la app lo usa igual. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
