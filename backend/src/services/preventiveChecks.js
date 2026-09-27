@@ -38,6 +38,8 @@ const NET_LOSS_HIGH = 40;
 const NET_LATENCY_MEDIUM = 250; // ms promedio a 1.1.1.1 / 8.8.8.8
 const FAILED_LOGONS_HIGH = 50; // por dia
 const OUTAGE_MIN_SECONDS = 60; // cortes mas cortos se ignoran (un ping perdido)
+const DISK_BAD_BLOCKS_MIN = 3; // un sector reasignado aislado no es noticia
+const DISK_BAD_BLOCKS_HIGH = 25;
 
 function serviceMatches(name, patterns) {
   const lower = name.toLowerCase();
@@ -106,14 +108,24 @@ function evaluateDiagnostics(server, diag, cfg) {
   }
 
   const signals = diag.eventSignals ?? {};
+  // Visor de Eventos: solo sectores defectuosos reales / falla predicha /
+  // NTFS corrupto en discos FIJOS (agente >= 1.6.0 manda diskBadBlocks y ya
+  // descarta los USB de backup). Los reintentos y timeouts de E/S
+  // (diskErrors) daban falsos positivos en casi todos los servidores --
+  // discos externos que se desconectan, lectores de tarjetas, discos que se
+  // duermen -- y quedan solo como dato informativo. La falla real del disco
+  // la cubre ademas el SMART de arriba.
   managed.push('DISK_FAILURE_PREDICTED:eventlog');
-  if (signals.diskErrors > 0) {
+  const badBlocks = Number(signals.diskBadBlocks ?? 0);
+  if (badBlocks >= DISK_BAD_BLOCKS_MIN) {
     alerts.push({
       type: 'DISK_FAILURE_PREDICTED',
-      severity: signals.diskErrors >= 10 ? 'CRITICAL' : 'HIGH',
-      description: `${server.name}: ${signals.diskErrors} error(es) de disco/NTFS en el Visor de Eventos en las últimas 24 hs (sectores defectuosos, timeouts de controladora). Suele anticipar una falla del disco.`,
-      metadata: { diskErrors: signals.diskErrors },
+      severity: badBlocks >= DISK_BAD_BLOCKS_HIGH ? 'HIGH' : 'MEDIUM',
+      description: `${server.name}: ${badBlocks} sector(es) defectuoso(s) / error(es) de NTFS en un disco interno en las últimas 24 hs. Revisar SMART y programar chkdsk; si sigue creciendo, reemplazar el disco.`,
+      metadata: { diskBadBlocks: badBlocks },
       dedupKey: 'DISK_FAILURE_PREDICTED:eventlog',
+      // Tiene que verse en 2 diagnosticos seguidos (~10 min).
+      confirmations: 2,
     });
   }
 

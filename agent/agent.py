@@ -72,7 +72,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.5.0"
+AGENT_VERSION = "1.6.0"
 
 
 def get_base_dir() -> Path:
@@ -158,6 +158,26 @@ _last_net_sample: NetSample | None = None
 # -inf fuerza que la primera vuelta del loop siempre revise el backup,
 # sin importar el intervalo configurado.
 _last_backup_check: float = float("-inf")
+
+# Que metodos de backup se leen en este equipo (el backend lo confirma en
+# cada respuesta de /api/backup-status, configurable desde Admin):
+#   MULTI    -> servidores ALOHA*: todos los metodos (scripts, SQL, etc.).
+#   NATIVE   -> resto: solo Windows Server Backup / Copias de seguridad.
+#   EXCLUDED -> no se lee nada (equipos sin backup que vigilar).
+MULTI_METHOD_PREFIXES = tuple(
+    p.strip().upper() for p in os.getenv("BACKUP_MULTI_METHOD_PREFIXES", "ALOHA,ALLOHA").split(",") if p.strip()
+)
+_backup_mode: str = (
+    "MULTI" if os.getenv("COMPUTERNAME", socket_module.gethostname()).upper().startswith(MULTI_METHOD_PREFIXES) else "NATIVE"
+)
+BACKUP_EXCLUDED_RECHECK_SECONDS = 6 * 3600
+
+# Diagnostico extendido: lo arma un hilo aparte (puede tardar: WMI, Visor de
+# Eventos, Windows Update) y el loop de telemetria solo lo adjunta, asi un
+# chequeo lento nunca atrasa el latido cada 60 s.
+_diag_lock = threading.Lock()
+_pending_diagnostics: dict[str, Any] | None = None
+_diagnostics_threaded = False
 
 
 def collect_network_throughput() -> tuple[float, float]:
@@ -601,8 +621,14 @@ def collect_defender_status() -> dict[str, Any] | None:
 # Señales tempranas en el Visor de Eventos (ultimas 24 hs). Cada una suele
 # aparecer dias o semanas antes de la falla "grande":
 EVENT_SIGNALS = {
-    # Errores de controlador de disco / sectores defectuosos / NTFS corrupto.
-    "diskErrors": ("System", "*[System[Provider[@Name='disk' or @Name='Ntfs' or @Name='volmgr' or @Name='storahci' or @Name='stornvme'] and (EventID=7 or EventID=11 or EventID=15 or EventID=51 or EventID=55 or EventID=98 or EventID=129 or EventID=153 or EventID=157) and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
+    # Reintentos/reseteos de E/S de disco (solo informativo, NO alerta): los
+    # generan tambien discos USB de backup que se desconectan, lectores de
+    # tarjetas, discos que se duermen o un AHCI con drivers viejos. Antes se
+    # sumaban a los sectores defectuosos y daban avisos falsos en casi todos
+    # los servidores. Ya no se cuentan los eventos informativos (Ntfs 98 =
+    # "volumen verificado") ni las extracciones sorpresivas (157) ni "no
+    # listo" (15).
+    "diskErrors": ("System", "*[System[Provider[@Name='disk' or @Name='storahci' or @Name='stornvme'] and (EventID=11 or EventID=51 or EventID=129 or EventID=153) and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
     # Apagados no esperados (corte de luz, cuelgue, UPS).
     "unexpectedShutdowns": ("System", "*[System[(EventID=41 or EventID=6008) and TimeCreated[timediff(@SystemTime) <= 86400000]]]"),
     # Pantallazos azules.
@@ -616,8 +642,51 @@ EVENT_SIGNALS = {
 }
 
 
+# Señal REAL de disco fallando: sector defectuoso (disk 7), falla predicha
+# por el propio disco (disk 52) o estructura NTFS corrupta (Ntfs 55). Se
+# descartan los discos USB / extraibles (backups externos, pendrives), que
+# no son el disco del servidor.
+DISK_BAD_BLOCK_XPATH = (
+    "*[System[Provider[@Name='disk' or @Name='Ntfs' or @Name='Microsoft-Windows-Ntfs'] "
+    "and (EventID=7 or EventID=52 or EventID=55) and TimeCreated[timediff(@SystemTime) <= 86400000]]]"
+)
+_HARDDISK_RE = re.compile(r"Harddisk(\d+)", re.IGNORECASE)
+
+
+def _removable_disk_indexes() -> set[int]:
+    indexes: set[int] = set()
+    for d in _wmi_query(r"root\cimv2", "SELECT Index, InterfaceType, MediaType FROM Win32_DiskDrive"):
+        iface = str(_safe_attr(d, "InterfaceType") or "").upper()
+        media = str(_safe_attr(d, "MediaType") or "").lower()
+        if iface in ("USB", "1394") or "removable" in media or "external" in media:
+            try:
+                indexes.add(int(_safe_attr(d, "Index")))
+            except (TypeError, ValueError):
+                continue
+    return indexes
+
+
+def count_disk_bad_blocks() -> int:
+    events = _evt_query("System", DISK_BAD_BLOCK_XPATH, max_events=500)
+    if not events:
+        return 0
+    removable = _removable_disk_indexes()
+    count = 0
+    for xml in events:
+        match = _HARDDISK_RE.search(xml)
+        if match and int(match.group(1)) in removable:
+            continue
+        count += 1
+    return count
+
+
 def collect_event_signals() -> dict[str, int]:
-    return {key: len(_evt_query(channel, xpath, max_events=500)) for key, (channel, xpath) in EVENT_SIGNALS.items()}
+    signals = {key: len(_evt_query(channel, xpath, max_events=500)) for key, (channel, xpath) in EVENT_SIGNALS.items()}
+    try:
+        signals["diskBadBlocks"] = count_disk_bad_blocks()
+    except Exception as exc:
+        logger.debug("No se pudieron contar los sectores defectuosos: %s", exc)
+    return signals
 
 
 def collect_top_processes(limit: int = 5) -> dict[str, list[dict[str, Any]]]:
@@ -737,17 +806,32 @@ def collect_recent_errors() -> list[dict[str, Any]]:
 
 
 def check_vss_service() -> bool:
-    """True si el servicio de Volume Shadow Copy (VSS) esta corriendo.
+    """True si el servicio de Volume Shadow Copy (VSS) puede usarse.
 
     Casi cualquier mecanismo de backup nativo de Windows (Server Backup,
     Backup and Restore, VSS-aware de terceros) depende de este servicio.
+    VSS es de inicio MANUAL: Windows lo arranca cuando un backup lo pide y lo
+    detiene solo a los pocos minutos de estar ocioso, asi que "detenido" es
+    su estado normal. Solo es un problema si esta DESHABILITADO (ahi el
+    backup falla).
     """
     if win32serviceutil is None or win32service is None:
         return False
 
     try:
         status = win32serviceutil.QueryServiceStatus("VSS")
-        return status[1] == win32service.SERVICE_RUNNING
+        if status[1] == win32service.SERVICE_RUNNING:
+            return True
+        scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
+        try:
+            svc = win32service.OpenService(scm, "VSS", win32service.SERVICE_QUERY_CONFIG)
+            try:
+                start_type = win32service.QueryServiceConfig(svc)[1]
+            finally:
+                win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+        return start_type != win32service.SERVICE_DISABLED
     except Exception:
         return False
 
@@ -1683,11 +1767,15 @@ def get_backup_status() -> dict[str, Any]:
         except Exception as exc:
             logger.warning("No se pudo estimar el tamano del backup en %s: %s", status.get("targetPath"), exc)
 
-    # Demas metodos del equipo (scripts, Historial de archivos, SQL, terceros).
-    try:
-        status = merge_backup_status(status, collect_backup_jobs())
-    except Exception as exc:
-        logger.warning("No se pudieron combinar los metodos de backup detectados: %s", exc)
+    # Demas metodos del equipo (scripts, Historial de archivos, SQL,
+    # terceros): solo en los servidores ALOHA*. En el resto cuenta
+    # unicamente Windows Server Backup (evita avisos falsos por tareas o
+    # archivos viejos que no son el backup del servidor).
+    if _backup_mode == "MULTI":
+        try:
+            status = merge_backup_status(status, collect_backup_jobs())
+        except Exception as exc:
+            logger.warning("No se pudieron combinar los metodos de backup detectados: %s", exc)
 
     return status
 
@@ -1734,6 +1822,11 @@ def send_backup_status(payload: dict[str, Any]) -> None:
         logger.debug("Respuesta cruda backup-status (HTTP %s): %s", response.status_code, response.text[:500])
         response.raise_for_status()
         body = response.json()
+        global _backup_mode
+        mode = body.get("backupMode")
+        if mode in ("MULTI", "NATIVE", "EXCLUDED") and mode != _backup_mode:
+            logger.info("Modo de lectura de backups: %s -> %s (definido en el NOC)", _backup_mode, mode)
+            _backup_mode = mode
         logger.info(
             "Estado de backup enviado OK (HTTP %s, resultado=%s, metodo=%s, alerta=%s)",
             response.status_code,
@@ -1765,10 +1858,17 @@ def build_payload() -> dict[str, Any]:
     except Exception as exc:
         logger.warning("No se pudo medir la red: %s", exc)
 
-    now = time.monotonic()
-    if now - _last_diagnostics_at >= DIAGNOSTICS_INTERVAL_SECONDS:
-        _last_diagnostics_at = now
-        metadata["diagnostics"] = collect_diagnostics()
+    global _pending_diagnostics
+    if _diagnostics_threaded:
+        with _diag_lock:
+            if _pending_diagnostics is not None:
+                metadata["diagnostics"] = _pending_diagnostics
+                _pending_diagnostics = None
+    else:
+        now = time.monotonic()
+        if now - _last_diagnostics_at >= DIAGNOSTICS_INTERVAL_SECONDS:
+            _last_diagnostics_at = now
+            metadata["diagnostics"] = collect_diagnostics()
 
     return {
         **metrics,
@@ -1809,8 +1909,11 @@ def send_telemetry(payload: dict[str, Any]) -> str | None:
         status = getattr(exc.response, "status_code", "sin respuesta")
         logger.error("Fallo al enviar telemetria a %s (HTTP %s): %s", url, status, exc)
         if "diagnostics" in payload.get("metadata", {}):
-            global _last_diagnostics_at
+            global _last_diagnostics_at, _pending_diagnostics
             _last_diagnostics_at = float("-inf")  # reintentar el diagnostico en el proximo ciclo
+            with _diag_lock:
+                if _pending_diagnostics is None:
+                    _pending_diagnostics = payload["metadata"]["diagnostics"]
         return None
 
 
@@ -2740,6 +2843,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def lower_process_priority() -> None:
+    """El agente corre con prioridad "por debajo de lo normal": en un servidor
+    de punto de venta (ALOHA) o de archivos, el monitoreo nunca debe competir
+    por CPU/disco con el sistema que vigila."""
+    try:
+        proc = psutil.Process()
+        if sys.platform == "win32":
+            proc.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+            try:
+                proc.ionice(psutil.IOPRIO_LOW)
+            except Exception:
+                pass
+        else:
+            proc.nice(10)
+    except Exception as exc:
+        logger.debug("No se pudo bajar la prioridad del agente: %s", exc)
+
+
 def run_cycle(debug: bool) -> None:
     payload = build_payload()
 
@@ -2770,31 +2891,59 @@ def run_cycle(debug: bool) -> None:
     latest_version = send_telemetry(payload)
     check_and_apply_update(latest_version)
 
+
+def diagnostics_loop() -> None:
+    global _pending_diagnostics
+    time.sleep(5)
+    while True:
+        try:
+            diagnostics = collect_diagnostics()
+            with _diag_lock:
+                _pending_diagnostics = diagnostics
+        except Exception:
+            logger.exception("Error armando el diagnostico extendido")
+        time.sleep(DIAGNOSTICS_INTERVAL_SECONDS)
+
+
+def backup_loop(debug: bool) -> None:
+    """Chequeo de backups en su propio hilo: leer scripts, logs de robocopy o
+    SQL puede tardar, y no debe demorar la telemetria (el NOC marcaria el
+    servidor como caido)."""
+    time.sleep(20)
+    while True:
+        try:
+            if _backup_mode == "EXCLUDED":
+                time.sleep(BACKUP_EXCLUDED_RECHECK_SECONDS)
+            check_backup(debug)
+        except Exception:
+            logger.exception("Error en el chequeo de backups")
+        time.sleep(BACKUP_CHECK_INTERVAL_SECONDS)
+
+
+def check_backup(debug: bool) -> None:
     global _last_backup_check
-    now = time.monotonic()
-    if now - _last_backup_check >= BACKUP_CHECK_INTERVAL_SECONDS:
-        _last_backup_check = now
-        backup_payload = build_backup_payload()
+    _last_backup_check = time.monotonic()
+    backup_payload = build_backup_payload()
 
-        # Siempre en INFO (no solo en --debug): al instalar en un servidor
-        # nuevo, esta linea es la forma de confirmar que metodo de deteccion
-        # de backup quedo activo (WMI de Windows Server Backup vs. el
-        # fallback wbadmin) sin tener que correr el agente en modo debug.
-        logger.info(
-            "Estado de backup -> resultado=%s | metodo=%s | VSS activo=%s | ultimo backup=%s",
-            backup_payload["result"],
-            backup_payload["method"],
-            backup_payload["vssServiceOk"],
-            backup_payload.get("lastBackupAt", "N/D"),
+    # Siempre en INFO (no solo en --debug): al instalar en un servidor
+    # nuevo, esta linea es la forma de confirmar que metodo de deteccion
+    # de backup quedo activo (WMI de Windows Server Backup vs. el
+    # fallback wbadmin) sin tener que correr el agente en modo debug.
+    logger.info(
+        "Estado de backup -> resultado=%s | metodo=%s | VSS activo=%s | ultimo backup=%s",
+        backup_payload["result"],
+        backup_payload["method"],
+        backup_payload["vssServiceOk"],
+        backup_payload.get("lastBackupAt", "N/D"),
+    )
+    if debug:
+        logger.debug(
+            "Detalle completo del backup:\n%s", json.dumps(backup_payload, indent=2, ensure_ascii=False)
         )
-        if debug:
-            logger.debug(
-                "Detalle completo del backup:\n%s", json.dumps(backup_payload, indent=2, ensure_ascii=False)
-            )
-            if backup_payload.get("detail"):
-                logger.debug("Detalle de backup:\n%s", backup_payload["detail"])
+        if backup_payload.get("detail"):
+            logger.debug("Detalle de backup:\n%s", backup_payload["detail"])
 
-        send_backup_status(backup_payload)
+    send_backup_status(backup_payload)
 
 
 def main() -> None:
@@ -2836,14 +2985,21 @@ def main() -> None:
     )
 
     if not args.once:
+        global _diagnostics_threaded
+        _diagnostics_threaded = True
+        lower_process_priority()
         threading.Thread(target=start_control_connection, daemon=True).start()
         threading.Thread(target=inventory_loop, daemon=True).start()
+        threading.Thread(target=diagnostics_loop, daemon=True).start()
+        threading.Thread(target=backup_loop, args=(args.debug,), daemon=True).start()
 
     while True:
         cycle_start = time.monotonic()
 
         try:
             run_cycle(args.debug)
+            if args.once:
+                check_backup(args.debug)
         except Exception:
             logger.exception("Error inesperado en el ciclo de recoleccion")
 

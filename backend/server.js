@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { monitorEventLoopDelay } = require('perf_hooks');
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
@@ -53,6 +54,7 @@ const {
 const { logAudit } = require('./src/services/auditLog');
 const { notifyGeneric, sendReportEmail } = require('./src/services/notifications');
 const { buildBackupHistory } = require('./src/services/backupHistory');
+const { loadBackupPolicy, backupMode, normalizeBackupReport } = require('./src/services/backupPolicy');
 const { processAgentExtras, summarizeNetwork } = require('./src/services/preventiveChecks');
 const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
 const registerInventoryRoutes = require('./src/routes/inventory');
@@ -200,7 +202,21 @@ function generateApiKey() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+// Salud del proceso: ademas de "vivo", cuanto se demora el event loop
+// (si pasa de ~200 ms algo esta saturando el backend) y la memoria.
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
+app.get('/health', (req, res) => {
+  const mem = process.memoryUsage();
+  res.json({
+    status: 'ok',
+    uptimeSeconds: Math.round(process.uptime()),
+    eventLoopDelayMs: Math.round(eventLoopDelay.percentile(99) / 1e6),
+    rssMb: Math.round(mem.rss / 1048576),
+    heapUsedMb: Math.round(mem.heapUsed / 1048576),
+  });
+  eventLoopDelay.reset();
+});
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -616,10 +632,19 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
     return res.status(400).json({ error: 'Payload de estado de backup inválido', details: parsed.error.flatten() });
   }
 
-  const data = parsed.data;
   const server = req.server;
 
   try {
+    // Politica por servidor (services/backupPolicy.js): la VPS no tiene
+    // backups que vigilar, los ALOHA* se leen con todos los metodos y el
+    // resto solo con Windows Server Backup.
+    const mode = backupMode(server, await loadBackupPolicy());
+    if (mode === 'EXCLUDED') {
+      await resolveCleared(server.id, BACKUP_MANAGED_KEYS, [], server.name);
+      return res.status(200).json({ ignored: true, backupMode: mode, alertTriggered: false });
+    }
+    const data = normalizeBackupReport(mode, parsed.data);
+
     // El agente chequea el backup cada 30 min, pero el backup en si corre una
     // vez por dia: si el resultado y la fecha del ultimo backup son los mismos
     // que el ultimo registro, es la MISMA corrida -- se actualiza ese registro
@@ -669,6 +694,7 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
 
     return res.status(201).json({
       backupStatusId: backup.id,
+      backupMode: mode,
       alertTriggered: Boolean(result?.isNew),
     });
   } catch (err) {
@@ -679,7 +705,7 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
 
 app.get('/api/servers', authUser, async (req, res) => {
   try {
-    const [servers, defaultThresholds] = await Promise.all([
+    const [servers, defaultThresholds, backupPolicy] = await Promise.all([
       prisma.server.findMany({
         orderBy: { name: 'asc' },
         include: {
@@ -694,12 +720,14 @@ app.get('/api/servers', authUser, async (req, res) => {
         },
       }),
       getEffectiveDefaultThresholds(),
+      loadBackupPolicy(),
     ]);
 
     return res.json(
       servers.map((s) => {
         const latest = s.telemetry[0];
-        const backup = s.backups[0];
+        const mode = backupMode(s, backupPolicy);
+        const backup = mode === 'EXCLUDED' ? null : s.backups[0];
         return {
           id: s.id,
           name: s.name,
@@ -736,6 +764,7 @@ app.get('/api/servers', authUser, async (req, res) => {
           ispPrimaryPublicIp: s.ispPrimaryPublicIp,
           ispSecondaryPublicIp: s.ispSecondaryPublicIp,
           network: summarizeNetwork(s, s.network, s.networkAt),
+          backupMode: mode,
           backup: backup
             ? {
                 result: backup.result,
@@ -784,19 +813,21 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
 
-    const [telemetryToday, openAlerts, criticalAlerts, defaultThresholds] = await Promise.all([
+    const [telemetryToday, openAlerts, criticalAlerts, defaultThresholds, backupPolicy] = await Promise.all([
       prisma.telemetry.count({ where: { recordedAt: { gte: startOfDay } } }),
       prisma.securityEvent.count({ where: { status: 'OPEN' } }),
       prisma.securityEvent.count({ where: { status: 'OPEN', severity: 'CRITICAL' } }),
       getEffectiveDefaultThresholds(),
+      loadBackupPolicy(),
     ]);
 
     const breakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
     const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
     for (const s of servers) {
       breakdown[getHealthStatus(s.telemetry[0], s, defaultThresholds)] += 1;
-      backupBreakdown[s.backups[0]?.result ?? 'UNKNOWN'] += 1;
+      if (backupMode(s, backupPolicy) !== 'EXCLUDED') backupBreakdown[s.backups[0]?.result ?? 'UNKNOWN'] += 1;
     }
+    const backupServers = Object.values(backupBreakdown).reduce((a, b) => a + b, 0);
 
     const reportedServers = servers.length - breakdown.UNKNOWN;
     const slaPercentage = reportedServers > 0 ? (breakdown.OK / reportedServers) * 100 : 0;
@@ -810,6 +841,7 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
       criticalAlerts,
       healthBreakdown: breakdown,
       backupBreakdown,
+      backupServers,
     });
   } catch (err) {
     console.error('Error calculando resumen del dashboard', err);
@@ -2242,6 +2274,11 @@ httpServer.on('upgrade', (req, socket) => {
 });
 
 const PORT = process.env.PORT || 4000;
+// Nginx mantiene conexiones keep-alive de hasta 75 s hacia el backend: si
+// Node las cierra antes (default 5 s), Nginx a veces reusa una conexion ya
+// cerrada y el usuario ve un 502 esporadico.
+httpServer.keepAliveTimeout = 76_000;
+httpServer.headersTimeout = 77_000;
 httpServer.listen(PORT, () => {
   console.log(`NOC/SOC backend escuchando en el puerto ${PORT}`);
 });
@@ -2258,7 +2295,26 @@ scheduleUnifiPoll();
 scheduleServiceMonitor();
 seedMissingPlaybooks();
 
-process.on('SIGTERM', async () => {
-  await prisma.$disconnect();
-  httpServer.close(() => process.exit(0));
+// 24/7: un error no capturado se registra en vez de pasar desapercibido. Una
+// promesa rechazada no tira el proceso; una excepcion sincronica si (el
+// estado puede quedar corrupto) y Docker lo reinicia en segundos.
+process.on('unhandledRejection', (reason) => {
+  console.error('Promesa rechazada sin manejar', reason);
 });
+process.on('uncaughtException', (err) => {
+  console.error('Excepción no capturada, reiniciando el proceso', err);
+  process.exit(1);
+});
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} recibido: cerrando el backend`);
+  // Los WebSockets abiertos impiden que close() termine: tope de 10 s.
+  setTimeout(() => process.exit(0), 10_000).unref();
+  httpServer.close(() => process.exit(0));
+  await prisma.$disconnect().catch(() => {});
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

@@ -165,7 +165,7 @@ export default function ServerDetailModal({
 
   useEffect(() => {
     loadDetails();
-    const t = setInterval(loadDetails, 60_000);
+    const t = setInterval(() => !document.hidden && loadDetails(), 60_000);
     return () => clearInterval(t);
   }, [loadDetails]);
 
@@ -251,7 +251,7 @@ export default function ServerDetailModal({
           </div>
 
           <div className="flex gap-1 overflow-x-auto px-3">
-            {SECTIONS.map((s) => {
+            {SECTIONS.filter((s) => s.id !== 'backup' || server.backupMode !== 'EXCLUDED').map((s) => {
               const Icon = s.icon;
               const active = section === s.id;
               const badge = s.id === 'eventos' && activeAlerts.length > 0 ? activeAlerts.length : null;
@@ -373,7 +373,8 @@ export default function ServerDetailModal({
                       <Card title="Señales tempranas (últimas 24 h)" icon={Gauge}>
                         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                           {[
-                            { key: 'diskErrors', label: 'Errores de disco', warn: 1 },
+                            { key: 'diskBadBlocks', label: 'Sectores defectuosos', warn: 3 },
+                            { key: 'diskErrors', label: 'Reintentos de E/S (info)', warn: 500 },
                             { key: 'unexpectedShutdowns', label: 'Apagados inesperados', warn: 1 },
                             { key: 'bugchecks', label: 'Pantallazos azules', warn: 1 },
                             { key: 'lowMemory', label: 'Memoria agotada', warn: 1 },

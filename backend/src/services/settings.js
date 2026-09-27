@@ -59,6 +59,12 @@ const SETTING_DEFS = {
   // Vacio = se asigna solo al primer servidor con rol DHCP que reporte.
   INVENTORY_COLLECTOR: { envFallback: null, type: 'string', sensitive: false },
   PATCH_MAX_AGE_DAYS: { envFallback: null, type: 'number', sensitive: false },
+  // Backups (services/backupPolicy.js): prefijos de nombre de los servidores
+  // donde se leen TODOS los metodos de backup (scripts, SQL, Historial de
+  // archivos, terceros); el resto solo Windows Server Backup / Copias de
+  // seguridad de Windows. Y servidores que no tienen backup (la VPS).
+  BACKUP_MULTI_METHOD_PREFIXES: { envFallback: null, type: 'string', sensitive: false },
+  BACKUP_EXCLUDED_SERVERS: { envFallback: null, type: 'string', sensitive: false },
 
   // Ubiquiti UniFi (services/unifi.js). Modo "cloud" = Site Manager API
   // (api.ui.com, API key de unifi.ui.com -> API); "local" = Integration API

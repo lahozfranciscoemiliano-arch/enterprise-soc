@@ -143,6 +143,8 @@ export type ServerSummary = {
   thresholds: ServerThresholds;
   maintenanceUntil: string | null;
   inMaintenance: boolean;
+  // EXCLUDED = sin lectura de backups (VPS); MULTI = todos los metodos (ALOHA*); NATIVE = solo Windows Server Backup.
+  backupMode?: 'EXCLUDED' | 'MULTI' | 'NATIVE';
   backup: BackupInfo | null;
   latitude: number | null;
   longitude: number | null;
@@ -224,7 +226,7 @@ export type Diagnostics = {
   updates?: { lastInstalledAt: string | null; pending?: number | null; pendingCritical?: number | null; pendingCheckedAt?: string | null };
   stoppedServices?: { name: string; displayName: string }[];
   defender?: { antivirusEnabled: boolean; realTimeEnabled: boolean; signatureAgeDays: number | null; quickScanAgeDays?: number | null } | null;
-  eventSignals?: Partial<Record<'diskErrors' | 'unexpectedShutdowns' | 'bugchecks' | 'lowMemory' | 'failedLogons' | 'malwareDetections', number>>;
+  eventSignals?: Partial<Record<'diskErrors' | 'diskBadBlocks' | 'unexpectedShutdowns' | 'bugchecks' | 'lowMemory' | 'failedLogons' | 'malwareDetections', number>>;
   topProcesses?: { byCpu: { name: string; cpu: number; memBytes: number }[]; byMemory: { name: string; cpu: number; memBytes: number }[] };
 };
 
@@ -416,6 +418,8 @@ export type SystemSettings = {
   NOTIFY_QUIET_HOURS: PlainSetting<string>;
   NOTIFY_BATCH_MINUTES: PlainSetting<number>;
   INVENTORY_COLLECTOR: PlainSetting<string>;
+  BACKUP_MULTI_METHOD_PREFIXES: PlainSetting<string>;
+  BACKUP_EXCLUDED_SERVERS: PlainSetting<string>;
   PATCH_MAX_AGE_DAYS: PlainSetting<number>;
   UNIFI_MODE: PlainSetting<string>;
   UNIFI_API_KEY: SensitiveSetting;
@@ -500,6 +504,7 @@ export type DashboardSummary = {
   criticalAlerts: number;
   healthBreakdown: { OK: number; WARNING: number; CRITICAL: number; UNKNOWN: number };
   backupBreakdown: { SUCCESS: number; WARNING: number; FAILED: number; NOT_CONFIGURED: number; UNKNOWN: number };
+  backupServers?: number;
 };
 
 // ---------------------------------------------------------------------------

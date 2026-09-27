@@ -3,11 +3,25 @@
 # Nginx corre FUERA de Docker, en el host, y reenvia a estos servicios via
 # localhost (ver deploy/nginx.conf) — por eso los puertos se publican solo
 # en 127.0.0.1, nunca en 0.0.0.0.
+# Recursos: deploy/tune-vps.sh genera docker-compose.override.yml (no
+# versionado) con Postgres/Node dimensionados segun los nucleos y la RAM de
+# la VPS; docker compose lo combina solo con este archivo.
+
+# Logs de Docker con tope: sin esto el json-file de cada contenedor crece
+# sin limite y en unos meses llena el disco de la VPS.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: enterprise-soc-postgres
     restart: unless-stopped
+    logging: *logging
+    stop_grace_period: 60s
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -27,6 +41,21 @@ services:
       context: ./backend
     container_name: enterprise-soc-backend
     restart: unless-stopped
+    logging: *logging
+    init: true
+    stop_grace_period: 20s
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    # Si el backend deja de responder (event loop colgado), Docker lo marca
+    # unhealthy y soc-autoheal.timer lo reinicia (ver deploy/tune-vps.sh).
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +110,18 @@ services:
         NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL}
     container_name: enterprise-soc-frontend
     restart: unless-stopped
+    logging: *logging
+    init: true
+    environment:
+      # Next standalone escucha en $HOSTNAME, que Docker pisa con el id del
+      # contenedor: se fija para que responda tambien por 127.0.0.1.
+      HOSTNAME: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 60s
     depends_on:
       - backend
     ports:

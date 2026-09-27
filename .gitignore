@@ -43,3 +43,6 @@ mobile/android/app/build/
 mobile/android/local.properties
 *.keystore
 *.jks
+
+# Generado en la VPS por deploy/tune-vps.sh (recursos de esa maquina)
+docker-compose.override.yml

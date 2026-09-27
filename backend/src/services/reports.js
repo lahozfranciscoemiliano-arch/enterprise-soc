@@ -6,6 +6,7 @@ const { getSettings } = require('./settings');
 const { getHealthStatus, getEffectiveDefaultThresholds } = require('./alertEngine');
 const { sendReportEmail } = require('./notifications');
 const { summarizeReportNaturalLanguage } = require('./gemini');
+const { loadBackupPolicy, backupMode } = require('./backupPolicy');
 
 // Los PDF generados se guardan aca, igual que el .exe del agente en
 // server.js (DOWNLOADS_DIR): sobreviven a un "docker compose up --build"
@@ -62,6 +63,7 @@ async function collectReportData(periodDays) {
       prisma.fortiEvent.count({ where: { createdAt: { gte: periodStart }, severity: 'CRITICAL' } }),
     ]);
 
+  const backupPolicy = await loadBackupPolicy();
   const healthBreakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
   const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
   const serverRows = [];
@@ -69,8 +71,10 @@ async function collectReportData(periodDays) {
   for (const s of servers) {
     const health = getHealthStatus(s.telemetry[0], s, defaultThresholds);
     healthBreakdown[health] += 1;
-    const backupResult = s.backups[0]?.result ?? 'UNKNOWN';
-    backupBreakdown[backupResult] += 1;
+    // La VPS del NOC no tiene backups: no suma a "sin datos".
+    const excluded = backupMode(s, backupPolicy) === 'EXCLUDED';
+    const backupResult = excluded ? 'EXCLUDED' : s.backups[0]?.result ?? 'UNKNOWN';
+    if (!excluded) backupBreakdown[backupResult] += 1;
     serverRows.push({
       name: s.name,
       tags: s.tags,
@@ -163,6 +167,7 @@ const BACKUP_LABEL = {
   FAILED: 'Fallido',
   NOT_CONFIGURED: 'No configurado',
   UNKNOWN: 'Sin datos',
+  EXCLUDED: 'No aplica',
 };
 
 function drawReportPdf(doc, data) {

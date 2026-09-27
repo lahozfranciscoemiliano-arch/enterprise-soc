@@ -337,6 +337,7 @@ model Telemetry {
   recordedAt   DateTime @default(now())
 
   @@index([serverId, recordedAt])
+  @@index([recordedAt])
   @@map("telemetry")
 }
 
@@ -409,6 +410,7 @@ model SecurityEvent {
   @@index([serverId, createdAt])
   @@index([severity, status])
   @@index([serverId, dedupKey, status])
+  @@index([status, createdAt])
   @@map("security_events")
 }
 

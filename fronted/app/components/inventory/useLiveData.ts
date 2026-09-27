@@ -29,7 +29,8 @@ export function useLiveData<T>(path: string | null, { event = 'soc:inventory', i
 
   useEffect(() => {
     load();
-    const t = setInterval(load, intervalMs);
+    // Pestaña oculta (NOC en segundo plano): no se consulta al backend.
+    const t = setInterval(() => !document.hidden && load(), intervalMs);
     const onEvent = () => load();
     window.addEventListener(event, onEvent);
     return () => {

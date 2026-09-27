@@ -172,10 +172,12 @@ export default function MonitoreoTab({
                     <span className={`h-2 w-2 rounded-full ${health.dot}`} />
                   </span>
                   <span className={`rounded-full border px-2 py-0.5 ${health.badge}`}>{health.label}</span>
-                  <span className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${backup.badge}`}>
-                    <DatabaseBackup className="h-3 w-3" />
-                    {backup.label}
-                  </span>
+                  {s.backupMode !== 'EXCLUDED' && (
+                    <span className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${backup.badge}`}>
+                      <DatabaseBackup className="h-3 w-3" />
+                      {backup.label}
+                    </span>
+                  )}
                   {s.inMaintenance && (
                     <span className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${MAINTENANCE_BADGE}`}>
                       <Wrench className="h-3 w-3" />

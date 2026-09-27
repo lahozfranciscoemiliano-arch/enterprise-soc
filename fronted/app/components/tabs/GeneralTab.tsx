@@ -86,7 +86,7 @@ export default function GeneralTab({
         />
         <StatCard
           label="Backups Exitosos"
-          value={summary ? `${summary.backupBreakdown.SUCCESS}/${summary.totalServers}` : '—'}
+          value={summary ? `${summary.backupBreakdown.SUCCESS}/${summary.backupServers ?? summary.totalServers}` : '—'}
           color={summary && summary.backupBreakdown.FAILED > 0 ? 'red' : 'emerald'}
           icon={<DatabaseBackup className="h-5 w-5" />}
         />

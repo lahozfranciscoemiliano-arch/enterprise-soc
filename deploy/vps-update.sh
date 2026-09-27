@@ -11,6 +11,8 @@
 #      de GitHub y marca esa version como la ultima: cada agente se
 #      actualiza solo en su proximo ciclo, sin tocar los servidores.
 #   4. Instala el auto-monitoreo del propio VPS (host-monitor.sh + timer).
+#   0. Antes de todo, deploy/tune-vps.sh dimensiona Postgres/Node/kernel/
+#      Nginx segun los nucleos y la RAM de la VPS y activa la auto-curacion.
 #
 # Uso (como root, en la consola de la VPS):
 #   cd /home/socapp/enterprise-soc && git pull && bash deploy/vps-update.sh
@@ -54,6 +56,15 @@ echo "Enterprise SOC - actualizacion de la VPS"
 echo "Codigo en la version: $(git rev-parse --short HEAD 2>/dev/null || echo desconocida)"
 
 # ---------------------------------------------------------------------------
+step "0/4 Optimizando la VPS para sus recursos (CPU/RAM) y 24/7"
+# ---------------------------------------------------------------------------
+if bash deploy/tune-vps.sh; then
+  ok "VPS optimizada (ver docker-compose.override.yml generado)"
+else
+  fail "tune-vps.sh fallo (el resto de la actualizacion sigue igual)"
+fi
+
+# ---------------------------------------------------------------------------
 step "1/4 Reconstruyendo y reiniciando backend + frontend (puede tardar varios minutos)"
 # ---------------------------------------------------------------------------
 if docker compose build && docker compose up -d; then
@@ -67,6 +78,9 @@ if docker compose build && docker compose up -d; then
   done
   if [ "$healthy" = 1 ]; then
     ok "Stack actualizado y backend respondiendo"
+    # Cada build deja capas viejas (~1 GB): se liberan para no llenar el disco.
+    docker image prune -f >/dev/null 2>&1
+    docker builder prune -f --filter until=72h >/dev/null 2>&1
   else
     fail "El backend no respondio /health en 90s (ver: docker compose logs --tail 50 backend)"
   fi

@@ -620,6 +620,51 @@ el servidor (auto-enrolamiento), escribe la configuración y deja el agente
 corriendo como SYSTEM con arranque automático. Repetirlo en el mismo servidor
 lo reinstala/actualiza sin duplicarlo.
 
+## 37. Backups por tipo de servidor, falsos positivos de disco y VPS 24/7
+
+**Backups.** Solo en los servidores cuyo nombre empieza con `ALOHA` / `ALLOHA`
+se leen todos los métodos (scripts en tareas programadas, SQL, Historial de
+archivos, software de terceros). En el resto solo cuenta Windows Server Backup /
+Copias de seguridad de Windows. La VPS (`grupo-bistro-noc-soc-2026-vps`, y todo
+equipo con etiqueta `infra-vps`) no se tiene en cuenta para backups; solo se
+monitorean su estado, sus recursos y su seguridad. Los prefijos y las
+exclusiones se cambian en Admin → Configuración → Monitoreo preventivo.
+
+**VSS.** El servicio de instantáneas es de inicio manual y Windows lo detiene
+solo cuando no lo usa. Ya no cuenta como problema; solo si está
+**deshabilitado**.
+
+**Disco.** La alerta del Visor de Eventos ahora cuenta únicamente sectores
+defectuosos, fallas predichas por el propio disco y corrupción NTFS en discos
+**internos** (agente 1.6.0). Se descartan los discos USB y los
+reintentos/timeouts de E/S, que eran la causa de los falsos positivos. Para
+alertar hacen falta al menos 3 eventos, vistos en 2 diagnósticos seguidos. Las
+alertas viejas se cierran solas en el siguiente diagnóstico de cada servidor.
+
+**VPS.** `vps-update.sh` ejecuta primero `deploy/tune-vps.sh`, que:
+- mide los núcleos y la RAM y genera `docker-compose.override.yml`:
+  - Postgres: shared_buffers, cache, workers paralelos y /dev/shm;
+  - Node: heap del backend y del frontend;
+  - pool de conexiones.
+- ajusta el kernel (sysctl);
+- crea una swap de emergencia si falta;
+- limita journald a 500 MB;
+- ajusta Nginx (gzip, 4096 conexiones por worker);
+- activa `soc-autoheal.timer`, que cada 2 minutos reinicia cualquier
+  contenedor *unhealthy* y limpia imágenes viejas si el disco pasa del 85 %.
+
+Además:
+- los contenedores tienen healthchecks y logs con tope;
+- el backend cachea la validación de las API keys de los agentes (antes
+  ejecutaba bcrypt en cada latido);
+- `/health` informa la demora del event loop y la memoria.
+
+Comprobación:
+
+    docker compose ps                  # todos "healthy"
+    curl -s http://127.0.0.1:3000/health
+    systemctl list-timers soc-autoheal.timer
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

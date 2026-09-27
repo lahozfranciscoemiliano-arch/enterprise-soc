@@ -70,7 +70,7 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 60_000);
+    const t = setInterval(() => !document.hidden && load(), 60_000);
     // El backend avisa por WebSocket cada vez que termina un sondeo UniFi.
     const onUnifi = () => load();
     window.addEventListener('soc:unifi', onUnifi);

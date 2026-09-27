@@ -36,7 +36,9 @@ function effectiveResult(s: ServerSummary): BackupResult {
   return s.backup?.result ?? 'NOT_CONFIGURED';
 }
 
-export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
+export default function BackupsTab({ servers: allServers }: { servers: ServerSummary[] }) {
+  // La VPS del NOC (y cualquier equipo excluido en Admin) no tiene backups que vigilar.
+  const servers = useMemo(() => allServers.filter((s) => s.backupMode !== 'EXCLUDED'), [allServers]);
   const [filter, setFilter] = useState('');
   const [resultFilter, setResultFilter] = useState<BackupResult | 'ALL'>('ALL');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -205,7 +207,7 @@ export default function BackupsTab({ servers }: { servers: ServerSummary[] }) {
                       <td className="py-2.5 pr-4">
                         {backup ? (
                           <span className={backup.vssServiceOk ? 'text-emerald-600' : 'text-red-600'}>
-                            {backup.vssServiceOk ? 'OK' : 'Detenido'}
+                            {backup.vssServiceOk ? 'OK' : 'Deshabilitado'}
                           </span>
                         ) : (
                           <span className="text-slate-400">—</span>

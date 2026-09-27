@@ -142,7 +142,7 @@ function evaluateBackup(server, backup) {
     return {
       type: 'BACKUP_WARNING',
       severity: 'MEDIUM',
-      description: `${server.name}: backup con advertencias. ${jobs || backup.method}${backup.vssServiceOk ? '' : ' — servicio VSS (instantáneas) detenido'}.`.slice(0, 900),
+      description: `${server.name}: backup con advertencias. ${jobs || backup.method}${backup.vssServiceOk ? '' : ' — servicio VSS (instantáneas) deshabilitado'}.`.slice(0, 900),
       metadata: { method: backup.method, detail: backup.detail, serverId: server.id },
     };
   }
