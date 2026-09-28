@@ -153,6 +153,8 @@ class AlertService : Service() {
                 val severity = ev.optString("severity", "LOW")
                 val status = ev.optString("status", "OPEN")
                 if (status == "RESOLVED" || !prefs.severityAllowed(severity)) return
+                // Alerta silenciosa: solo se ve en el NOC, nunca notifica.
+                if (ev.optBoolean("silent", false)) return
                 // Silenciada desde el NOC: no molestar hasta que venza.
                 val snoozed = ev.optString("snoozedUntil", "")
                 if (snoozed.isNotEmpty() && snoozed != "null" &&

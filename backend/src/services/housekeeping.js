@@ -138,6 +138,19 @@ async function runHousekeeping() {
     deleted.remoteSessions = remoteSessionsResult.count;
     if (remoteSessionsResult.count > 0) touchedTables.push('remote_sessions');
 
+    // Monitoreo de aplicaciones: muestras por minuto (30 dias) y micro-cortes
+    // (180 dias, para comparar meses).
+    const appSamples = await prisma.appSample.deleteMany({ where: { at: { lt: cutoffDate(30) } } });
+    const probeStats = await prisma.probeStat.deleteMany({ where: { at: { lt: cutoffDate(30) } } });
+    const microOutages = await prisma.microOutage.deleteMany({ where: { startedAt: { lt: cutoffDate(180) } } });
+    // Instancias que dejaron de reportar hace mas de 7 dias (servidor dado de baja).
+    await prisma.appInstance.deleteMany({ where: { lastSeenAt: { lt: cutoffDate(7) } } });
+    deleted.appSamples = appSamples.count;
+    deleted.probeStats = probeStats.count;
+    deleted.microOutages = microOutages.count;
+    if (appSamples.count) touchedTables.push('app_samples');
+    if (probeStats.count) touchedTables.push('probe_stats');
+
     if (touchedTables.length > 0) await vacuumTables(touchedTables);
 
     const finishedAt = new Date();

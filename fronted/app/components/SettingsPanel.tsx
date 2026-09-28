@@ -74,6 +74,7 @@ export default function SettingsPanel() {
         TELEGRAM_CHAT_ID: plainField(data, 'TELEGRAM_CHAT_ID'),
         CRITICAL_SERVICES: plainField(data, 'CRITICAL_SERVICES'),
         INVENTORY_COLLECTOR: plainField(data, 'INVENTORY_COLLECTOR'),
+        APP_SHARE_TARGETS: plainField(data, 'APP_SHARE_TARGETS'),
         BACKUP_MULTI_METHOD_PREFIXES: plainField(data, 'BACKUP_MULTI_METHOD_PREFIXES'),
         BACKUP_EXCLUDED_SERVERS: plainField(data, 'BACKUP_EXCLUDED_SERVERS'),
         PATCH_MAX_AGE_DAYS: plainField(data, 'PATCH_MAX_AGE_DAYS') || '45',
@@ -422,6 +423,13 @@ export default function SettingsPanel() {
             escanear. Vacío = el primer servidor con DHCP que reporte.
           </p>
         </div>
+        <div className="mt-3">
+          {input('APP_SHARE_TARGETS', 'Carpetas compartidas a vigilar (micro-cortes), separadas por coma: \\\\BSFS2\\Datos, \\\\BSFS2\\Compras')}
+          <p className="mt-1 text-[11px] text-slate-400">
+            Todos los agentes las prueban cada 15 s y registran cada micro-corte (Aplicaciones → Micro-cortes). Las carpetas de los servidores de
+            archivos y los controladores de dominio (DNS, LDAP, Kerberos, SYSVOL) se agregan solos.
+          </p>
+        </div>
         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {input('BACKUP_MULTI_METHOD_PREFIXES', 'Backups multi-método en (por defecto: ALOHA, ALLOHA)')}
           {input('BACKUP_EXCLUDED_SERVERS', 'Sin lectura de backups (por defecto: grupo-bistro-noc-soc-2026-vps)')}
@@ -432,7 +440,7 @@ export default function SettingsPanel() {
           reportan ni alertan backups (la VPS y los equipos con etiqueta <code>infra-vps</code> quedan excluidos siempre).
         </p>
         <div className="mt-3">
-          {saveBtn('preventivo', ['CRITICAL_SERVICES', 'PATCH_MAX_AGE_DAYS', 'INVENTORY_COLLECTOR', 'BACKUP_MULTI_METHOD_PREFIXES', 'BACKUP_EXCLUDED_SERVERS'])}
+          {saveBtn('preventivo', ['CRITICAL_SERVICES', 'PATCH_MAX_AGE_DAYS', 'INVENTORY_COLLECTOR', 'APP_SHARE_TARGETS', 'BACKUP_MULTI_METHOD_PREFIXES', 'BACKUP_EXCLUDED_SERVERS'])}
         </div>
       </div>
 

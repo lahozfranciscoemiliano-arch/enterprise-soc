@@ -61,6 +61,7 @@ const registerInventoryRoutes = require('./src/routes/inventory');
 const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
 const { seedMissingPlaybooks } = require('./src/services/recommendations');
 const unifiLocal = require('./src/services/unifiLocal');
+const appMonitor = require('./src/services/appMonitor');
 const { runUnifiPoll, listUnifiDevices, listUnifiSites, getLastRun: getUnifiLastRun, scheduleUnifiPoll } = require('./src/services/unifi');
 const { createAndDispatchEvent, resolveCleared, defaultDedupKey, toClientEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
@@ -2207,6 +2208,57 @@ app.post('/api/agent/unifi/report', unifiAgentLimiter, authServer, async (req, r
     return res.json(await unifiLocal.processReport(req.server, parsed.data));
   } catch (err) {
     console.error('Error procesando reporte UniFi local', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Aplicaciones de negocio (Monark, ALOHA) y micro-cortes (services/appMonitor.js).
+const appsReportSchema = z.object({
+  apps: z.array(z.record(z.any())).max(10),
+  roles: z.record(z.any()).optional(),
+  probes: z.array(z.record(z.any())).max(100).optional(),
+  events: z.array(z.record(z.any())).max(500).optional(),
+});
+const appsAgentLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false });
+app.post('/api/agent/apps', appsAgentLimiter, authServer, async (req, res) => {
+  const parsed = appsReportSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Payload inválido', details: parsed.error.flatten() });
+  try {
+    return res.json(await appMonitor.ingestReport(req.server, parsed.data));
+  } catch (err) {
+    console.error('Error procesando el monitoreo de aplicaciones', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/apps/overview', authUser, async (req, res) => {
+  try {
+    return res.json(await appMonitor.overview());
+  } catch (err) {
+    console.error('Error obteniendo aplicaciones', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/apps/microcuts', authUser, async (req, res) => {
+  const days = [1, 7, 30].includes(Number(req.query.days)) ? Number(req.query.days) : 7;
+  const category = ['SMB', 'AD', 'APP'].includes(req.query.category) ? req.query.category : undefined;
+  const serverId = typeof req.query.serverId === 'string' && req.query.serverId.length <= 64 ? req.query.serverId : undefined;
+  try {
+    return res.json(await appMonitor.microcutAnalysis({ days, category, serverId }));
+  } catch (err) {
+    console.error('Error analizando micro-cortes', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/apps/:serverId/:appKey/history', authUser, async (req, res) => {
+  if (!['MONARK', 'ALOHA'].includes(req.params.appKey)) return res.status(400).json({ error: 'Aplicación inválida' });
+  const hours = [6, 24, 168].includes(Number(req.query.hours)) ? Number(req.query.hours) : 24;
+  try {
+    return res.json(await appMonitor.appHistory(req.params.serverId, req.params.appKey, hours));
+  } catch (err) {
+    console.error('Error obteniendo historial de la aplicación', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

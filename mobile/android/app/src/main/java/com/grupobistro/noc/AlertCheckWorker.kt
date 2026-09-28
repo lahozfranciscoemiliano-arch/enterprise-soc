@@ -40,6 +40,7 @@ class AlertCheckWorker(context: Context, params: WorkerParameters) : CoroutineWo
                         if (ev.optString("status") == "RESOLVED") continue
                         val severity = ev.optString("severity", "LOW")
                         if (!prefs.severityAllowed(severity)) continue
+                        if (ev.optBoolean("silent", false)) continue
                         val created = try { Instant.parse(ev.optString("createdAt")).toEpochMilli() } catch (_: Exception) { 0L }
                         if (created < since) continue
                         val id = ev.optString("id")

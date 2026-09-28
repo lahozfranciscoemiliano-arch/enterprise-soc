@@ -58,6 +58,10 @@ const SETTING_DEFS = {
   // Unico servidor que hace el inventario de red (DHCP/AD/impresoras/IPs).
   // Vacio = se asigna solo al primer servidor con rol DHCP que reporte.
   INVENTORY_COLLECTOR: { envFallback: null, type: 'string', sensitive: false },
+  // Carpetas compartidas que todos los agentes prueban cada 15 s para medir
+  // micro-cortes (una ruta UNC por linea). Ademas se suman solas las de los
+  // servidores de archivos / controladores de dominio.
+  APP_SHARE_TARGETS: { envFallback: null, type: 'string', sensitive: false },
   PATCH_MAX_AGE_DAYS: { envFallback: null, type: 'number', sensitive: false },
   // Backups (services/backupPolicy.js): prefijos de nombre de los servidores
   // donde se leen TODOS los metodos de backup (scripts, SQL, Historial de

@@ -50,6 +50,7 @@ function toClientEvent(event, serverName) {
     lastSeenAt: event.lastSeenAt,
     autoResolved: event.autoResolved,
     snoozedUntil: event.snoozedUntil ?? null,
+    silent: event.silent ?? false,
     recommendation: getRecommendation(event.type),
     createdAt: event.createdAt,
     resolvedAt: event.resolvedAt,
@@ -57,10 +58,14 @@ function toClientEvent(event, serverName) {
 }
 
 function isSnoozed(event) {
+  // Las alertas silenciosas se comportan como silenciadas para siempre.
+  if (event?.silent) return true;
   return Boolean(event?.snoozedUntil && new Date(event.snoozedUntil) > new Date());
 }
 
-async function createAndDispatchEvent({ serverId, serverName, type, severity, description, metadata, dedupKey, confirmations = 1 }) {
+// silent: la alerta se registra y se ve en el NOC (WebSocket, listados) pero
+// NUNCA se notifica por email/Slack/Telegram, ni al crearse ni si empeora.
+async function createAndDispatchEvent({ serverId, serverName, type, severity, description, metadata, dedupKey, confirmations = 1, silent = false }) {
   const key = dedupKey ?? defaultDedupKey(type, metadata);
   const now = new Date();
 
@@ -135,12 +140,12 @@ async function createAndDispatchEvent({ serverId, serverName, type, severity, de
   }
 
   const event = await prisma.securityEvent.create({
-    data: { serverId, type, severity, description, metadata, dedupKey: key, lastSeenAt: now },
+    data: { serverId, type, severity, description, metadata, dedupKey: key, lastSeenAt: now, silent },
   });
 
   const enriched = toClientEvent(event, serverName);
   broadcastAlert(enriched);
-  notifyAlert(enriched).catch(() => {});
+  if (!silent) notifyAlert(enriched).catch(() => {});
   triageEvent({ eventId: event.id, serverName, type, severity, description }).catch(() => {});
 
   return { event, isNew: true, escalated: false };

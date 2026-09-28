@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'red' | 'inventario' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'red' | 'aplicaciones' | 'inventario' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {
@@ -52,6 +52,8 @@ export type SecurityAlert = {
   autoResolved?: boolean;
   /** Silenciada: no vuelve a notificar hasta esta fecha. */
   snoozedUntil?: string | null;
+  /** Alerta silenciosa (monitoreo de aplicaciones): visible, sin notificar. */
+  silent?: boolean;
   /** Recomendacion experta por tipo de alerta (pasos y prevencion). */
   recommendation?: { title: string; steps: string[]; prevention: string } | null;
   createdAt: string;
@@ -507,6 +509,7 @@ export type SystemSettings = {
   NOTIFY_QUIET_HOURS: PlainSetting<string>;
   NOTIFY_BATCH_MINUTES: PlainSetting<number>;
   INVENTORY_COLLECTOR: PlainSetting<string>;
+  APP_SHARE_TARGETS: PlainSetting<string>;
   BACKUP_MULTI_METHOD_PREFIXES: PlainSetting<string>;
   BACKUP_EXCLUDED_SERVERS: PlainSetting<string>;
   PATCH_MAX_AGE_DAYS: PlainSetting<number>;
@@ -735,4 +738,90 @@ export type ServiceCheckRow = {
   uptime30d: number | null;
   avgLatency24h: number | null;
   recent: { at: string; up: boolean; latencyMs: number | null }[];
+};
+
+// ---------------------------------------------------------------------------
+// Aplicaciones de negocio (Monark, ALOHA) y micro-cortes
+// ---------------------------------------------------------------------------
+export type AppService = { name: string; displayName?: string | null; startType?: string | null; status?: string | null };
+export type AppSqlInstance = {
+  instance: string;
+  queryMs: number | null;
+  error?: string | null;
+  databases: { name: string; sizeMb: number; sessions: number; blocked: number; longestMs: number }[];
+};
+export type AppTrendPoint = { t: string; cpu: number | null; lat: number | null; latMax: number | null; sql: number | null; down: number; restarts: number };
+export type AppInstanceRow = {
+  id: string;
+  serverId: string;
+  serverName: string;
+  serverStatus: string | null;
+  appKey: 'MONARK' | 'ALOHA';
+  label: string;
+  status: 'ok' | 'degraded' | 'down';
+  statusInfo: string | null;
+  lastSeenAt: string;
+  detected: {
+    services: AppService[];
+    processNames: string[];
+    installed: { name: string; version: string | null }[];
+    databases: { instance: string; name: string }[];
+    shares: string[];
+    ports: number[];
+  };
+  metrics: {
+    cpuAvg: number | null;
+    cpuMax: number | null;
+    memMb: number | null;
+    latencyAvg: number | null;
+    latencyMax: number | null;
+    portFailures: number;
+    restarts: number;
+    servicesDown: string[];
+    servicesRunning: number;
+    servicesTotal: number;
+  } | null;
+  sql: { at: string; instances: AppSqlInstance[] } | null;
+  trend: AppTrendPoint[];
+};
+export type ProbeOrigin = {
+  serverId: string;
+  serverName: string;
+  availability: number | null;
+  slowPct: number | null;
+  avgMs: number | null;
+  maxMs: number | null;
+  microcuts: number;
+  downSeconds: number;
+  lastAt: string;
+};
+export type ProbeTargetRow = { key: string; label: string; category: 'SMB' | 'AD'; origins: ProbeOrigin[]; microcuts: number; availability: number | null };
+export type MicroOutageRow = {
+  id: string;
+  serverId: string;
+  serverName: string;
+  probeKey: string;
+  label: string;
+  category: 'SMB' | 'AD' | 'APP';
+  cause: string;
+  target: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number | null;
+};
+export type AppsOverview = {
+  instances: AppInstanceRow[];
+  targets: ProbeTargetRow[];
+  ongoing: MicroOutageRow[];
+  fileServers: { id: string; name: string; dc: boolean; shares: string[] }[];
+};
+export type MicrocutAnalysis = {
+  days: number;
+  total: number;
+  totalSeconds: number;
+  ongoing: number;
+  byHour: { hour: number; SMB: number; AD: number; APP: number }[];
+  byDay: { day: string; SMB: number; AD: number; APP: number; seconds: number }[];
+  insights: string[];
+  events: MicroOutageRow[];
 };

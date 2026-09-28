@@ -91,6 +91,9 @@ const TYPE_LABEL = {
   PRINTER_ISSUE: 'Impresora',
   AD_ACCOUNT_LOCKOUT: 'Cuenta AD bloqueada',
   PRIVILEGED_GROUP_CHANGE: 'Cambio de grupo privilegiado',
+  APP_SERVICE_DOWN: 'Aplicación caída',
+  APP_PERFORMANCE: 'Aplicación lenta',
+  NETWORK_MICROCUTS: 'Micro-cortes de red',
 };
 
 const PAGE = { w: 595.28, h: 841.89, m: 40 };

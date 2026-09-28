@@ -57,6 +57,11 @@ enum EventType {
   PRINTER_ISSUE
   AD_ACCOUNT_LOCKOUT
   PRIVILEGED_GROUP_CHANGE
+  // Monitoreo de aplicaciones de negocio (services/appMonitor.js). Alertas
+  // silenciosas: se ven en el NOC pero no notifican.
+  APP_SERVICE_DOWN
+  APP_PERFORMANCE
+  NETWORK_MICROCUTS
 }
 
 enum BackupResult {
@@ -286,6 +291,9 @@ model Server {
   ispSecondaryContact String?
   siteContactName     String?
   siteContactPhone    String?
+  // Roles detectados por el monitoreo de aplicaciones: servidor de archivos,
+  // controlador de dominio y sus carpetas compartidas.
+  appRoles            Json?
   hasFortinet         Boolean?
   siteNotes           String?
   // IP publica de salida de cada enlace, para saber por cual esta saliendo
@@ -402,6 +410,8 @@ model SecurityEvent {
   // Silenciada hasta esta fecha: sigue visible y se actualiza, pero no
   // vuelve a notificar (ni si empeora) hasta entonces.
   snoozedUntil     DateTime?
+  // Alerta silenciosa: visible en el NOC, nunca notifica (email/Telegram...).
+  silent           Boolean       @default(false)
   acknowledgedById String?
   acknowledgedBy   User?         @relation("AcknowledgedBy", fields: [acknowledgedById], references: [id])
   createdAt        DateTime      @default(now())
@@ -656,4 +666,83 @@ model UnifiSite {
   health            Json?
 
   @@map("unifi_sites")
+}
+
+// ---------------------------------------------------------------------------
+// Aplicaciones de negocio (Monark, ALOHA) y micro-cortes de carpetas
+// compartidas / Active Directory (services/appMonitor.js, agente >= 1.11.0).
+// ---------------------------------------------------------------------------
+model AppInstance {
+  id         String   @id @default(uuid())
+  serverId   String
+  appKey     String   // MONARK | ALOHA
+  label      String
+  status     String   // ok | degraded | down
+  statusInfo String?
+  detected   Json     // servicios, procesos, programas, bases, carpetas, puertos
+  metrics    Json?
+  sql        Json?
+  lastSeenAt DateTime @default(now())
+
+  @@unique([serverId, appKey])
+  @@map("app_instances")
+}
+
+model AppSample {
+  id           String   @id @default(uuid())
+  serverId     String
+  appKey       String
+  at           DateTime @default(now())
+  cpu          Float?
+  memMb        Float?
+  latencyMs    Float?
+  latencyMax   Float?
+  sqlMs        Float?
+  blocked      Int?
+  servicesDown Int      @default(0)
+  restarts     Int      @default(0)
+
+  @@index([serverId, appKey, at])
+  @@index([at])
+  @@map("app_samples")
+}
+
+model ProbeStat {
+  id       String   @id @default(uuid())
+  serverId String
+  probeKey String
+  label    String
+  category String   // SMB | AD | APP
+  kind     String
+  target   String?
+  at       DateTime @default(now())
+  samples  Int
+  failures Int
+  slow     Int
+  avgMs    Float?
+  maxMs    Float?
+  p95Ms    Float?
+
+  @@index([serverId, probeKey, at])
+  @@index([category, at])
+  @@index([at])
+  @@map("probe_stats")
+}
+
+model MicroOutage {
+  id              String    @id @default(uuid())
+  serverId        String    // servidor que lo detecto (origen de la medicion)
+  probeKey        String
+  label           String
+  category        String    // SMB | AD | APP
+  cause           String
+  target          String?
+  startedAt       DateTime
+  endedAt         DateTime?
+  durationSeconds Int?
+
+  @@unique([serverId, probeKey, startedAt])
+  @@index([startedAt])
+  @@index([category, startedAt])
+  @@map("micro_outages")
 }

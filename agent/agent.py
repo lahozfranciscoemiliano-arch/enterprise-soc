@@ -69,7 +69,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.10.0"
+AGENT_VERSION = "1.11.0"
 
 
 def get_base_dir() -> Path:
@@ -3068,6 +3068,523 @@ def unifi_loop() -> None:
         time.sleep(max(60, wait))
 
 
+# ---------------------------------------------------------------------------
+# Monitoreo de aplicaciones de negocio y micro-cortes.
+#
+#   - Monark y ALOHA (punto de venta): se DESCUBREN solos en cada servidor
+#     (servicios, procesos, programas instalados, bases SQL, carpetas
+#     compartidas). Cada 30 s se mide el estado de sus servicios, CPU/RAM de
+#     sus procesos, reinicios y el tiempo de respuesta de sus puertos; las
+#     bases SQL de Monark, cada 5 min (tamano, sesiones, bloqueos, latencia).
+#   - Carpetas compartidas y Active Directory: cada 15 s se prueba desde este
+#     servidor el acceso SMB a las carpetas que indica el NOC y a los
+#     controladores de dominio (DNS, LDAP, Kerberos, SYSVOL). Un fallo o una
+#     respuesta lenta, aunque dure segundos, queda registrado como
+#     MICRO-CORTE con inicio, fin, duracion y causa.
+# Todo se manda al NOC cada 60 s (POST /api/agent/apps).
+# ---------------------------------------------------------------------------
+APPMON_SAMPLE_SECONDS = 30
+APPMON_PROBE_SECONDS = 15
+APPMON_REPORT_SECONDS = 60
+APPMON_DISCOVERY_SECONDS = 15 * 60
+APPMON_SQL_SECONDS = 5 * 60
+PROBE_SLOW_MS = {"smb": 1500, "tcp": 800, "dns": 1000}
+
+MONARK_RE = re.compile(r"monark", re.IGNORECASE)
+ALOHA_SERVICE_RE = re.compile(r"aloha|radiant|\bncr\b.*aloha|^iber|^ctlsvr|^ctlsvc|^edc|^rfs\b", re.IGNORECASE)
+ALOHA_PROCESSES = {
+    "iber.exe", "ctlsvr.exe", "ctlsvc.exe", "edc.exe", "wedc.exe", "rfs.exe", "aks.exe", "cfc.exe",
+    "alohaloyalty.exe", "alohamanager.exe", "boh.exe", "grind.exe", "aloha.exe", "alohatakeout.exe",
+}
+ALOHA_PATH_RE = re.compile(r"\\(bootdrv|aloha)\\", re.IGNORECASE)
+IGNORED_APP_PORTS = {135, 139, 445, 3389, 5985, 5986}
+
+PS_MONARK_SQL = r"""
+$res = @()
+foreach ($inst in @(__INSTANCES__)) {
+  $server = if ($inst -eq 'MSSQLSERVER') { '.' } else { ".\$inst" }
+  try {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $cn = New-Object System.Data.SqlClient.SqlConnection("Server=$server;Integrated Security=SSPI;Connect Timeout=5;Application Name=EnterpriseSOC")
+    $cn.Open()
+    $cmd = $cn.CreateCommand(); $cmd.CommandTimeout = 15
+    $cmd.CommandText = "SELECT 1"; [void]$cmd.ExecuteScalar()
+    $ms = $sw.ElapsedMilliseconds
+    $cmd.CommandText = "SELECT d.name, CAST(SUM(f.size) * 8.0 / 1024 AS float), (SELECT COUNT(*) FROM sys.dm_exec_sessions s WHERE s.database_id = d.database_id AND s.is_user_process = 1), (SELECT COUNT(*) FROM sys.dm_exec_requests r WHERE r.database_id = d.database_id AND r.blocking_session_id <> 0), (SELECT ISNULL(MAX(r.total_elapsed_time), 0) FROM sys.dm_exec_requests r WHERE r.database_id = d.database_id AND r.session_id <> @@SPID) FROM sys.databases d JOIN sys.master_files f ON f.database_id = d.database_id WHERE d.name LIKE '%monark%' AND d.state = 0 GROUP BY d.name, d.database_id"
+    $r = $cmd.ExecuteReader(); $dbs = @()
+    while ($r.Read()) { $dbs += [pscustomobject]@{ name = $r.GetString(0); sizeMb = [math]::Round($r.GetDouble(1), 1); sessions = $r.GetInt32(2); blocked = $r.GetInt32(3); longestMs = [int64]$r.GetInt32(4) } }
+    $cn.Close()
+    $res += [pscustomobject]@{ instance = $inst; queryMs = $ms; databases = $dbs; error = $null }
+  } catch { $res += [pscustomobject]@{ instance = $inst; queryMs = $null; databases = @(); error = $_.Exception.Message } }
+}
+ConvertTo-Json -InputObject $res -Depth 4 -Compress
+"""
+
+PS_SHARES = r"""
+$s = @(Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { -not $_.Special -and $_.Name -notmatch '^(print\$|IPC\$)$' } | ForEach-Object { [pscustomobject]@{ name = $_.Name; path = $_.Path } })
+ConvertTo-Json -InputObject $s -Compress
+"""
+
+_appmon_lock = threading.Lock()
+_apps: dict[str, dict[str, Any]] = {}  # key -> descubrimiento
+_app_window: dict[str, dict[str, Any]] = {}  # key -> acumulado del minuto
+_app_proc_cache: dict[int, Any] = {}
+_app_start_times: dict[str, dict[str, float]] = {}
+_app_sql: dict[str, Any] = {}
+_roles: dict[str, Any] = {"fileServer": False, "dc": False, "shares": []}
+_probe_targets: list[dict[str, Any]] = []
+_probe_window: dict[str, dict[str, Any]] = {}
+_probe_state: dict[str, dict[str, Any]] = {}
+_probe_busy: set[str] = set()
+_cut_events: list[dict[str, Any]] = []
+
+
+def _sql_instances() -> list[str]:
+    instances = []
+    if hasattr(psutil, "win_service_iter"):
+        for svc in psutil.win_service_iter():
+            try:
+                name = svc.name()
+                if (name == "MSSQLSERVER" or name.upper().startswith("MSSQL$")) and svc.status() == "running":
+                    instances.append(name.split("$", 1)[1] if "$" in name else "MSSQLSERVER")
+            except Exception:
+                continue
+    return instances
+
+
+def _installed_programs(pattern: re.Pattern) -> list[dict[str, str]]:
+    found = []
+    try:
+        import winreg
+    except ImportError:
+        return found
+    roots = (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
+    for root in roots:
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, root)
+        except OSError:
+            continue
+        for i in range(winreg.QueryInfoKey(key)[0]):
+            try:
+                sub = winreg.OpenKey(key, winreg.EnumKey(key, i))
+                name = winreg.QueryValueEx(sub, "DisplayName")[0]
+                if name and pattern.search(name):
+                    try:
+                        version = winreg.QueryValueEx(sub, "DisplayVersion")[0]
+                    except OSError:
+                        version = None
+                    found.append({"name": str(name), "version": str(version) if version else None})
+            except OSError:
+                continue
+    return found[:10]
+
+
+def _is_aloha_service(info: dict[str, Any]) -> bool:
+    text = f"{info.get('name') or ''} {info.get('display_name') or ''}"
+    return bool(ALOHA_SERVICE_RE.search(text) or ALOHA_PATH_RE.search(info.get("binpath") or ""))
+
+
+def discover_apps() -> None:
+    """Que aplicaciones de negocio corren en este servidor (cada 15 min)."""
+    services = []
+    if hasattr(psutil, "win_service_iter"):
+        for svc in psutil.win_service_iter():
+            try:
+                services.append(svc.as_dict())
+            except Exception:
+                continue
+    procs = []
+    for p in psutil.process_iter(["pid", "name", "exe"]):
+        procs.append(p.info)
+
+    try:
+        shares = run_powershell_json(PS_SHARES, timeout=60)
+    except Exception:
+        shares = []
+    share_names = [s.get("name") for s in shares if isinstance(s, dict) and s.get("name")]
+
+    apps: dict[str, dict[str, Any]] = {}
+
+    def build(key: str, label: str, svc_match, proc_match, program_re: re.Pattern | None) -> dict[str, Any] | None:
+        svcs = [s for s in services if svc_match(s)]
+        pnames = sorted({(p.get("name") or "").lower() for p in procs if proc_match(p)})
+        installed = _installed_programs(program_re) if program_re else []
+        if not svcs and not pnames and not installed:
+            return None
+        return {
+            "key": key,
+            "label": label,
+            "services": [
+                {"name": s.get("name"), "displayName": s.get("display_name"), "startType": s.get("start_type"), "status": s.get("status")}
+                for s in svcs[:15]
+            ],
+            "processNames": pnames[:15],
+            "installed": installed,
+            "databases": [],
+            "shares": [],
+            "ports": [],
+        }
+
+    monark = build(
+        "MONARK",
+        "Monark",
+        lambda s: bool(MONARK_RE.search(f"{s.get('name')} {s.get('display_name')} {s.get('binpath') or ''}")),
+        lambda p: bool(MONARK_RE.search(f"{p.get('name') or ''} {p.get('exe') or ''}")),
+        MONARK_RE,
+    )
+    instances = _sql_instances()
+    monark_dbs: list[dict[str, Any]] = []
+    if instances:
+        try:
+            for inst in run_powershell_json(PS_MONARK_SQL.replace("__INSTANCES__", ",".join(f"'{i}'" for i in instances)), timeout=60):
+                for db in inst.get("databases") or []:
+                    monark_dbs.append({"instance": inst.get("instance"), "name": db.get("name")})
+        except Exception as exc:
+            logger.debug("No se pudieron listar bases de Monark: %s", exc)
+    if monark_dbs and monark is None:
+        monark = {"key": "MONARK", "label": "Monark", "services": [], "processNames": [], "installed": [], "databases": [], "shares": [], "ports": []}
+    if monark is not None:
+        monark["databases"] = monark_dbs
+        monark["instances"] = sorted({d["instance"] for d in monark_dbs})
+        monark["shares"] = [s for s in share_names if MONARK_RE.search(s)]
+        apps["MONARK"] = monark
+
+    aloha = build(
+        "ALOHA",
+        "ALOHA POS",
+        _is_aloha_service,
+        lambda p: (p.get("name") or "").lower() in ALOHA_PROCESSES or bool(ALOHA_PATH_RE.search(p.get("exe") or "")),
+        re.compile(r"\baloha\b|radiant", re.IGNORECASE),
+    )
+    if aloha is not None:
+        # Las terminales de ALOHA trabajan contra la carpeta compartida BOOTDRV.
+        aloha["shares"] = [s for s in share_names if re.search(r"bootdrv|aloha", s, re.IGNORECASE)]
+        apps["ALOHA"] = aloha
+
+    # Puertos TCP que escuchan los procesos de cada aplicacion (para medir
+    # su tiempo de respuesta) y el de SQL Server de las bases de Monark.
+    try:
+        conns = psutil.net_connections(kind="tcp")
+    except Exception:
+        conns = []
+    pid_name = {p["pid"]: (p.get("name") or "").lower() for p in procs}
+    for app in apps.values():
+        names = set(app["processNames"])
+        if app["key"] == "MONARK" and app.get("databases"):
+            names.add("sqlservr.exe")
+        ports = sorted(
+            {
+                c.laddr.port
+                for c in conns
+                if c.status == psutil.CONN_LISTEN and pid_name.get(c.pid) in names and c.laddr.port not in IGNORED_APP_PORTS
+            }
+        )
+        app["ports"] = ports[:6]
+
+    with _appmon_lock:
+        _apps.clear()
+        _apps.update(apps)
+        _roles["shares"] = share_names[:40]
+        _roles["fileServer"] = bool([s for s in share_names if s.upper() not in ("NETLOGON", "SYSVOL")])
+        _roles["dc"] = any((s.get("name") or "").upper() == "NTDS" for s in services)
+    if apps:
+        logger.info("Aplicaciones detectadas: %s", ", ".join(f"{a['label']} ({len(a['services'])} servicio(s), puertos {a['ports']})" for a in apps.values()))
+
+
+def _tcp_latency(host: str, port: int, timeout: float = 3.0) -> tuple[float | None, str | None]:
+    start = time.perf_counter()
+    try:
+        with socket_module.create_connection((host, port), timeout=timeout):
+            return (time.perf_counter() - start) * 1000, None
+    except socket_module.timeout:
+        return None, "timeout"
+    except ConnectionRefusedError:
+        return None, "rechazada"
+    except OSError as exc:
+        return None, f"error: {exc.strerror or exc}"[:80]
+
+
+def _app_event(key: str, label: str, cause: str, started: str, ended: str | None, detail: str) -> None:
+    dur = None
+    if ended:
+        try:
+            dur = int(_seconds_between(started, ended))
+        except ValueError:
+            dur = None
+    with _appmon_lock:
+        _cut_events.append({"key": key, "label": label, "category": "APP", "cause": cause, "startedAt": started, "endedAt": ended, "durationSeconds": dur, "detail": detail})
+
+
+def sample_apps() -> None:
+    """Muestra de 30 s: servicios, procesos, reinicios y respuesta de puertos."""
+    with _appmon_lock:
+        apps = {k: dict(v) for k, v in _apps.items()}
+    ncpu = psutil.cpu_count() or 1
+    now_iso = _utc_now_iso()
+    current = {}
+    for p in psutil.process_iter(["pid", "name", "exe", "create_time"]):
+        current[p.info["pid"]] = p
+    for key, app in apps.items():
+        w = _app_window.setdefault(key, {"cpu": [], "mem": [], "lat": [], "portFail": 0, "restarts": 0, "svcDown": set(), "samples": 0})
+        w["samples"] += 1
+        # Servicios automaticos que deberian estar corriendo.
+        for s in app["services"]:
+            try:
+                st = psutil.win_service_get(s["name"]).as_dict()
+            except Exception:
+                continue
+            s["status"] = st.get("status")
+            if st.get("start_type") == "automatic":
+                running = st.get("status") == "running"
+                if not running:
+                    w["svcDown"].add(s["name"])
+                # Un servicio automatico detenido es un corte de la aplicacion.
+                _probe_update(f"{key}:svc:{s['name']}", f"{app['label']} · servicio {s['name']}", "APP", "svc", 0.0 if running else None, None if running else "servicio detenido")
+        # Procesos: CPU/RAM y reinicios (cambio de hora de inicio).
+        names = set(app["processNames"])
+        cpu = mem = 0.0
+        starts = _app_start_times.setdefault(key, {})
+        seen_names = set()
+        for pid, p in current.items():
+            pname = (p.info.get("name") or "").lower()
+            if pname not in names:
+                continue
+            proc = _app_proc_cache.get(pid)
+            if proc is None:
+                proc = p
+                _app_proc_cache[pid] = proc
+                try:
+                    proc.cpu_percent(None)
+                except Exception:
+                    pass
+            try:
+                cpu += proc.cpu_percent(None) / ncpu
+                mem += proc.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            ct = p.info.get("create_time") or 0
+            prev = starts.get(pname)
+            if prev and ct and ct - prev > 5 and pname not in seen_names:
+                w["restarts"] += 1
+                _app_event(f"{key}:{pname}", f"{app['label']} · {pname}", "reinicio", now_iso, now_iso, f"El proceso {pname} se reinició")
+            if ct:
+                starts[pname] = max(ct, prev or 0)
+            seen_names.add(pname)
+        for pid in list(_app_proc_cache):
+            if pid not in current:
+                _app_proc_cache.pop(pid, None)
+        w["cpu"].append(round(cpu, 1))
+        w["mem"].append(mem)
+        # Respuesta de los puertos de la aplicacion (localhost).
+        for port in app["ports"][:4]:
+            ms, err = _tcp_latency("127.0.0.1", port)
+            if ms is None:
+                w["portFail"] += 1
+            else:
+                w["lat"].append(ms)
+            _probe_update(f"{key}:port:{port}", f"{app['label']} · puerto {port}", "APP", "tcp", ms, err)
+
+
+def sample_monark_sql() -> None:
+    with _appmon_lock:
+        app = _apps.get("MONARK")
+    if not app or not app.get("instances"):
+        return
+    try:
+        rows = run_powershell_json(PS_MONARK_SQL.replace("__INSTANCES__", ",".join(f"'{i}'" for i in app["instances"])), timeout=60)
+    except Exception as exc:
+        rows = [{"instance": i, "error": str(exc)[:200], "databases": [], "queryMs": None} for i in app["instances"]]
+    with _appmon_lock:
+        _app_sql["MONARK"] = {"at": _utc_now_iso(), "instances": rows}
+
+
+def _probe_update(key: str, label: str, category: str, kind: str, ms: float | None, err: str | None, target: str | None = None) -> None:
+    """Acumula la medicion y abre/cierra micro-cortes."""
+    now_iso = _utc_now_iso()
+    slow_ms = PROBE_SLOW_MS.get(kind, 1000)
+    with _appmon_lock:
+        w = _probe_window.setdefault(key, {"label": label, "category": category, "kind": kind, "target": target or label, "lat": [], "failures": 0, "slow": 0, "samples": 0, "lastError": None})
+        w["samples"] += 1
+        st = _probe_state.setdefault(key, {"down": False, "slowStreak": 0})
+        st.update(label=label, category=category, target=target or label)
+        bad_cause = None
+        if ms is None:
+            w["failures"] += 1
+            w["lastError"] = err
+            bad_cause = err or "sin respuesta"
+        else:
+            w["lat"].append(ms)
+            if ms > slow_ms:
+                w["slow"] += 1
+                st["slowStreak"] += 1
+                if st["slowStreak"] >= 2:  # una sola respuesta lenta no es un corte
+                    bad_cause = f"lento ({int(ms)} ms)"
+            else:
+                st["slowStreak"] = 0
+        if bad_cause and not st["down"]:
+            st.update(down=True, since=now_iso, cause=bad_cause)
+        elif not bad_cause and st["down"] and (ms is not None and ms <= slow_ms):
+            dur = int(_seconds_between(st["since"], now_iso))
+            _cut_events.append({"key": key, "label": label, "category": category, "cause": st["cause"], "startedAt": st["since"], "endedAt": now_iso, "durationSeconds": dur, "detail": w["target"]})
+            st["down"] = False
+
+
+def _smb_access(unc: str) -> None:
+    it = os.scandir(unc)
+    try:
+        next(it, None)
+    finally:
+        it.close()
+
+
+def run_probe(t: dict[str, Any]) -> None:
+    key = t["key"]
+    try:
+        if t["kind"] == "dns":
+            start = time.perf_counter()
+            try:
+                socket_module.getaddrinfo(t["host"], None)
+                ms, err = (time.perf_counter() - start) * 1000, None
+            except OSError as exc:
+                ms, err = None, f"no resuelve ({exc})"[:80]
+        elif t["kind"] == "smb":
+            ms, err = _tcp_latency(t["host"], 445, timeout=4)
+            if ms is not None and t.get("share"):
+                start = time.perf_counter()
+                try:
+                    _smb_access(f"\\\\{t['host']}\\{t['share']}")
+                    ms, err = (time.perf_counter() - start) * 1000, None
+                except PermissionError:
+                    ms = (time.perf_counter() - start) * 1000  # respondio (sin permiso de lectura para SYSTEM)
+                except FileNotFoundError:
+                    ms, err = None, "la carpeta ya no existe"
+                except OSError as exc:
+                    ms, err = None, f"SMB: {exc.strerror or exc}"[:80]
+        else:
+            ms, err = _tcp_latency(t["host"], int(t["port"]), timeout=4)
+        _probe_update(key, t["label"], t["category"], t["kind"], ms, err, t.get("target"))
+    finally:
+        with _appmon_lock:
+            _probe_busy.discard(key)
+
+
+def _ad_targets() -> list[dict[str, Any]]:
+    """Controladores de dominio de este equipo: DNS, LDAP, Kerberos, SYSVOL."""
+    fqdn = socket_module.getfqdn()
+    if "." not in fqdn:
+        return []
+    domain = fqdn.split(".", 1)[1]
+    targets = [{"key": f"AD:dns:{domain}", "label": f"AD · DNS {domain}", "category": "AD", "kind": "dns", "host": domain, "target": domain}]
+    try:
+        dcs = sorted({a[4][0] for a in socket_module.getaddrinfo(domain, 389, socket_module.AF_INET)})[:2]
+    except OSError:
+        dcs = []
+    for ip in dcs:
+        targets += [
+            {"key": f"AD:ldap:{ip}", "label": f"AD · LDAP {ip}", "category": "AD", "kind": "tcp", "host": ip, "port": 389, "target": f"{ip}:389"},
+            {"key": f"AD:kerberos:{ip}", "label": f"AD · Kerberos {ip}", "category": "AD", "kind": "tcp", "host": ip, "port": 88, "target": f"{ip}:88"},
+        ]
+    targets.append({"key": f"AD:sysvol:{domain}", "label": f"AD · \\\\{domain}\\SYSVOL", "category": "AD", "kind": "smb", "host": domain, "share": "SYSVOL", "target": f"\\\\{domain}\\SYSVOL"})
+    return targets
+
+
+def _window_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"avg": None, "max": None, "p95": None}
+    vals = sorted(values)
+    return {"avg": round(sum(vals) / len(vals), 1), "max": round(vals[-1], 1), "p95": round(vals[min(len(vals) - 1, int(len(vals) * 0.95))], 1)}
+
+
+def build_apps_report() -> dict[str, Any]:
+    with _appmon_lock:
+        apps = {k: dict(v) for k, v in _apps.items()}
+        sql = dict(_app_sql)
+        probes = []
+        for key, w in _probe_window.items():
+            stats = _window_stats(w["lat"])
+            probes.append({"key": key, "label": w["label"], "category": w["category"], "kind": w["kind"], "target": w["target"], "samples": w["samples"], "failures": w["failures"], "slow": w["slow"], "avgMs": stats["avg"], "maxMs": stats["max"], "p95Ms": stats["p95"], "lastError": w["lastError"]})
+        _probe_window.clear()
+        events = list(_cut_events)
+        _cut_events.clear()
+        # Cortes en curso (todavia sin fin): se informan igual para verlos ya.
+        ongoing = [
+            {"key": k, "label": s.get("label") or k, "category": s.get("category") or "APP", "cause": s["cause"], "startedAt": s["since"], "endedAt": None, "durationSeconds": None, "detail": s.get("target")}
+            for k, s in _probe_state.items()
+            if s.get("down")
+        ]
+        roles = dict(_roles)
+    out_apps = []
+    for key, app in apps.items():
+        w = _app_window.pop(key, None) or {"cpu": [], "mem": [], "lat": [], "portFail": 0, "restarts": 0, "svcDown": set(), "samples": 0}
+        cpu = _window_stats(w["cpu"])
+        lat = _window_stats(w["lat"])
+        out_apps.append(
+            {
+                **{k: app[k] for k in ("key", "label", "services", "processNames", "installed", "databases", "shares", "ports")},
+                "metrics": {
+                    "samples": w["samples"],
+                    "cpuAvg": cpu["avg"],
+                    "cpuMax": cpu["max"],
+                    "memMb": round(max(w["mem"]) / 1048576, 1) if w["mem"] else None,
+                    "latencyAvg": lat["avg"],
+                    "latencyMax": lat["max"],
+                    "portFailures": w["portFail"],
+                    "restarts": w["restarts"],
+                    "servicesDown": sorted(w["svcDown"]),
+                    "servicesRunning": sum(1 for s in app["services"] if s.get("status") == "running"),
+                    "servicesTotal": len(app["services"]),
+                },
+                "sql": sql.get(key),
+            }
+        )
+    return {"apps": out_apps, "roles": roles, "probes": probes, "events": events + ongoing}
+
+
+def appmon_loop() -> None:
+    """Hilo del monitoreo de aplicaciones y micro-cortes."""
+    global _probe_targets
+    time.sleep(60)
+    last_discovery = last_sample = last_sql = last_report = float("-inf")
+    ad_targets: list[dict[str, Any]] = []
+    headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
+    pool = ThreadPoolExecutor(max_workers=8)
+    while True:
+        now = time.monotonic()
+        try:
+            if now - last_discovery >= APPMON_DISCOVERY_SECONDS:
+                last_discovery = now
+                discover_apps()
+                ad_targets = _ad_targets()
+            if now - last_sample >= APPMON_SAMPLE_SECONDS:
+                last_sample = now
+                sample_apps()
+            if now - last_sql >= APPMON_SQL_SECONDS:
+                last_sql = now
+                sample_monark_sql()
+            # Sondas en paralelo; una sonda colgada (SMB sin respuesta) no se
+            # vuelve a lanzar hasta que termine.
+            for t in ad_targets + _probe_targets:
+                with _appmon_lock:
+                    if t["key"] in _probe_busy:
+                        continue
+                    _probe_busy.add(t["key"])
+                pool.submit(run_probe, t)
+            if now - last_report >= APPMON_REPORT_SECONDS:
+                last_report = now
+                report = build_apps_report()
+                r = requests.post(f"{BACKEND_URL}/api/agent/apps", json=report, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+                if r.status_code == 404:
+                    time.sleep(1800)  # backend viejo
+                    continue
+                if r.ok:
+                    targets = r.json().get("probeTargets") or []
+                    _probe_targets = [t for t in targets if isinstance(t, dict) and t.get("key") and t.get("host")][:30]
+        except Exception as exc:
+            logger.warning("Monitoreo de aplicaciones: %s", exc)
+        time.sleep(APPMON_PROBE_SECONDS)
+
+
+
 def inventory_loop() -> None:
     while True:
         try:
@@ -3320,6 +3837,7 @@ def main() -> None:
         threading.Thread(target=diagnostics_loop, daemon=True).start()
         threading.Thread(target=backup_loop, args=(args.debug,), daemon=True).start()
         threading.Thread(target=unifi_loop, daemon=True).start()
+        threading.Thread(target=appmon_loop, daemon=True).start()
 
     while True:
         cycle_start = time.monotonic()

@@ -1,4 +1,4 @@
-import { CheckCircle2, Repeat } from 'lucide-react';
+import { BellOff, CheckCircle2, Repeat } from 'lucide-react';
 import { timeAgo } from '../lib/health';
 import type { SecurityAlert } from '../types';
 
@@ -6,10 +6,18 @@ import type { SecurityAlert } from '../types';
 // condicion mientras seguia activa, y si la cerro el sistema solo.
 export default function AlertRepeatInfo({ alert, className = '' }: { alert: SecurityAlert; className?: string }) {
   const repeated = (alert.occurrences ?? 1) > 1;
-  if (!repeated && !alert.autoResolved) return null;
+  if (!repeated && !alert.autoResolved && !alert.silent) return null;
 
   return (
     <span className={`inline-flex flex-wrap items-center gap-1.5 ${className}`}>
+      {alert.silent && (
+        <span
+          title="Alerta silenciosa: se ve en el NOC pero no envía notificaciones."
+          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-500"
+        >
+          <BellOff className="h-2.5 w-2.5" />Silenciosa
+        </span>
+      )}
       {repeated && (
         <span
           title={`Misma condición detectada ${alert.occurrences} veces; no se repite la alerta ni la notificación.`}

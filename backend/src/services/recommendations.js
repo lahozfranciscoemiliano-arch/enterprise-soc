@@ -139,6 +139,36 @@ const RECOMMENDATIONS = {
     ],
     prevention: 'Pocas cuentas administradoras, separadas de las de uso diario, y registro de cambios aprobados.',
   },
+  APP_SERVICE_DOWN: {
+    title: 'Aplicación de negocio caída (Monark / ALOHA)',
+    steps: [
+      'Ver en Aplicaciones qué servicio está detenido o qué puerto no responde, y desde cuándo.',
+      'Iniciar el servicio (services.msc) y revisar en el Visor de eventos (Application/System) por qué se detuvo.',
+      'ALOHA: confirmar que la carpeta BOOTDRV siga compartida y que las terminales vuelvan a conectar (CtlSvr/Iber en verde).',
+      'Monark: verificar que SQL Server esté corriendo y que la base esté en línea.',
+    ],
+    prevention: 'Servicios en inicio automático con "reiniciar ante error" en la pestaña Recuperación, y reinicios programados fuera del horario de los locales.',
+  },
+  APP_PERFORMANCE: {
+    title: 'Aplicación lenta o saturada',
+    steps: [
+      'En Aplicaciones, revisar el gráfico: CPU del proceso, tiempo de respuesta y (Monark) latencia/bloqueos de SQL.',
+      'Si hay consultas bloqueadas en SQL: identificar la sesión que bloquea (sp_who2 / Monitor de actividad) antes de matarla.',
+      'Si la CPU del servidor también está alta: ver en el detalle del servidor qué otros procesos compiten (antivirus, backups, actualizaciones).',
+      'Si coincide siempre con el mismo horario, mover las tareas pesadas (backups, cierres) fuera del horario de atención.',
+    ],
+    prevention: 'Mantenimiento de índices/estadísticas de SQL semanal, suficiente RAM para SQL y backups fuera de horario.',
+  },
+  NETWORK_MICROCUTS: {
+    title: 'Micro-cortes hacia carpetas compartidas / Active Directory',
+    steps: [
+      'En Aplicaciones → Micro-cortes, ver si se miden desde una sola sucursal (problema de su enlace/red) o desde todas (problema del servidor de destino).',
+      'Revisar el horario en que se concentran: si coincide con backups o cierres, es saturación del enlace o del disco.',
+      'Si son desde una sucursal: revisar el internet del sitio (pestaña Red), el FortiGate/VPN y el cableado del servidor.',
+      'Si son hacia el servidor de archivos: revisar su CPU, disco y red en el detalle del servidor.',
+    ],
+    prevention: 'Enlace con respaldo en las sucursales, QoS en el FortiGate para SMB/AD y backups fuera del horario de atención.',
+  },
   MALWARE_DETECTED: {
     title: 'Malware detectado',
     steps: [

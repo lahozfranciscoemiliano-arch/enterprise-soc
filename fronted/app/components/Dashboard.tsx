@@ -21,6 +21,7 @@ import { getHealthStatus } from '../lib/health';
 import { emitTelemetry } from '../lib/liveBus';
 import RedTab from './tabs/RedTab';
 import InventarioTab from './tabs/InventarioTab';
+import AplicacionesTab from './tabs/AplicacionesTab';
 import type {
   ConnectionStatus,
   CurrentUser,
@@ -336,6 +337,10 @@ export default function Dashboard({
             window.dispatchEvent(new CustomEvent('soc:service-check', { detail: message.check }));
           }
 
+          if (message.type === 'APPS_UPDATE') {
+            window.dispatchEvent(new CustomEvent('soc:apps', { detail: message }));
+          }
+
           if (message.type === 'UNIFI_UPDATE') {
             window.dispatchEvent(new CustomEvent('soc:unifi', { detail: message.lastRun }));
           }
@@ -441,6 +446,7 @@ export default function Dashboard({
             />
           )}
           {activeTab === 'red' && <RedTab servers={serverList} isAdmin={role === 'ADMIN'} />}
+          {activeTab === 'aplicaciones' && <AplicacionesTab />}
           {activeTab === 'inventario' && <InventarioTab />}
           {activeTab === 'topologia' && <TopologiaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'mapa' && <MapaTab servers={serverList} alerts={alerts} />}
