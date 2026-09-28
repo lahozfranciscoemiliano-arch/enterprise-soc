@@ -79,23 +79,37 @@ source "$ENV_FILE"
 
 # --- Metricas del host -------------------------------------------------------
 
-# CPU: dos muestras de /proc/stat con 1s de diferencia (mismo criterio que
-# "top"/vmstat), sin depender de sysstat/mpstat que no siempre esta instalado.
+# CPU: PROMEDIO desde la corrida anterior (~60 s, el mismo intervalo que la
+# telemetria), no una muestra de 1 s: una muestra corta caia justo en el pico
+# de arranque del propio script/docker y marcaba 90-100%. Como "top":
+#   ocupado = user + nice + system + irq + softirq
+#   aparte  = iowait (esperando disco, NO es CPU ocupada) y steal (CPU que el
+#             proveedor de la VPS le quito a esta maquina: si es alto, el host
+#             esta sobrevendido y conviene reclamar o cambiar de plan).
+# /proc/stat: cpu user nice system idle iowait irq softirq steal
 read_cpu_sample() {
-  awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5}' /proc/stat
+  awk '/^cpu /{print $2+$3+$4+$7+$8, $5, $6, $9, $2+$3+$4+$5+$6+$7+$8+$9}' /proc/stat
 }
-cpu_sample_1="$(read_cpu_sample)"
-sleep 1
-cpu_sample_2="$(read_cpu_sample)"
-
-cpu_usage="$(awk -v s1="$cpu_sample_1" -v s2="$cpu_sample_2" '
+cpu_now="$(read_cpu_sample)"
+cpu_prev=""
+if [ -f "$STATE_FILE" ]; then
+  cpu_prev="$(grep -E '^PREV_CPU=' "$STATE_FILE" | cut -d= -f2- | tr -d '"')"
+fi
+if [ -z "$cpu_prev" ]; then
+  # Primera corrida: 5 s de muestra en vez de 1.
+  cpu_prev="$cpu_now"
+  sleep 5
+  cpu_now="$(read_cpu_sample)"
+fi
+read -r cpu_usage cpu_iowait cpu_steal <<<"$(awk -v s1="$cpu_prev" -v s2="$cpu_now" '
   BEGIN {
     split(s1, a, " "); split(s2, b, " ");
-    total_delta = b[1] - a[1];
-    idle_delta = b[2] - a[2];
-    if (total_delta <= 0) { print 0; exit }
-    printf "%.2f", (total_delta - idle_delta) / total_delta * 100;
+    total = b[5] - a[5];
+    if (total <= 0) { print "0 0 0"; exit }
+    printf "%.2f %.2f %.2f", (b[1]-a[1])/total*100, (b[3]-a[3])/total*100, (b[4]-a[4])/total*100;
   }')"
+cpu_cores="$(nproc 2>/dev/null || echo 1)"
+load_1="$(awk '{print $1}' /proc/loadavg)"
 
 # RAM: MemAvailable ya tiene en cuenta cache/buffers reclamables (mas fiel
 # que MemFree solo).
@@ -136,6 +150,7 @@ cat > "$STATE_FILE" <<EOF
 PREV_EPOCH=$now_epoch
 PREV_RX=$net_rx_now
 PREV_TX=$net_tx_now
+PREV_CPU="$cpu_now"
 EOF
 
 # Salud de los contenedores del propio stack (postgres/backend/frontend):
@@ -166,7 +181,8 @@ payload=$(cat <<EOF
   "networkIn": $net_in,
   "networkOut": $net_out,
   "processCount": $process_count,
-  "metadata": { "hostname": "$hostname_val", "unhealthyContainers": $unhealthy_json, "source": "host-monitor.sh" }
+  "metadata": { "hostname": "$hostname_val", "unhealthyContainers": $unhealthy_json, "source": "host-monitor.sh",
+    "perf": { "cpuSource": "proc-stat-avg", "cpuIowait": $cpu_iowait, "cpuSteal": $cpu_steal, "cores": $cpu_cores, "load1": $load_1 } }
 }
 EOF
 )
@@ -181,7 +197,7 @@ http_code="$(echo "$response" | tail -n1)"
 body="$(echo "$response" | sed '$d')"
 
 if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
-  echo "OK (HTTP $http_code): CPU ${cpu_usage}% RAM ${mem_usage}% Disco ${disk_usage}% - $body"
+  echo "OK (HTTP $http_code): CPU ${cpu_usage}% (iowait ${cpu_iowait}%, steal ${cpu_steal}%) RAM ${mem_usage}% Disco ${disk_usage}% - $body"
 else
   echo "ERROR (HTTP $http_code): $body" >&2
   exit 1

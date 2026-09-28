@@ -1,4 +1,5 @@
 const prisma = require('../prismaClient');
+const { withLatest } = require('./latest');
 const { getSettings } = require('./settings');
 const { broadcastAlertUpdate } = require('../websocket/socketServer');
 const { createRedactor, safeMetadata, AI_EXCLUDED_EVENT_TYPES } = require('./aiPrivacy');
@@ -202,10 +203,10 @@ async function askGemini(messages, userId) {
 async function buildServerContext(eventId) {
   const event = await prisma.securityEvent.findUnique({
     where: { id: eventId },
-    include: { server: { include: { backups: { orderBy: { recordedAt: 'desc' }, take: 1 }, telemetry: { orderBy: { recordedAt: 'desc' }, take: 1 } } } },
+    include: { server: true },
   });
   if (!event?.server) return { event, text: '' };
-  const s = event.server;
+  const [s] = await withLatest([event.server]);
   const d = s.diagnostics ?? {};
   const t = s.telemetry[0];
   const b = s.backups[0];

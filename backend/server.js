@@ -15,6 +15,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const prisma = require('./src/prismaClient');
+const { withLatest } = require('./src/services/latest');
 const authServer = require('./src/middleware/authServer');
 const authFortiDevice = require('./src/middleware/authFortiDevice');
 const { authUser, requireRole, SESSION_COOKIE_NAME } = require('./src/middleware/authUser');
@@ -501,9 +502,14 @@ const telemetryLimiter = rateLimit({
 // Eventos (los usa el analisis con IA) y, de la red, solo los 3 numeros que
 // se grafican. El diagnostico completo (~10 KB) va al servidor, no a cada
 // fila -- si no, la tabla crece decenas de MB por dia.
+// Errores recientes del Visor de Eventos: solo se usa la ULTIMA lista (boton
+// "Analizar con IA" del detalle del servidor), asi que se guarda en memoria y
+// no en cada fila de telemetria (1 por minuto por servidor inflaba la tabla).
+const latestEventLogErrors = new Map(); // serverId -> errores
+
 function slimTelemetryMetadata(metadata) {
   if (!metadata) return metadata;
-  const { diagnostics, network, ...rest } = metadata;
+  const { diagnostics, network, recentEventLogErrors, ...rest } = metadata;
   if (network) {
     rest.network = {
       internetUp: network.internetUp ?? null,
@@ -522,6 +528,7 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
 
   const data = parsed.data;
   const server = req.server;
+  if (Array.isArray(data.metadata?.recentEventLogErrors)) latestEventLogErrors.set(server.id, data.metadata.recentEventLogErrors);
 
   try {
     const telemetry = await prisma.telemetry.create({
@@ -701,19 +708,7 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
 app.get('/api/servers', authUser, async (req, res) => {
   try {
     const [servers, defaultThresholds, backupPolicy] = await Promise.all([
-      prisma.server.findMany({
-        orderBy: { name: 'asc' },
-        include: {
-          telemetry: {
-            orderBy: { recordedAt: 'desc' },
-            take: 1,
-          },
-          backups: {
-            orderBy: { recordedAt: 'desc' },
-            take: 1,
-          },
-        },
-      }),
+      prisma.server.findMany({ orderBy: { name: 'asc' } }).then(withLatest),
       getEffectiveDefaultThresholds(),
       loadBackupPolicy(),
     ]);
@@ -800,18 +795,7 @@ app.get('/api/servers', authUser, async (req, res) => {
 
 app.get('/api/dashboard/summary', authUser, async (req, res) => {
   try {
-    const servers = await prisma.server.findMany({
-      include: {
-        telemetry: {
-          orderBy: { recordedAt: 'desc' },
-          take: 1,
-        },
-        backups: {
-          orderBy: { recordedAt: 'desc' },
-          take: 1,
-        },
-      },
-    });
+    const servers = await withLatest(await prisma.server.findMany());
 
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -1029,12 +1013,12 @@ app.post(
       const server = await prisma.server.findUnique({ where: { id: req.params.id } });
       if (!server) return res.status(404).json({ error: 'Servidor no encontrado' });
 
-      const latestTelemetry = await prisma.telemetry.findFirst({
-        where: { serverId: server.id },
-        orderBy: { recordedAt: 'desc' },
-      });
-
-      const errors = latestTelemetry?.metadata?.recentEventLogErrors ?? [];
+      let errors = latestEventLogErrors.get(server.id);
+      if (!errors) {
+        // Recien reiniciado el backend: filas viejas todavia las traen.
+        const latestTelemetry = await prisma.telemetry.findFirst({ where: { serverId: server.id }, orderBy: { recordedAt: 'desc' } });
+        errors = latestTelemetry?.metadata?.recentEventLogErrors ?? [];
+      }
       const analysis = await analyzeEventLogErrors(server.name, errors);
 
       return res.json({ analysis, errorCount: errors.length });

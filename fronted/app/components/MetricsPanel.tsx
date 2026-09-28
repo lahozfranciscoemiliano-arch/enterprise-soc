@@ -292,7 +292,9 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
           level={cpu === null ? 'none' : resourceLevel(cpu, 'cpuUsage')}
           percent={cpu}
           sub={
-            perf?.cpuMax !== undefined && perf?.cpuMax !== null
+            perf?.cpuSteal !== undefined && perf?.cpuSteal !== null
+              ? `Espera de disco ${perf.cpuIowait?.toFixed(0) ?? 0}% · steal ${perf.cpuSteal.toFixed(0)}% · carga ${perf.load1 ?? '—'} (${perf.cores ?? '?'} vCPU)`
+              : perf?.cpuMax !== undefined && perf?.cpuMax !== null
               ? `Pico del último minuto ${perf.cpuMax.toFixed(0)}%${perf.agentCpu ? ` · agente ${perf.agentCpu.toFixed(1)}%` : ''}`
               : s.cpu
                 ? `Prom. ${s.cpu.avg.toFixed(0)}% · máx. ${s.cpu.max.toFixed(0)}%`

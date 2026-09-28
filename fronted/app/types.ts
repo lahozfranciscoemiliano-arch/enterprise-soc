@@ -280,6 +280,11 @@ export type PerfDetail = {
   nicSpeedMbps?: number | null;
   netUtilPct?: number | null;
   agentCpu?: number | null;
+  /** VPS (host-monitor.sh): espera de disco y CPU quitada por el proveedor. */
+  cpuIowait?: number | null;
+  cpuSteal?: number | null;
+  cores?: number | null;
+  load1?: number | null;
 };
 
 export type Diagnostics = {

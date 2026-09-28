@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
 const prisma = require('../prismaClient');
+const { withLatest } = require('./latest');
 const { getSettings } = require('./settings');
 const { getHealthStatus, getEffectiveDefaultThresholds } = require('./alertEngine');
 const { sendReportEmail } = require('./notifications');
@@ -49,13 +50,7 @@ async function collectReportData(periodDays) {
 
   const [servers, defaultThresholds, eventsInPeriod, resolvedInPeriod, fortiEventsInPeriod, fortiCriticalInPeriod, offlineEvents, fleetTrend] =
     await Promise.all([
-      prisma.server.findMany({
-        orderBy: { name: 'asc' },
-        include: {
-          telemetry: { orderBy: { recordedAt: 'desc' }, take: 1 },
-          backups: { orderBy: { recordedAt: 'desc' }, take: 1 },
-        },
-      }),
+      prisma.server.findMany({ orderBy: { name: 'asc' } }).then(withLatest),
       getEffectiveDefaultThresholds(),
       prisma.securityEvent.findMany({
         where: { createdAt: { gte: periodStart } },
