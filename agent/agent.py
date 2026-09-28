@@ -69,7 +69,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.12.0"
+AGENT_VERSION = "1.12.1"
 
 
 def get_base_dir() -> Path:
@@ -1528,6 +1528,10 @@ def detect_file_history_jobs() -> list[dict[str, Any]]:
         last = _file_mtime_iso(catalog) or _file_mtime_iso(conf)
         hours = _hours_since(last)
         freq_h = int(freq.group(1)) / 3600 if freq else 1
+        # Configuracion abandonada (perfil viejo, disco que ya no se usa):
+        # sin actividad hace mas de 30 dias no es un backup activo.
+        if hours is not None and hours > 30 * 24:
+            continue
         stale = hours is not None and hours > max(72, freq_h * 3)
         jobs.append(
             {
@@ -1556,6 +1560,10 @@ def detect_third_party_backup() -> list[dict[str, Any]]:
         text = f"{info.get('name', '')} {info.get('display_name', '')}".lower().replace(" ", "")
         for key, product in THIRD_PARTY_BACKUP.items():
             if key in text and product not in jobs:
+                # Deshabilitado o manual = restos de una instalacion vieja,
+                # no un backup en uso.
+                if info.get("start_type") != "automatic":
+                    continue
                 running = info.get("status") == "running"
                 jobs[product] = {
                     "method": "THIRD_PARTY",
@@ -1602,7 +1610,14 @@ def detect_sql_backups() -> list[dict[str, Any]]:
             jobs.append({"method": "SQL_SERVER", "name": label, "tool": "SQL Server", "result": "UNKNOWN",
                          "detail": "No se pudo leer msdb con la cuenta SYSTEM: " + str(inst["error"])[:200]})
             continue
-        dbs = [d for d in inst.get("databases") or [] if d.get("name") not in ("model",)]
+        all_dbs = [d for d in inst.get("databases") or [] if d.get("name") not in ("model",)]
+        # Si ninguna base tiene NINGUN backup en msdb, SQL no es el metodo de
+        # backup de este servidor (p. ej. los ALOHA copian los archivos con un
+        # script): no se informa en vez de dar "nunca tuvo backup".
+        if not any(d.get("lastFull") or d.get("lastDiff") or d.get("lastLog") for d in all_dbs):
+            continue
+        # Las bases de sistema no son las que importan para la operacion.
+        dbs = [d for d in all_dbs if d.get("name") not in ("master", "msdb", "model", "tempdb")]
         problems, lasts = [], []
         for d in dbs:
             hours = _hours_since(d.get("lastFull"))
