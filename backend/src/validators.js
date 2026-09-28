@@ -142,7 +142,6 @@ const settingsSchema = z
     UNIFI_LOCAL_USERNAME: z.string().max(200).optional(),
     UNIFI_LOCAL_PASSWORD: z.string().max(500).optional(),
     UNIFI_LOCAL_CONTROLLERS: z.string().max(4000).optional(),
-    REMOTE_ACCESS_ENABLED: z.boolean().optional(),
     TELEMETRY_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
     SECURITY_EVENT_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
     BACKUP_STATUS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
@@ -287,12 +286,6 @@ const assistantChatSchema = z
   })
   .strict();
 
-const createRemoteSessionSchema = z
-  .object({
-    targetPort: z.number().int().min(1).max(65535).default(3389),
-  })
-  .strict();
-
 // Inventario de red que manda el agente del servidor con AD/DHCP. Se valida
 // la forma general y los topes; el detalle lo normaliza services/inventory.js.
 const inventorySchema = z
@@ -350,7 +343,6 @@ module.exports = {
   fortiEventIngestSchema,
   updateServerTagsSchema,
   assistantChatSchema,
-  createRemoteSessionSchema,
   playbookSchema,
   naturalLanguageFilterSchema,
   fortiScreenshotSchema,

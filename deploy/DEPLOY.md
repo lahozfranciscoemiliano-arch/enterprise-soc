@@ -213,39 +213,23 @@ está escrito según el formato de log estándar de FortiOS documentado pública
 se validó contra logs reales de un FortiGate de Grupo Bistro. Revisá los primeros eventos
 que lleguen antes de confiar ciegamente en la clasificación de tipo/severidad.
 
-## 14. Acceso remoto (RDP/VNC) sin abrir puertos en el servidor
+## 14. Acceso remoto por RDP (directo, solo red interna / VPN)
 
-Admin → Servidores → **Conectar** (solo visible si activaste
-"Mostrar el botón Conectar" en Admin → Configuración → Acceso remoto) abre un túnel
-inverso: el agente ya instalado en el servidor se conecta hacia el backend cuando se le
-pide, así que **no hace falta abrir ningún puerto entrante en el servidor ni tocarlo a
-mano**. Requiere que ese servidor tenga el agente corriendo (versión 1.1.0 o superior).
+El túnel VNC/RDP a través del NOC **se eliminó**: el backend ya no acepta conexiones de
+túnel y el agente (desde 1.9.0) no mantiene ningún canal de control.
 
-Pasos para el operador (vos, desde tu propia máquina):
+Cada servidor tiene ahora un botón **RDP**, en su ficha (detalle del servidor) y en
+Admin → Servidores:
 
-```bash
-cd tools
-npm install          # una sola vez
-```
+- Descarga un archivo `.rdp` apuntando a la **IP interna** del servidor. Windows lo abre
+  con el Escritorio remoto (`mstsc`) de **tu propia PC**.
+- El botón de copiar deja en el portapapeles `mstsc /v:<IP>`.
+- La conexión va directo de tu PC al servidor: no pasa por el NOC ni por internet. Por eso
+  solo funciona **desde la red de la empresa o con la VPN FortiClient conectada**; desde
+  afuera la IP interna no es alcanzable.
+- Las credenciales las sigue pidiendo Windows. El NOC nunca las ve.
 
-El botón "Conectar" te da el comando exacto con la sesión y el token ya completados:
-
-```bash
-node remote-relay.js --backend wss://noc.tudominio.com --session <id> --token <token>
-mstsc /v:localhost:13389        # o tu cliente VNC, según el servicio elegido
-```
-
-Detalles de seguridad de esta función:
-
-- El token es de un solo uso (una segunda conexión con el mismo token se rechaza) y expira
-  a los 2 minutos si no se usa.
-- El túnel completo se corta solo a los 30 minutos, se haya usado o no.
-- El backend nunca interpreta el contenido del túnel (es un relay de bytes puro) — la
-  autenticación/autorización de la sesión RDP/VNC en sí la sigue haciendo Windows.
-- Solo ADMIN puede iniciar una sesión; queda registrado en Auditoría quién, cuándo y sobre
-  qué servidor (`REMOTE_SESSION_CREATE`/`REMOTE_SESSION_CLOSE`).
-- Es la función de mayor privilegio de todo el sistema (acceso interactivo directo a un
-  servidor) — si no la vas a usar por ahora, dejala apagada en Configuración.
+La IP que usa es la del alta del servidor (Admin → Servidores). Si cambió, corregila ahí.
 
 ## 15. Asistente (Gemini)
 
@@ -695,6 +679,44 @@ Cada tarjeta de la pestaña Red dice si el sitio tiene "Detalle local" o "Solo r
 - tiempo encendido.
 
 Un AP o switch caído se avisa una vez, y otra vez cuando vuelve.
+
+## 39. Privacidad de la IA y reporte ejecutivo
+
+**Qué nunca recibe la IA (Gemini/Google).** Todo pasa por `backend/src/services/aiPrivacy.js` antes de salir. Se reemplazan por marcadores (`[USUARIO-1]`, `[IP-INTERNA-2]`, `[EQUIPO-3]`...):
+
+- usuarios del Active Directory (usuario, nombre y email);
+- nombres de las PCs del dominio;
+- usuarios con formato `DOMINIO\usuario`;
+- IPs internas y públicas, MACs y rutas `\\servidor\share`;
+- emails;
+- contactos y teléfonos de sucursal.
+
+Las contraseñas, tokens, API keys y cadenas de conexión se reemplazan por `[OCULTO]`.
+
+Además:
+
+- Las alertas de **bloqueo de cuentas del AD y cambios de grupos privilegiados no se envían nunca**. Para esas se usan solo las recomendaciones internas.
+- De cada alerta solo salen métricas técnicas (CPU, disco, servicio); nunca su metadata completa.
+- La respuesta de la IA se "des-anonimiza" localmente: el operador ve el usuario o la IP real, pero Google no.
+- Los nombres de los **servidores** monitoreados sí se envían, porque sin ellos el diagnóstico no sirve.
+- Las capturas de FortiGate que se suben a mano para leerlas con IA son imágenes: no se pueden anonimizar. Recortá antes lo que no quieras enviar.
+
+**Reporte ejecutivo (PDF).** Admin → Reportes, y el envío programado por email. El reporte incluye:
+
+- **Portada:**
+  - 8 indicadores con semáforo: disponibilidad, servidores, backups, alertas, tiempo de resolución, cortes de internet, discos en riesgo y seguridad;
+  - resumen ejecutivo y recomendaciones priorizadas (ALTA/MEDIA/BAJA), redactados por la IA solo con datos agregados. Sin IA configurada, se generan por reglas.
+- **Gráficos:**
+  - salud de servidores y estado de backups (donas);
+  - alertas por día o por hora, apiladas por severidad;
+  - servidores con más alertas y alertas por tipo;
+  - tendencia de CPU, RAM y disco de la flota.
+- **Detalle por servidor:**
+  - salud, CPU, RAM y disco con barras, backup, alertas y disponibilidad del período;
+  - discos en riesgo, con pronóstico;
+  - alertas críticas sin resolver;
+  - mantenimiento preventivo.
+- **Red e inventario:** Access Points, ocupación de DHCP, impresoras y totales del AD. Del AD van solo totales, sin nombres.
 
 ## Checklist de seguridad antes de anunciar la URL
 

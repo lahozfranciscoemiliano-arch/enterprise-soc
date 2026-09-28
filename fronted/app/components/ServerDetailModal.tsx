@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WsbDetailsPanel from './WsbDetailsPanel';
+import RdpConnectButton from './RdpConnectButton';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
@@ -242,6 +243,8 @@ export default function ServerDetailModal({
                 </div>
               </div>
             </div>
+            <div className="flex shrink-0 items-center gap-2">
+            <RdpConnectButton name={server.name} host={server.ipAddress} />
             <button
               onClick={onClose}
               className="shrink-0 rounded-lg border border-slate-200 p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
@@ -249,6 +252,7 @@ export default function ServerDetailModal({
             >
               <X className="h-4 w-4" />
             </button>
+            </div>
           </div>
 
           <div className="flex gap-1 overflow-x-auto px-3">

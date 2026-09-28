@@ -82,7 +82,6 @@ const SETTING_DEFS = {
   UNIFI_LOCAL_CONTROLLERS: { envFallback: null, type: 'string', sensitive: false },
 
   // Acceso remoto
-  REMOTE_ACCESS_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
 
   // Retencion de datos (housekeeping) -- ver services/housekeeping.js. Todos
   // en dias; 0 = conservar para siempre (no recomendado con 30GB de disco).

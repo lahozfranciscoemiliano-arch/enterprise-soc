@@ -98,6 +98,9 @@ export default function AssistantPanel({ onClose }: { onClose: () => void }) {
           Enviar
         </button>
       </form>
+      <p className="border-t border-slate-100 px-3 py-1.5 text-[10px] text-slate-400">
+        🔒 Usuarios del AD, equipos, IPs, MACs y contraseñas se anonimizan antes de enviarse a la IA. No pegues credenciales.
+      </p>
     </motion.div>
   );
 }

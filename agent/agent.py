@@ -8,9 +8,9 @@ estado del backup nativo de Windows (Windows Server Backup / Backup and
 Restore heredado en Windows 10 y 11), y los envia al backend NOC/SOC via
 POST /api/telemetry y POST /api/backup-status.
 
-Tambien mantiene un canal de control persistente hacia el backend para
-recibir pedidos de acceso remoto (tunel inverso RDP/VNC) y se auto-actualiza
-cuando el backend publica una version nueva del agente.
+Se auto-actualiza cuando el backend publica una version nueva del agente. No
+abre ningun canal de acceso remoto (el RDP se hace directo por la red
+interna/VPN, fuera del NOC).
 
 IMPORTANTE: la revision de backups (wbadmin / WMI de Windows Server Backup)
 requiere que el proceso corra como Administrador. Sin privilegios elevados,
@@ -49,11 +49,6 @@ import requests
 from dotenv import load_dotenv
 
 try:
-    import websocket  # websocket-client: canal de control para el tunel de acceso remoto
-except ImportError:  # pragma: no cover - se degrada sin la funcion de acceso remoto
-    websocket = None
-
-try:
     import win32evtlog
     import win32evtlogutil
 except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
@@ -74,7 +69,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.8.0"
+AGENT_VERSION = "1.9.0"
 
 
 def get_base_dir() -> Path:
@@ -2231,148 +2226,6 @@ def _cleanup_previous_update() -> None:
             pass  # puede seguir bloqueado un instante justo despues de reiniciar; no es grave
 
 
-def _ws_base_url() -> str:
-    if BACKEND_URL.startswith("https://"):
-        return "wss://" + BACKEND_URL[len("https://") :]
-    if BACKEND_URL.startswith("http://"):
-        return "ws://" + BACKEND_URL[len("http://") :]
-    return BACKEND_URL
-
-
-def _close_quietly(*closers) -> None:
-    for closer in closers:
-        try:
-            closer()
-        except Exception:
-            pass
-
-
-def _pump_socket_to_ws(sock: socket_module.socket, ws: Any, stop_event: threading.Event) -> None:
-    try:
-        while not stop_event.is_set():
-            data = sock.recv(65536)
-            if not data:
-                break
-            ws.send(data, opcode=websocket.ABNF.OPCODE_BINARY)
-    except Exception as exc:
-        logger.debug("Pata TCP->WS del tunel terminada: %s", exc)
-    finally:
-        # Cerrar las dos puntas aca, no solo marcar el evento: si no, el otro
-        # thread puede quedar bloqueado para siempre en un recv() que nunca
-        # se va a desbloquear solo porque este thread termino.
-        stop_event.set()
-        _close_quietly(sock.close, ws.close)
-
-
-def _pump_ws_to_socket(ws: Any, sock: socket_module.socket, stop_event: threading.Event) -> None:
-    try:
-        while not stop_event.is_set():
-            opcode, data = ws.recv_data()
-            if opcode == websocket.ABNF.OPCODE_CLOSE:
-                break
-            if opcode in (websocket.ABNF.OPCODE_BINARY, websocket.ABNF.OPCODE_TEXT) and data:
-                sock.sendall(data)
-    except Exception as exc:
-        logger.debug("Pata WS->TCP del tunel terminada: %s", exc)
-    finally:
-        stop_event.set()
-        _close_quietly(sock.close, ws.close)
-
-
-def handle_remote_tunnel(session_id: str, target_port: int) -> None:
-    """Abre la "pata" de datos del tunel de acceso remoto: conecta un socket
-    TCP local (donde escucha RDP/VNC en esta misma maquina) y lo pega, byte a
-    byte, a un WebSocket hacia el backend. El backend no interpreta nada de
-    este trafico, solo lo reenvia a la otra punta -- el relay que corre el
-    operador en su propia maquina (ver tools/remote-relay.js).
-    """
-    if websocket is None:
-        logger.error("No se puede abrir un túnel de acceso remoto: falta el paquete websocket-client")
-        return
-
-    logger.info("Solicitud de acceso remoto recibida (sesión=%s, puerto=%s)", session_id, target_port)
-
-    tunnel_url = f"{_ws_base_url()}/ws/tunnel/{session_id}?role=agent"
-    headers = [f"X-Server-Id: {SERVER_ID}", f"X-Api-Key: {API_KEY}"]
-
-    sock = None
-    ws = None
-    try:
-        # El timeout de 10s es solo para el connect inicial. Si no se
-        # resetea a None despues, python deja ese mismo timeout puesto para
-        # los recv() de ahi en mas, y el tunel se corta solo apenas pasan 10
-        # segundos sin trafico (que es exactamente lo que pasa entre que se
-        # abre el tunel y el operador conecta su cliente RDP/VNC).
-        sock = socket_module.create_connection(("127.0.0.1", target_port), timeout=10)
-        sock.settimeout(None)
-        ws = websocket.create_connection(tunnel_url, header=headers, timeout=10)
-        ws.settimeout(None)
-
-        stop_event = threading.Event()
-        t1 = threading.Thread(target=_pump_socket_to_ws, args=(sock, ws, stop_event), daemon=True)
-        t2 = threading.Thread(target=_pump_ws_to_socket, args=(ws, sock, stop_event), daemon=True)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        logger.info("Túnel de acceso remoto finalizado (sesión=%s)", session_id)
-    except Exception as exc:
-        logger.error("Error en el túnel de acceso remoto (sesión=%s): %s", session_id, exc)
-    finally:
-        for closer in (sock.close if sock else None, ws.close if ws else None):
-            if closer:
-                try:
-                    closer()
-                except Exception:
-                    pass
-
-
-def start_control_connection() -> None:
-    """Mantiene una conexion de control persistente y saliente hacia el
-    backend, para recibir pedidos de acceso remoto (START_TUNNEL) sin que el
-    servidor tenga que abrir ningun puerto entrante -- la conexion siempre
-    sale del agente, nunca entra. Corre en un thread propio con reconexion
-    automatica con backoff; su caida no afecta el ciclo normal de telemetria.
-    """
-    if websocket is None:
-        logger.warning(
-            "El paquete websocket-client no está instalado: la función de acceso remoto queda deshabilitada "
-            "(el monitoreo normal sigue funcionando sin problema)."
-        )
-        return
-
-    control_url = f"{_ws_base_url()}/ws/agent-control"
-    headers = [f"X-Server-Id: {SERVER_ID}", f"X-Api-Key: {API_KEY}"]
-    state = {"backoff": 5}
-
-    def on_open(_ws):
-        state["backoff"] = 5
-        logger.debug("Canal de control conectado al backend")
-
-    def on_message(_ws, message):
-        try:
-            data = json.loads(message)
-        except (TypeError, ValueError):
-            return
-        if data.get("type") == "START_TUNNEL":
-            threading.Thread(
-                target=handle_remote_tunnel,
-                args=(data.get("sessionId"), int(data.get("targetPort", 3389))),
-                daemon=True,
-            ).start()
-
-    while True:
-        try:
-            app = websocket.WebSocketApp(control_url, header=headers, on_open=on_open, on_message=on_message)
-            app.run_forever(ping_interval=30, ping_timeout=10)
-        except Exception as exc:
-            logger.debug("Conexión de control interrumpida: %s", exc)
-
-        time.sleep(state["backoff"])
-        state["backoff"] = min(state["backoff"] * 2, 120)
-
-
 # ---------------------------------------------------------------------------
 # Inventario de red: DHCP, Active Directory, sesiones de usuarios, impresoras
 # y barrido de IPs. Corre en un hilo aparte cada INVENTORY_INTERVAL_SECONDS,
@@ -3432,7 +3285,6 @@ def main() -> None:
         global _diagnostics_threaded
         _diagnostics_threaded = True
         lower_process_priority()
-        threading.Thread(target=start_control_connection, daemon=True).start()
         threading.Thread(target=inventory_loop, daemon=True).start()
         threading.Thread(target=diagnostics_loop, daemon=True).start()
         threading.Thread(target=backup_loop, args=(args.debug,), daemon=True).start()

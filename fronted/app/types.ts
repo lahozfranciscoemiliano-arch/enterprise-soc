@@ -172,6 +172,8 @@ export type ServerThresholds = {
 export type ServerSummary = {
   id: string;
   name: string;
+  ipAddress?: string | null;
+  hostname?: string | null;
   status: string;
   lastSeenAt: string | null;
   tags: string[];
@@ -514,7 +516,6 @@ export type SystemSettings = {
   UNIFI_LOCAL_USERNAME: PlainSetting<string>;
   UNIFI_LOCAL_PASSWORD: SensitiveSetting;
   UNIFI_LOCAL_CONTROLLERS: PlainSetting<string>;
-  REMOTE_ACCESS_ENABLED: PlainSetting<boolean>;
   TELEMETRY_RETENTION_DAYS: PlainSetting<number>;
   SECURITY_EVENT_RETENTION_DAYS: PlainSetting<number>;
   BACKUP_STATUS_RETENTION_DAYS: PlainSetting<number>;

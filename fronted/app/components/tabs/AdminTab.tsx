@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   ClipboardList,
   KeyRound,
-  Monitor,
+ 
   Settings,
   ShieldHalf,
   BookOpen,
@@ -17,7 +17,7 @@ import ServerConfigPanel from '../ServerConfigPanel';
 import AuditLogPanel from '../AuditLogPanel';
 import SettingsPanel from '../SettingsPanel';
 import FortiDeviceAdmin from '../FortiDeviceAdmin';
-import RemoteAccessModal from '../RemoteAccessModal';
+import RdpConnectButton from '../RdpConnectButton';
 import PlaybooksAdmin from '../PlaybooksAdmin';
 import ReportsPanel from '../ReportsPanel';
 import { useToast } from '../Toast';
@@ -65,15 +65,6 @@ export default function AdminTab({
 
   const [revealed, setRevealed] = useState<RevealedCredential | null>(null);
   const [expandedServerId, setExpandedServerId] = useState<string | null>(null);
-  const [remoteAccessServer, setRemoteAccessServer] = useState<ServerSummary | null>(null);
-  const [remoteAccessEnabled, setRemoteAccessEnabled] = useState(false);
-
-  useEffect(() => {
-    fetch(`${API_URL}/api/admin/settings`, { credentials: 'include' })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setRemoteAccessEnabled(Boolean(data?.REMOTE_ACCESS_ENABLED?.value)))
-      .catch(() => {});
-  }, []);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -434,15 +425,7 @@ export default function AdminTab({
                   >
                     Rotar API key
                   </button>
-                  {remoteAccessEnabled && (
-                    <button
-                      onClick={() => setRemoteAccessServer(s)}
-                      className="flex items-center gap-1 rounded-lg border border-sky-200 px-2 py-1 text-sky-700 transition-colors hover:bg-sky-50"
-                    >
-                      <Monitor className="h-3 w-3" />
-                      Conectar
-                    </button>
-                  )}
+                  <RdpConnectButton name={s.name} host={s.ipAddress} compact />
                   <button
                     onClick={() => handleDeleteServer(s)}
                     className="rounded-lg border border-red-200 px-2 py-1 text-red-700 transition-colors hover:bg-red-50"
@@ -509,9 +492,6 @@ export default function AdminTab({
       </motion.div>
       </AnimatePresence>
 
-      {remoteAccessServer && (
-        <RemoteAccessModal server={remoteAccessServer} onClose={() => setRemoteAccessServer(null)} />
-      )}
     </div>
   );
 }

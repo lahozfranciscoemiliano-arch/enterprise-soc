@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BarChart3, Bot, Check, FileText, Lock, Mail, Monitor, ShieldCheck, ShieldHalf, Trash2, Wifi } from 'lucide-react';
+import { BarChart3, Bot, Check, FileText, Lock, Mail, ShieldCheck, ShieldHalf, Trash2, Wifi } from 'lucide-react';
 import type { SystemSettings } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -60,7 +60,6 @@ export default function SettingsPanel() {
         FORTI_SYSLOG_PORT: plainField(data, 'FORTI_SYSLOG_PORT') || '5514',
         GEMINI_API_KEY: '',
         GEMINI_MODEL: plainField(data, 'GEMINI_MODEL') || 'gemini-3.8-flash',
-        REMOTE_ACCESS_ENABLED: boolField(data, 'REMOTE_ACCESS_ENABLED'),
         TELEMETRY_RETENTION_DAYS: plainField(data, 'TELEMETRY_RETENTION_DAYS') || '30',
         SECURITY_EVENT_RETENTION_DAYS: plainField(data, 'SECURITY_EVENT_RETENTION_DAYS') || '365',
         BACKUP_STATUS_RETENTION_DAYS: plainField(data, 'BACKUP_STATUS_RETENTION_DAYS') || '180',
@@ -450,6 +449,11 @@ export default function SettingsPanel() {
           </a>{' '}
           (tiene nivel gratuito con límite de requests/minuto).
         </p>
+        <p className="mt-1 text-[11px] text-slate-500">
+          🔒 Privacidad: antes de salir hacia Google se reemplazan por marcadores los usuarios y equipos del Active Directory, IPs, MACs,
+          rutas de red, emails, contactos de sucursal y cualquier contraseña/token. Las alertas de bloqueos y cambios de grupos del AD no
+          se envían nunca. La respuesta se traduce de vuelta localmente.
+        </p>
         <div className="mt-3">{saveBtn('asistente', ['GEMINI_API_KEY', 'GEMINI_MODEL'])}</div>
       </div>
 
@@ -499,15 +503,6 @@ export default function SettingsPanel() {
         <div className="mt-3">{saveBtn('reportes', ['REPORT_ENABLED', 'REPORT_FREQUENCY', 'REPORT_HOUR', 'REPORT_EMAIL_TO'])}</div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
-        <h3 className="mb-3 text-sm font-semibold text-slate-800"><Monitor className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Acceso remoto</h3>
-        {checkbox('REMOTE_ACCESS_ENABLED', 'Mostrar el botón "Conectar" (RDP/VNC) en la ficha de cada servidor')}
-        <p className="mt-2 text-[11px] text-slate-400">
-          El túnel en sí siempre está disponible en el backend; este interruptor solo controla si el botón aparece en
-          el panel, para no tentar a usarlo hasta que el equipo esté cómodo con la función.
-        </p>
-        <div className="mt-3">{saveBtn('acceso remoto', ['REMOTE_ACCESS_ENABLED'])}</div>
-      </div>
     </div>
   );
 }

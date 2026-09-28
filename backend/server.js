@@ -36,7 +36,6 @@ const {
   fortiEventIngestSchema,
   updateServerTagsSchema,
   assistantChatSchema,
-  createRemoteSessionSchema,
   playbookSchema,
   naturalLanguageFilterSchema,
   fortiScreenshotSchema,
@@ -87,13 +86,6 @@ const {
   broadcastTelemetry,
   broadcastBackupStatus,
 } = require('./src/websocket/socketServer');
-const {
-  createRemoteBroker,
-  isAgentControlConnected,
-  sendStartTunnel,
-  generateSessionToken,
-  closeSession,
-} = require('./src/services/remoteBroker');
 const { startFortiSyslogListener } = require('./src/services/fortiSyslog');
 const { runHousekeeping, getLastRun: getHousekeepingLastRun, scheduleHousekeeping } = require('./src/services/housekeeping');
 const { runHeartbeatCheck, getLastRun: getHeartbeatLastRun, scheduleHeartbeat } = require('./src/services/heartbeat');
@@ -733,6 +725,10 @@ app.get('/api/servers', authUser, async (req, res) => {
         return {
           id: s.id,
           name: s.name,
+          // IP interna y hostname: para el boton RDP (conexion directa desde
+          // la red interna / VPN, no pasa por el NOC).
+          ipAddress: s.ipAddress,
+          hostname: s.hostname,
           status: s.status,
           lastSeenAt: s.lastSeenAt,
           tags: s.tags,
@@ -1573,107 +1569,11 @@ app.patch(
   }
 );
 
-// ---------------------------------------------------------------------------
-// Acceso remoto (tunel inverso RDP/VNC). Solo ADMIN: es acceso interactivo
-// directo a un servidor de un cliente, el nivel mas alto de privilegio que
-// existe en este sistema. Ver src/services/remoteBroker.js para el diseño
-// completo y tools/remote-relay.js para el lado del operador.
-// ---------------------------------------------------------------------------
+// Acceso remoto: ya no hay tunel a traves del NOC. Cada servidor tiene un
+// boton "Conectar por RDP" que abre el Escritorio remoto de la PC del
+// operador directo a la IP interna -- solo funciona desde la red de la
+// empresa o con la VPN FortiClient conectada.
 
-const remoteSessionLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 15,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Demasiadas solicitudes de acceso remoto, intenta más tarde' },
-});
-
-const ALLOWED_REMOTE_PORTS = new Set([3389, 5900]); // RDP, VNC
-
-app.post(
-  '/api/admin/servers/:id/remote-session',
-  remoteSessionLimiter,
-  authUser,
-  requireRole('ADMIN'),
-  async (req, res) => {
-    const parsed = createRemoteSessionSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Datos inválidos', details: parsed.error.flatten() });
-    }
-
-    const targetPort = parsed.data.targetPort;
-    if (!ALLOWED_REMOTE_PORTS.has(targetPort)) {
-      return res.status(400).json({ error: `Puerto no permitido. Usar uno de: ${[...ALLOWED_REMOTE_PORTS].join(', ')}` });
-    }
-
-    try {
-      const server = await prisma.server.findUnique({ where: { id: req.params.id } });
-      if (!server) return res.status(404).json({ error: 'Servidor no encontrado' });
-
-      if (!isAgentControlConnected(server.id)) {
-        return res.status(409).json({
-          error: 'El agente de este servidor no tiene una conexión de control activa con el backend en este momento',
-        });
-      }
-
-      const token = generateSessionToken();
-      const tokenHash = await bcrypt.hash(token, 10);
-      const expiresAt = new Date(Date.now() + 2 * 60 * 1000);
-
-      const session = await prisma.remoteSession.create({
-        data: { serverId: server.id, userId: req.user.sub, targetPort, tokenHash, expiresAt },
-      });
-
-      sendStartTunnel(server.id, session.id, targetPort);
-
-      logAudit({
-        userId: req.user.sub,
-        action: 'REMOTE_SESSION_CREATE',
-        targetType: 'Server',
-        targetId: server.id,
-        metadata: { sessionId: session.id, targetPort },
-      });
-
-      return res.status(201).json({
-        sessionId: session.id,
-        token,
-        targetPort,
-        expiresAt: session.expiresAt,
-      });
-    } catch (err) {
-      console.error('Error creando sesión de acceso remoto', err);
-      return res.status(500).json({ error: 'Error interno del servidor' });
-    }
-  }
-);
-
-app.get('/api/admin/remote-session/:id', authUser, requireRole('ADMIN'), async (req, res) => {
-  try {
-    const session = await prisma.remoteSession.findUnique({ where: { id: req.params.id } });
-    if (!session || session.userId !== req.user.sub) {
-      return res.status(404).json({ error: 'Sesión no encontrada' });
-    }
-    return res.json({ id: session.id, status: session.status, startedAt: session.startedAt, expiresAt: session.expiresAt });
-  } catch (err) {
-    console.error('Error consultando sesión de acceso remoto', err);
-    return res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-app.post('/api/admin/remote-session/:id/close', authUser, requireRole('ADMIN'), async (req, res) => {
-  try {
-    const session = await prisma.remoteSession.findUnique({ where: { id: req.params.id } });
-    if (!session) return res.status(404).json({ error: 'Sesión no encontrada' });
-
-    await closeSession(session.id, {});
-    logAudit({ userId: req.user.sub, action: 'REMOTE_SESSION_CLOSE', targetType: 'Server', targetId: session.serverId, metadata: { sessionId: session.id } });
-
-    return res.status(204).send();
-  } catch (err) {
-    console.error('Error cerrando sesión de acceso remoto', err);
-    return res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
 
 app.get('/api/admin/audit-log', authUser, requireRole('ADMIN'), async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
@@ -2320,11 +2220,10 @@ app.use((err, req, res, next) => {
 
 const httpServer = http.createServer(app);
 createSocketServer(httpServer);
-createRemoteBroker(httpServer);
 
 // Fallback final: si ninguno de los handlers de arriba reclamo el upgrade
 // (path desconocido), no dejar el socket colgado.
-const KNOWN_WS_PREFIXES = ['/ws/agent-control', '/ws/tunnel/', '/ws'];
+const KNOWN_WS_PREFIXES = ['/ws'];
 httpServer.on('upgrade', (req, socket) => {
   const { pathname } = new URL(req.url, 'http://localhost');
   if (KNOWN_WS_PREFIXES.some((p) => pathname === p || pathname.startsWith(p))) return;
