@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
@@ -11,22 +11,18 @@ import {
   CheckCircle2,
   ChevronDown,
   Database,
-  FolderTree,
   Lightbulb,
   Server,
-  ShoppingCart,
   Zap,
 } from 'lucide-react';
 import StatCard from '../StatCard';
 import { useLiveData } from '../inventory/useLiveData';
 import { formatDuration, timeAgo } from '../../lib/health';
-import type { AppInstanceRow, AppsOverview, MicrocutAnalysis, MicroOutageRow, ProbeTargetRow } from '../../types';
+import type { AppInstanceRow, AppsOverview, MicrocutAnalysis, MicroOutageRow } from '../../types';
 
 // Categorias de micro-corte: colores fijos por entidad (no por ranking).
 const CAT = {
-  SMB: { label: 'Carpetas compartidas', color: '#2a78d6' },
-  AD: { label: 'Active Directory', color: '#eb6834' },
-  APP: { label: 'Aplicaciones', color: '#1baf7a' },
+  APP: { label: 'Monark', color: '#2a78d6' },
 } as const;
 
 const STATUS = {
@@ -103,14 +99,6 @@ function AppCard({ inst }: { inst: AppInstanceRow }) {
             <Metric label="Tamaño base" value={dbs.length ? fmtMb(dbs.reduce((a, d) => a + d.sizeMb, 0)) : '—'} />
           </>
         )}
-        {inst.appKey === 'ALOHA' && (
-          <>
-            <Metric label="BOOTDRV" value={inst.detected.shares.length ? 'Compartida' : 'No compartida'} warn={!inst.detected.shares.length} />
-            <Metric label="Reinicios (1 min)" value={String(m?.restarts ?? 0)} warn={(m?.restarts ?? 0) > 0} />
-            <Metric label="Procesos" value={String(inst.detected.processNames.length)} />
-            <Metric label="Puertos" value={inst.detected.ports.length ? inst.detected.ports.join(', ') : '—'} />
-          </>
-        )}
       </div>
 
       {inst.trend.length > 1 && (
@@ -182,7 +170,7 @@ function AppCard({ inst }: { inst: AppInstanceRow }) {
   );
 }
 
-function AppSection({ appKey, title, icon, instances, empty }: { appKey: 'MONARK' | 'ALOHA'; title: string; icon: React.ReactNode; instances: AppInstanceRow[]; empty: string }) {
+function AppSection({ appKey, title, icon, instances, empty }: { appKey: 'MONARK'; title: string; icon: React.ReactNode; instances: AppInstanceRow[]; empty: string }) {
   const list = instances.filter((i) => i.appKey === appKey);
   const rank = { down: 0, degraded: 1, ok: 2 } as const;
   const sorted = [...list].sort((a, b) => rank[a.status] - rank[b.status] || a.serverName.localeCompare(b.serverName));
@@ -209,114 +197,20 @@ function AppSection({ appKey, title, icon, instances, empty }: { appKey: 'MONARK
   );
 }
 
-function TargetsTable({ targets }: { targets: ProbeTargetRow[] }) {
-  const [open, setOpen] = useState<string | null>(null);
-  const sorted = [...targets].sort((a, b) => b.microcuts - a.microcuts || (a.availability ?? 100) - (b.availability ?? 100));
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
-      <h2 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-800">
-        <FolderTree className="h-4 w-4 text-slate-400" />
-        Carpetas compartidas y Active Directory
-        <span className="font-normal text-slate-400">(últimas 24 h, medido cada 15 s desde cada servidor)</span>
-      </h2>
-      <p className="mb-3 text-[11px] text-slate-400">
-        Tocá un destino para ver desde qué servidores falla: si es desde uno solo, el problema está en esa sucursal; si es desde todos, en el servidor de destino.
-      </p>
-      {sorted.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-xs text-slate-500">
-          Todavía no hay mediciones. Los agentes 1.11 empiezan a medir los controladores de dominio solos; las carpetas se suman al detectar
-          el servidor de archivos (o cargándolas en Admin → Configuración → Monitoreo preventivo).
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-slate-400">
-                <th className="py-2 pr-3 font-medium">Destino</th>
-                <th className="py-2 pr-3 font-medium">Tipo</th>
-                <th className="py-2 pr-3 font-medium">Disponibilidad (peor origen)</th>
-                <th className="py-2 pr-3 font-medium">Micro-cortes</th>
-                <th className="py-2 pr-3 font-medium">Medido desde</th>
-                <th className="py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((t) => {
-                const isOpen = open === t.key;
-                const avail = t.availability;
-                return (
-                  <Fragment key={t.key}>
-                    <tr onClick={() => setOpen(isOpen ? null : t.key)} className="cursor-pointer border-b border-slate-100 hover:bg-slate-50">
-                      <td className="py-2 pr-3 font-mono text-[11px] text-slate-800">{t.label}</td>
-                      <td className="py-2 pr-3">
-                        <span className="flex items-center gap-1.5 text-slate-600">
-                          <span className="h-2 w-2 rounded-full" style={{ background: CAT[t.category].color }} />
-                          {CAT[t.category].label}
-                        </span>
-                      </td>
-                      <td className={`py-2 pr-3 font-semibold tabular-nums ${avail !== null && avail < 99.9 ? 'text-amber-700' : 'text-emerald-700'}`}>{avail !== null ? `${avail}%` : '—'}</td>
-                      <td className={`py-2 pr-3 font-semibold tabular-nums ${t.microcuts ? 'text-red-700' : 'text-slate-500'}`}>{t.microcuts}</td>
-                      <td className="py-2 pr-3 text-slate-500">{t.origins.length} servidor(es)</td>
-                      <td className="py-2 text-right text-slate-400">
-                        <ChevronDown className={`inline h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr className="border-b border-slate-100 bg-slate-50">
-                        <td colSpan={6} className="px-3 py-2">
-                          <table className="w-full text-[11px]">
-                            <thead>
-                              <tr className="text-left text-slate-400">
-                                <th className="py-1 font-medium">Desde</th>
-                                <th className="py-1 font-medium">Disponible</th>
-                                <th className="py-1 font-medium">Respuestas lentas</th>
-                                <th className="py-1 font-medium">Promedio / máx.</th>
-                                <th className="py-1 font-medium">Micro-cortes</th>
-                                <th className="py-1 font-medium">Sin acceso</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {t.origins.map((o) => (
-                                <tr key={o.serverId}>
-                                  <td className="py-1 font-medium text-slate-700">{o.serverName}</td>
-                                  <td className="py-1 tabular-nums">{o.availability ?? '—'}%</td>
-                                  <td className="py-1 tabular-nums">{o.slowPct ?? 0}%</td>
-                                  <td className="py-1 tabular-nums">{fmtMs(o.avgMs)} / {fmtMs(o.maxMs)}</td>
-                                  <td className={`py-1 tabular-nums ${o.microcuts ? 'font-semibold text-red-700' : ''}`}>{o.microcuts}</td>
-                                  <td className="py-1 tabular-nums">{formatDuration(o.downSeconds)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function MicrocutsPanel() {
   const [days, setDays] = useState<1 | 7 | 30>(7);
-  const [category, setCategory] = useState<'' | 'SMB' | 'AD' | 'APP'>('');
-  const { data, loading, error } = useLiveData<MicrocutAnalysis>(`/api/apps/microcuts?days=${days}${category ? `&category=${category}` : ''}`, {
+  const { data, loading, error } = useLiveData<MicrocutAnalysis>(`/api/apps/microcuts?days=${days}`, {
     event: 'soc:apps',
     intervalMs: 120_000,
   });
-  const cats = (category ? [category] : (['SMB', 'AD', 'APP'] as const)) as ('SMB' | 'AD' | 'APP')[];
+  const cats = ['APP'] as const;
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
           <Zap className="h-4 w-4 text-slate-400" />
-          Análisis de micro-cortes
+          Cortes y lentitud de Monark
           {data && (
             <span className="font-normal text-slate-400">
               ({data.total} en {days === 1 ? '24 h' : `${days} días`} · {formatDuration(data.totalSeconds)} sin acceso{data.ongoing ? ` · ${data.ongoing} en curso` : ''})
@@ -324,16 +218,6 @@ function MicrocutsPanel() {
           )}
         </h2>
         <div className="flex flex-wrap gap-1.5">
-          {(['', 'SMB', 'AD', 'APP'] as const).map((c) => (
-            <button
-              key={c || 'all'}
-              onClick={() => setCategory(c)}
-              className={`rounded-full border px-2.5 py-0.5 text-[11px] ${category === c ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
-            >
-              {c ? CAT[c].label : 'Todos'}
-            </button>
-          ))}
-          <span className="mx-1 w-px bg-slate-200" />
           {([1, 7, 30] as const).map((d) => (
             <button
               key={d}
@@ -417,8 +301,8 @@ function MicrocutsPanel() {
                 <tr className="border-b border-slate-200 text-left text-slate-400">
                   <th className="py-2 pr-3 font-medium">Inicio</th>
                   <th className="py-2 pr-3 font-medium">Duración</th>
-                  <th className="py-2 pr-3 font-medium">Destino</th>
-                  <th className="py-2 pr-3 font-medium">Medido desde</th>
+                  <th className="py-2 pr-3 font-medium">Componente</th>
+                  <th className="py-2 pr-3 font-medium">Servidor</th>
                   <th className="py-2 pr-3 font-medium">Causa</th>
                 </tr>
               </thead>
@@ -429,7 +313,7 @@ function MicrocutsPanel() {
                     <td className="py-1.5 pr-3 tabular-nums font-medium text-slate-800">{e.endedAt ? formatDuration(e.durationSeconds) : <span className="text-red-700">en curso</span>}</td>
                     <td className="py-1.5 pr-3">
                       <span className="flex items-center gap-1.5">
-                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: CAT[e.category]?.color ?? '#898781' }} />
+                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: CAT.APP.color }} />
                         <span className="truncate font-mono text-[11px] text-slate-700">{e.label}</span>
                       </span>
                     </td>
@@ -451,22 +335,24 @@ export default function AplicacionesTab() {
   const { data, error } = useLiveData<AppsOverview>('/api/apps/overview', { event: 'soc:apps', intervalMs: 60_000 });
   const instances = useMemo(() => data?.instances ?? [], [data]);
   const monark = instances.filter((i) => i.appKey === 'MONARK');
-  const aloha = instances.filter((i) => i.appKey === 'ALOHA');
-  const cuts24 = (data?.targets ?? []).reduce((a, t) => a + t.microcuts, 0);
-  const bad = (list: AppInstanceRow[]) => list.filter((i) => i.status !== 'ok').length;
+  const bad = monark.filter((i) => i.status !== 'ok').length;
+  const slowest = monark.reduce<number | null>((a, i) => {
+    const v = i.metrics?.latencyAvg ?? null;
+    return v === null ? a : a === null ? v : Math.max(a, v);
+  }, null);
 
   return (
     <div className="space-y-4 px-3 py-4 sm:px-6 sm:py-6">
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-        <StatCard label="Servidores con Monark" value={`${monark.length - bad(monark)}/${monark.length}`} color={bad(monark) ? 'amber' : 'emerald'} icon={<Database className="h-5 w-5" />} />
-        <StatCard label="Locales con ALOHA OK" value={`${aloha.length - bad(aloha)}/${aloha.length}`} color={bad(aloha) ? 'red' : 'emerald'} icon={<ShoppingCart className="h-5 w-5" />} />
-        <StatCard label="Micro-cortes (24 h)" value={String(cuts24)} color={cuts24 ? 'amber' : 'emerald'} icon={<Zap className="h-5 w-5" />} />
-        <StatCard label="Cortes en curso" value={String(data?.ongoing.length ?? 0)} color={data?.ongoing.length ? 'red' : 'emerald'} icon={<Activity className="h-5 w-5" />} />
+        <StatCard label="Servidores con Monark" value={`${monark.length - bad}/${monark.length}`} color={bad ? 'amber' : 'emerald'} icon={<Database className="h-5 w-5" />} />
+        <StatCard label="Respuesta más lenta" value={slowest === null ? '—' : `${Math.round(slowest)} ms`} color={(slowest ?? 0) >= 500 ? 'amber' : 'blue'} icon={<Activity className="h-5 w-5" />} />
+        <StatCard label="Cortes de Monark (24 h)" value={String(data?.microcuts24h ?? 0)} color={data?.microcuts24h ? 'amber' : 'emerald'} icon={<Zap className="h-5 w-5" />} />
+        <StatCard label="Cortes en curso" value={String(data?.ongoing.length ?? 0)} color={data?.ongoing.length ? 'red' : 'emerald'} icon={<AlertTriangle className="h-5 w-5" />} />
       </div>
 
       <p className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
         <BellOff className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-        Las alertas de esta sección son <strong className="font-medium text-slate-700">silenciosas</strong>: aparecen en el NOC y en el listado de alertas, pero no
+        Las alertas de Monark son <strong className="font-medium text-slate-700">silenciosas</strong>: aparecen en el NOC y en el listado de alertas, pero no
         envían email, Telegram ni notificación al celular.
       </p>
 
@@ -481,7 +367,7 @@ export default function AplicacionesTab() {
           <p className="mb-1 text-xs font-semibold text-red-800">Cortes en curso</p>
           {data.ongoing.map((o) => (
             <p key={o.id} className="text-[11px] text-red-700">
-              {o.label} — desde {o.serverName}, {timeAgo(o.startedAt)} ({o.cause})
+              {o.label} — en {o.serverName}, {timeAgo(o.startedAt)} ({o.cause})
             </p>
           ))}
         </div>
@@ -492,20 +378,12 @@ export default function AplicacionesTab() {
         title="Monark"
         icon={<Database className="h-4 w-4 text-slate-400" />}
         instances={instances}
-        empty="No se detectó Monark en ningún servidor todavía. El agente (1.11 o superior) lo busca cada 15 minutos en servicios, procesos, programas instalados y bases de SQL Server."
+        empty="No se detectó Monark en ningún servidor todavía. El agente (1.12 o superior) lo busca cada 15 minutos en servicios, procesos, programas instalados y bases de SQL Server."
       />
-      <AppSection
-        appKey="ALOHA"
-        title="ALOHA (punto de venta de los locales)"
-        icon={<ShoppingCart className="h-4 w-4 text-slate-400" />}
-        instances={instances}
-        empty="No se detectó ALOHA todavía. El agente busca sus servicios y procesos (CtlSvr, Iber, EDC, RFS…) y la carpeta BOOTDRV en cada servidor."
-      />
-      <TargetsTable targets={data?.targets ?? []} />
       <MicrocutsPanel />
       {!data && !error && (
         <p className="flex items-center gap-1.5 text-xs text-slate-400">
-          <AppWindow className="h-3.5 w-3.5" /> Cargando aplicaciones…
+          <AppWindow className="h-3.5 w-3.5" /> Cargando…
         </p>
       )}
     </div>

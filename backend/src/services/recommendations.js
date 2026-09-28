@@ -140,12 +140,11 @@ const RECOMMENDATIONS = {
     prevention: 'Pocas cuentas administradoras, separadas de las de uso diario, y registro de cambios aprobados.',
   },
   APP_SERVICE_DOWN: {
-    title: 'Aplicación de negocio caída (Monark / ALOHA)',
+    title: 'Monark caído o sin responder',
     steps: [
       'Ver en Aplicaciones qué servicio está detenido o qué puerto no responde, y desde cuándo.',
       'Iniciar el servicio (services.msc) y revisar en el Visor de eventos (Application/System) por qué se detuvo.',
-      'ALOHA: confirmar que la carpeta BOOTDRV siga compartida y que las terminales vuelvan a conectar (CtlSvr/Iber en verde).',
-      'Monark: verificar que SQL Server esté corriendo y que la base esté en línea.',
+      'Verificar que SQL Server esté corriendo y que la base de Monark esté en línea.',
     ],
     prevention: 'Servicios en inicio automático con "reiniciar ante error" en la pestaña Recuperación, y reinicios programados fuera del horario de los locales.',
   },

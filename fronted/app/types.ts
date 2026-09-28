@@ -509,7 +509,6 @@ export type SystemSettings = {
   NOTIFY_QUIET_HOURS: PlainSetting<string>;
   NOTIFY_BATCH_MINUTES: PlainSetting<number>;
   INVENTORY_COLLECTOR: PlainSetting<string>;
-  APP_SHARE_TARGETS: PlainSetting<string>;
   BACKUP_MULTI_METHOD_PREFIXES: PlainSetting<string>;
   BACKUP_EXCLUDED_SERVERS: PlainSetting<string>;
   PATCH_MAX_AGE_DAYS: PlainSetting<number>;
@@ -756,7 +755,7 @@ export type AppInstanceRow = {
   serverId: string;
   serverName: string;
   serverStatus: string | null;
-  appKey: 'MONARK' | 'ALOHA';
+  appKey: 'MONARK';
   label: string;
   status: 'ok' | 'degraded' | 'down';
   statusInfo: string | null;
@@ -784,25 +783,13 @@ export type AppInstanceRow = {
   sql: { at: string; instances: AppSqlInstance[] } | null;
   trend: AppTrendPoint[];
 };
-export type ProbeOrigin = {
-  serverId: string;
-  serverName: string;
-  availability: number | null;
-  slowPct: number | null;
-  avgMs: number | null;
-  maxMs: number | null;
-  microcuts: number;
-  downSeconds: number;
-  lastAt: string;
-};
-export type ProbeTargetRow = { key: string; label: string; category: 'SMB' | 'AD'; origins: ProbeOrigin[]; microcuts: number; availability: number | null };
 export type MicroOutageRow = {
   id: string;
   serverId: string;
   serverName: string;
   probeKey: string;
   label: string;
-  category: 'SMB' | 'AD' | 'APP';
+  category: 'APP';
   cause: string;
   target: string | null;
   startedAt: string;
@@ -811,17 +798,16 @@ export type MicroOutageRow = {
 };
 export type AppsOverview = {
   instances: AppInstanceRow[];
-  targets: ProbeTargetRow[];
   ongoing: MicroOutageRow[];
-  fileServers: { id: string; name: string; dc: boolean; shares: string[] }[];
+  microcuts24h: number;
 };
 export type MicrocutAnalysis = {
   days: number;
   total: number;
   totalSeconds: number;
   ongoing: number;
-  byHour: { hour: number; SMB: number; AD: number; APP: number }[];
-  byDay: { day: string; SMB: number; AD: number; APP: number; seconds: number }[];
+  byHour: { hour: number; APP: number }[];
+  byDay: { day: string; APP: number; seconds: number }[];
   insights: string[];
   events: MicroOutageRow[];
 };

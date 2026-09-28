@@ -2242,10 +2242,9 @@ app.get('/api/apps/overview', authUser, async (req, res) => {
 
 app.get('/api/apps/microcuts', authUser, async (req, res) => {
   const days = [1, 7, 30].includes(Number(req.query.days)) ? Number(req.query.days) : 7;
-  const category = ['SMB', 'AD', 'APP'].includes(req.query.category) ? req.query.category : undefined;
   const serverId = typeof req.query.serverId === 'string' && req.query.serverId.length <= 64 ? req.query.serverId : undefined;
   try {
-    return res.json(await appMonitor.microcutAnalysis({ days, category, serverId }));
+    return res.json(await appMonitor.microcutAnalysis({ days, serverId }));
   } catch (err) {
     console.error('Error analizando micro-cortes', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -2253,7 +2252,7 @@ app.get('/api/apps/microcuts', authUser, async (req, res) => {
 });
 
 app.get('/api/apps/:serverId/:appKey/history', authUser, async (req, res) => {
-  if (!['MONARK', 'ALOHA'].includes(req.params.appKey)) return res.status(400).json({ error: 'Aplicación inválida' });
+  if (req.params.appKey !== 'MONARK') return res.status(400).json({ error: 'Aplicación inválida' });
   const hours = [6, 24, 168].includes(Number(req.query.hours)) ? Number(req.query.hours) : 24;
   try {
     return res.json(await appMonitor.appHistory(req.params.serverId, req.params.appKey, hours));
@@ -2303,6 +2302,7 @@ scheduleDiskForecast();
 scheduleUnifiPoll();
 scheduleServiceMonitor();
 seedMissingPlaybooks();
+appMonitor.purgeRemovedMonitoring();
 
 // 24/7: un error no capturado se registra en vez de pasar desapercibido. Una
 // promesa rechazada no tira el proceso; una excepcion sincronica si (el

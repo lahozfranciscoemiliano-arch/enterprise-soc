@@ -1,6 +1,7 @@
-// Monitoreo de aplicaciones de negocio (Monark, ALOHA) y micro-cortes de
-// carpetas compartidas / Active Directory. Lo alimenta el agente >= 1.11.0
-// cada 60 s (POST /api/agent/apps).
+// Monitoreo de Monark (servicios, procesos, respuesta, SQL) y sus
+// micro-cortes. Lo alimenta el agente >= 1.12.0 cada 60 s
+// (POST /api/agent/apps). ALOHA, carpetas compartidas y Active Directory se
+// sacaron de este monitoreo a pedido.
 //
 // Todas las alertas de este modulo son SILENCIOSAS: quedan visibles en el
 // NOC (pestaña Aplicaciones, listado de alertas) pero no notifican por email,
@@ -21,7 +22,7 @@ const MICROCUTS_ALERT = 3; // cortes en la ultima hora para avisar inestabilidad
 const MAX_PROBE_TARGETS = 12;
 const EXCLUDED_SHARES = /^(netlogon|sysvol|print\$|ipc\$|admin\$|[a-z]\$|bootdrv)$/i;
 
-const APP_LABEL = { MONARK: 'Monark', ALOHA: 'ALOHA POS' };
+const APP_LABEL = { MONARK: 'Monark' };
 
 function evaluateApp(app) {
   const m = app.metrics ?? {};
@@ -62,9 +63,10 @@ function sqlSummary(sql) {
 
 async function ingestReport(server, report) {
   const now = new Date();
-  const apps = Array.isArray(report.apps) ? report.apps : [];
+  // Solo Monark (un agente viejo puede mandar tambien ALOHA: se ignora).
+  const apps = (Array.isArray(report.apps) ? report.apps : []).filter((a) => APP_LABEL[a.key]);
   const alerts = [];
-  const managed = ['APP_SERVICE_DOWN:MONARK', 'APP_SERVICE_DOWN:ALOHA', 'APP_PERFORMANCE:MONARK', 'APP_PERFORMANCE:ALOHA'];
+  const managed = ['APP_SERVICE_DOWN:MONARK', 'APP_PERFORMANCE:MONARK'];
 
   for (const app of apps) {
     if (!APP_LABEL[app.key]) continue;
@@ -127,8 +129,10 @@ async function ingestReport(server, report) {
     await prisma.appInstance.deleteMany({ where: { serverId: server.id, appKey: { notIn: apps.map((a) => a.key) } } });
   }
 
-  // Sondas (carpetas compartidas, AD, puertos de las aplicaciones).
-  const probes = Array.isArray(report.probes) ? report.probes : [];
+  // Sondas: solo las de la propia aplicacion (puertos/servicios de Monark);
+  // las de carpetas compartidas y AD de agentes viejos se descartan.
+  const isMonarkKey = (k) => String(k ?? '').startsWith('MONARK:');
+  const probes = (Array.isArray(report.probes) ? report.probes : []).filter((p) => isMonarkKey(p.key));
   if (probes.length) {
     await prisma.probeStat.createMany({
       data: probes.map((p) => ({
@@ -151,12 +155,12 @@ async function ingestReport(server, report) {
 
   // Micro-cortes: cerrados y en curso (upsert por inicio).
   for (const e of Array.isArray(report.events) ? report.events : []) {
-    if (!e?.key || !e.startedAt) continue;
+    if (!e?.key || !e.startedAt || !isMonarkKey(e.key)) continue;
     const startedAt = new Date(e.startedAt);
     if (Number.isNaN(startedAt.getTime())) continue;
     const data = {
       label: String(e.label ?? e.key).slice(0, 200),
-      category: ['SMB', 'AD', 'APP'].includes(e.category) ? e.category : 'APP',
+      category: 'APP',
       cause: String(e.cause ?? 'sin respuesta').slice(0, 120),
       target: e.detail ? String(e.detail).slice(0, 200) : null,
       endedAt: e.endedAt ? new Date(e.endedAt) : null,
@@ -169,69 +173,13 @@ async function ingestReport(server, report) {
     });
   }
 
-  // Inestabilidad: 3 o mas micro-cortes en la ultima hora hacia el mismo
-  // destino (carpeta compartida / controlador de dominio).
-  const since = new Date(now.getTime() - 60 * 60 * 1000);
-  const recent = await prisma.microOutage.groupBy({
-    by: ['probeKey', 'label', 'category'],
-    where: { serverId: server.id, startedAt: { gte: since }, category: { in: ['SMB', 'AD'] } },
-    _count: { _all: true },
-    _sum: { durationSeconds: true },
-  });
-  for (const p of probes.filter((x) => x.category === 'SMB' || x.category === 'AD')) managed.push(`NETWORK_MICROCUTS:${p.key}`);
-  for (const r of recent) {
-    managed.push(`NETWORK_MICROCUTS:${r.probeKey}`);
-    if (r._count._all < MICROCUTS_ALERT) continue;
-    alerts.push({
-      type: 'NETWORK_MICROCUTS',
-      severity: 'MEDIUM',
-      description: `${server.name}: ${r._count._all} micro-cortes en la última hora hacia ${r.label} (${r._sum.durationSeconds ?? 0} s sin acceso en total). Afecta el uso de ${r.category === 'AD' ? 'inicio de sesión, permisos y unidades de red' : 'la carpeta compartida'}.`,
-      metadata: { probeKey: r.probeKey, count: r._count._all },
-      dedupKey: `NETWORK_MICROCUTS:${r.probeKey}`,
-    });
-  }
-
-  await prisma.server.update({ where: { id: server.id }, data: { appRoles: report.roles ?? null } });
 
   if (!isInMaintenance(server)) {
     await Promise.all(alerts.map((a) => createAndDispatchEvent({ serverId: server.id, serverName: server.name, ...a, silent: true })));
     await resolveCleared(server.id, [...new Set(managed)], alerts.map((a) => a.dedupKey), server.name);
   }
   broadcast({ type: 'APPS_UPDATE', serverId: server.id, at: now.toISOString() });
-  return { probeTargets: await probeTargetsFor(server) };
-}
-
-// Carpetas compartidas que este servidor tiene que probar: las cargadas en
-// Admin (APP_SHARE_TARGETS, una ruta UNC por linea) y, automaticamente, las
-// de los servidores de archivos / controladores de dominio del NOC.
-function parseUnc(unc) {
-  const m = String(unc).trim().match(/^\\\\([^\\]+)\\([^\\]+)/);
-  return m ? { host: m[1], share: m[2] } : null;
-}
-
-async function probeTargetsFor(server) {
-  const cfg = await getSettings(['APP_SHARE_TARGETS']);
-  const targets = [];
-  const add = (host, share, origin) => {
-    const key = `SMB:${host.toLowerCase()}:${share.toLowerCase()}`;
-    if (targets.some((t) => t.key === key)) return;
-    targets.push({ key, label: `\\\\${host}\\${share}`, category: 'SMB', kind: 'smb', host, share, target: `\\\\${host}\\${share}`, origin });
-  };
-  for (const line of String(cfg.APP_SHARE_TARGETS ?? '').split(/[\n,;]+/)) {
-    const t = parseUnc(line);
-    if (t) add(t.host, t.share, 'manual');
-  }
-  const fileServers = await prisma.server.findMany({ where: { NOT: { id: server.id } }, select: { name: true, hostname: true, ipAddress: true, appRoles: true } });
-  for (const fs of fileServers) {
-    const roles = fs.appRoles ?? {};
-    // Solo servidores de archivos centrales (DC o nombre tipo FS); las
-    // carpetas de los ALOHA (BOOTDRV) las usan sus terminales, no la red.
-    if (!roles.fileServer || (!roles.dc && !/fs/i.test(fs.name))) continue;
-    for (const share of (roles.shares ?? []).filter((s) => !EXCLUDED_SHARES.test(s)).slice(0, 6)) {
-      add(fs.hostname || fs.name, share, 'auto');
-    }
-  }
-  return targets.slice(0, MAX_PROBE_TARGETS);
+  return { probeTargets: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -239,8 +187,8 @@ async function probeTargetsFor(server) {
 // ---------------------------------------------------------------------------
 async function overview() {
   const [instances, servers] = await Promise.all([
-    prisma.appInstance.findMany({ orderBy: [{ appKey: 'asc' }] }),
-    prisma.server.findMany({ select: { id: true, name: true, status: true, appRoles: true } }),
+    prisma.appInstance.findMany({ where: { appKey: 'MONARK' }, orderBy: [{ appKey: 'asc' }] }),
+    prisma.server.findMany({ select: { id: true, name: true, status: true } }),
   ]);
   const byId = new Map(servers.map((s) => [s.id, s]));
 
@@ -260,40 +208,7 @@ async function overview() {
     trendMap.get(k).push({ t: r.t, cpu: num(r.cpu), lat: num(r.lat), latMax: num(r.latMax), sql: num(r.sql), down: Number(r.down ?? 0), restarts: Number(r.restarts ?? 0) });
   }
 
-  // Destinos de red (carpetas / AD): disponibilidad y latencia de 24 h
-  // agregadas por destino y por servidor de origen.
-  const probeRows = await prisma.$queryRaw`
-    SELECT "probeKey", "category", MAX("label") AS label, "serverId",
-           SUM("samples") AS samples, SUM("failures") AS failures, SUM("slow") AS slow,
-           AVG("avgMs") AS avg, MAX("maxMs") AS max, MAX("at") AS last
-    FROM probe_stats WHERE "at" >= NOW() - INTERVAL '24 hours' AND "category" IN ('SMB', 'AD')
-    GROUP BY "probeKey", "category", "serverId"`;
-  const cuts24 = await prisma.microOutage.groupBy({
-    by: ['probeKey', 'serverId'],
-    where: { startedAt: { gte: new Date(Date.now() - 86400000) } },
-    _count: { _all: true },
-    _sum: { durationSeconds: true },
-  });
-  const cutsKey = new Map(cuts24.map((c) => [`${c.probeKey}|${c.serverId}`, c]));
-  const targets = new Map();
-  for (const r of probeRows) {
-    if (!targets.has(r.probeKey)) targets.set(r.probeKey, { key: r.probeKey, label: r.label, category: r.category, origins: [] });
-    const samples = Number(r.samples);
-    const failures = Number(r.failures);
-    const c = cutsKey.get(`${r.probeKey}|${r.serverId}`);
-    targets.get(r.probeKey).origins.push({
-      serverId: r.serverId,
-      serverName: byId.get(r.serverId)?.name ?? '?',
-      availability: samples ? Math.round((1 - failures / samples) * 10000) / 100 : null,
-      slowPct: samples ? Math.round((Number(r.slow) / samples) * 1000) / 10 : null,
-      avgMs: r.avg === null ? null : Math.round(Number(r.avg)),
-      maxMs: r.max === null ? null : Math.round(Number(r.max)),
-      microcuts: c?._count._all ?? 0,
-      downSeconds: c?._sum.durationSeconds ?? 0,
-      lastAt: r.last,
-    });
-  }
-  const ongoing = await prisma.microOutage.findMany({ where: { endedAt: null, startedAt: { gte: new Date(Date.now() - 86400000) } }, orderBy: { startedAt: 'desc' }, take: 50 });
+  const ongoing = await prisma.microOutage.findMany({ where: { category: 'APP', endedAt: null, startedAt: { gte: new Date(Date.now() - 86400000) } }, orderBy: { startedAt: 'desc' }, take: 50 });
 
   return {
     instances: instances.map((i) => ({
@@ -302,22 +217,16 @@ async function overview() {
       serverStatus: byId.get(i.serverId)?.status ?? null,
       trend: trendMap.get(trendKey(i.serverId, i.appKey)) ?? [],
     })),
-    targets: [...targets.values()].map((t) => ({
-      ...t,
-      origins: t.origins.sort((a, b) => b.microcuts - a.microcuts || a.serverName.localeCompare(b.serverName)),
-      microcuts: t.origins.reduce((a, o) => a + o.microcuts, 0),
-      availability: t.origins.length ? Math.min(...t.origins.map((o) => o.availability ?? 100)) : null,
-    })),
     ongoing: ongoing.map((o) => ({ ...o, serverName: byId.get(o.serverId)?.name ?? '?' })),
-    fileServers: servers.filter((s) => s.appRoles?.fileServer || s.appRoles?.dc).map((s) => ({ id: s.id, name: s.name, dc: Boolean(s.appRoles?.dc), shares: s.appRoles?.shares ?? [] })),
+    microcuts24h: await prisma.microOutage.count({ where: { category: 'APP', startedAt: { gte: new Date(Date.now() - 86400000) } } }),
   };
 }
 
 // Analisis de micro-cortes: listado + distribucion por hora del dia y por
 // dia, y conclusiones en texto (cuando pasan, a donde, desde donde).
-async function microcutAnalysis({ days = 7, category, serverId } = {}) {
+async function microcutAnalysis({ days = 7, serverId } = {}) {
   const since = new Date(Date.now() - days * 86400000);
-  const where = { startedAt: { gte: since }, ...(category ? { category } : {}), ...(serverId ? { serverId } : {}) };
+  const where = { startedAt: { gte: since }, category: 'APP', ...(serverId ? { serverId } : {}) };
   const [rows, servers] = await Promise.all([
     prisma.microOutage.findMany({ where, orderBy: { startedAt: 'desc' }, take: 2000 }),
     prisma.server.findMany({ select: { id: true, name: true } }),
@@ -327,11 +236,11 @@ async function microcutAnalysis({ days = 7, category, serverId } = {}) {
   const hourOf = (d) => Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz }).format(d)) % 24;
   const dayOf = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(d);
 
-  const byHour = Array.from({ length: 24 }, (_, h) => ({ hour: h, SMB: 0, AD: 0, APP: 0 }));
+  const byHour = Array.from({ length: 24 }, (_, h) => ({ hour: h, APP: 0 }));
   const byDayMap = new Map();
   for (let i = days - 1; i >= 0; i -= 1) {
     const d = dayOf(new Date(Date.now() - i * 86400000));
-    byDayMap.set(d, { day: d, SMB: 0, AD: 0, APP: 0, seconds: 0 });
+    byDayMap.set(d, { day: d, APP: 0, seconds: 0 });
   }
   const perTarget = new Map();
   const perOrigin = new Map();
@@ -352,7 +261,7 @@ async function microcutAnalysis({ days = 7, category, serverId } = {}) {
 
   const insights = [];
   if (rows.length) {
-    const hourTotals = byHour.map((b) => b.SMB + b.AD + b.APP);
+    const hourTotals = byHour.map((b) => b.APP);
     // Franja de 2 horas con mas cortes.
     let best = 0;
     let bestH = 0;
@@ -364,17 +273,15 @@ async function microcutAnalysis({ days = 7, category, serverId } = {}) {
       }
     }
     const share = Math.round((best / rows.length) * 100);
-    if (share >= 25) insights.push(`El ${share}% de los micro-cortes ocurre entre las ${bestH}:00 y las ${(bestH + 2) % 24}:00: revisar qué corre en ese horario (backups, cierres de ALOHA, tareas de sincronización o picos de uso de los locales).`);
+    if (share >= 25) insights.push(`El ${share}% de los cortes de Monark ocurre entre las ${bestH}:00 y las ${(bestH + 2) % 24}:00: revisar qué corre en ese horario (backups, procesos masivos, sincronizaciones o picos de uso).`);
     const topT = [...perTarget.entries()].sort((a, b) => b[1] - a[1])[0];
-    if (topT) insights.push(`El destino más afectado es ${topT[0]} (${topT[1]} de ${rows.length} cortes).`);
+    if (topT) insights.push(`El componente más afectado es ${topT[0]} (${topT[1]} de ${rows.length} cortes).`);
     const topO = [...perOrigin.entries()].sort((a, b) => b[1] - a[1]);
-    if (topO.length > 1 && topO[0][1] / rows.length >= 0.5) {
-      insights.push(`La mayoría se mide desde ${topO[0][0]} (${topO[0][1]}): el problema parece estar en el enlace o la red de esa sucursal, no en el servidor de destino.`);
-    } else if (topO.length > 1) {
-      insights.push(`Se miden desde ${topO.length} servidores distintos: si coinciden en horario, el problema está del lado del servidor de destino o del enlace central.`);
-    }
+    if (topO.length > 1) insights.push(`Servidor con más cortes: ${topO[0][0]} (${topO[0][1]}).`);
     const slow = rows.filter((r) => r.cause.startsWith('lento')).length;
-    if (slow / rows.length >= 0.5) insights.push(`${Math.round((slow / rows.length) * 100)}% son por lentitud (no caída total): suele indicar saturación del enlace o del disco del servidor de archivos.`);
+    if (slow / rows.length >= 0.5) insights.push(`${Math.round((slow / rows.length) * 100)}% son por lentitud (no caída total): suele indicar saturación de CPU, disco o SQL del servidor.`);
+    const restarts = rows.filter((r) => r.cause === 'reinicio').length;
+    if (restarts) insights.push(`${restarts} reinicio(s) de procesos de Monark: revisar el Visor de eventos (Application) por errores o cierres inesperados.`);
     const avgSec = Math.round(totalSeconds / rows.length);
     insights.push(`Duración promedio: ${avgSec} s; ${Math.round(totalSeconds / 60)} min sin acceso en total en ${days} días.`);
   }
@@ -404,4 +311,26 @@ async function appHistory(serverId, appKey, hours = 24) {
   return rows.map((r) => ({ t: r.t, cpu: num(r.cpu), mem: num(r.mem), lat: num(r.lat), latMax: num(r.latMax), sql: num(r.sql), blocked: num(r.blocked), down: Number(r.down ?? 0), restarts: Number(r.restarts ?? 0) }));
 }
 
-module.exports = { ingestReport, overview, microcutAnalysis, appHistory, evaluateApp, probeTargetsFor };
+// Al arrancar: se borra lo que quedo del monitoreo de ALOHA, carpetas
+// compartidas y AD (ya no se monitorean) y se cierran sus alertas.
+async function purgeRemovedMonitoring() {
+  try {
+    await prisma.appInstance.deleteMany({ where: { appKey: { not: 'MONARK' } } });
+    await prisma.appSample.deleteMany({ where: { appKey: { not: 'MONARK' } } });
+    await prisma.probeStat.deleteMany({ where: { NOT: { probeKey: { startsWith: 'MONARK:' } } } });
+    await prisma.microOutage.deleteMany({ where: { NOT: { probeKey: { startsWith: 'MONARK:' } } } });
+    await prisma.$executeRaw`UPDATE servers SET "appRoles" = NULL WHERE "appRoles" IS NOT NULL`;
+    const now = new Date();
+    await prisma.securityEvent.updateMany({
+      where: {
+        status: { in: ['OPEN', 'ACKNOWLEDGED'] },
+        OR: [{ type: 'NETWORK_MICROCUTS' }, { dedupKey: { in: ['APP_SERVICE_DOWN:ALOHA', 'APP_PERFORMANCE:ALOHA'] } }],
+      },
+      data: { status: 'RESOLVED', resolvedAt: now, autoResolved: true },
+    });
+  } catch (err) {
+    console.error('No se pudo limpiar el monitoreo de ALOHA/carpetas/AD', err.message);
+  }
+}
+
+module.exports = { ingestReport, overview, microcutAnalysis, appHistory, evaluateApp, purgeRemovedMonitoring };

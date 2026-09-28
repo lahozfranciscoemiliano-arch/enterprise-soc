@@ -718,41 +718,30 @@ Además:
   - mantenimiento preventivo.
 - **Red e inventario:** Access Points, ocupación de DHCP, impresoras y totales del AD. Del AD van solo totales, sin nombres.
 
-## 40. Aplicaciones: Monark, ALOHA, carpetas compartidas, AD y micro-cortes
+## 40. Aplicaciones: monitoreo de Monark
 
-Pestaña **Aplicaciones** (agente 1.11.0 o superior).
+Pestaña **Aplicaciones** (agente 1.12.0 o superior). **Solo Monark.** ALOHA, las carpetas compartidas y el Active Directory **no** se monitorean en esta sección. Los datos que quedaron de esa etapa se borran solos al actualizar la VPS y sus alertas se cierran.
 
-**Detección automática** (cada 15 min, en cada servidor):
-
-- **Monark:** cualquier servicio, proceso, programa instalado, base de SQL Server o carpeta compartida con "monark" en el nombre.
-- **ALOHA:** servicios y procesos del punto de venta (CtlSvr, Iber, EDC, RFS, AKS…), rutas `\BOOTDRV\` o `\ALOHA\`, y la carpeta compartida BOOTDRV.
+**Detección automática**, cada 15 min: cualquier servicio, proceso, programa instalado, base de SQL Server o carpeta compartida con "monark" en el nombre.
 
 **Qué se mide:**
 
 - **Cada 30 s:**
   - estado de los servicios;
-  - CPU y RAM de los procesos de la aplicación;
+  - CPU y RAM de sus procesos;
   - reinicios;
   - tiempo de respuesta de sus puertos.
-- **Cada 5 min, en Monark:**
+
+  Una caída o una lentitud sostenida se registra como corte, con inicio, fin, duración y causa.
+- **Cada 5 min:**
   - latencia de SQL;
   - tamaño de la base;
   - sesiones y consultas bloqueadas;
   - consulta más larga.
-- **Cada 15 s, desde cada servidor:**
-  - acceso a las carpetas compartidas (SMB);
-  - los controladores de dominio: DNS, LDAP (389), Kerberos (88) y `\\dominio\SYSVOL`.
 
-  Cada fallo, o dos respuestas lentas seguidas, se registra como **micro-corte**: inicio, fin, duración, causa y desde qué servidor se midió. Las carpetas a medir se configuran en Admin → Configuración → Monitoreo preventivo; las de los servidores de archivos y los DC se agregan solas.
+**Análisis:** cortes por hora del día y por día, con conclusiones automáticas.
 
-**Análisis:** la pestaña muestra:
-
-- micro-cortes por hora del día y por día;
-- destinos más afectados;
-- si fallan desde una sola sucursal o desde todas;
-- conclusiones automáticas, por ejemplo: "El 70% ocurre entre las 12:00 y las 14:00".
-
-**Alertas silenciosas:** `APP_SERVICE_DOWN`, `APP_PERFORMANCE` (3 minutos seguidos) y `NETWORK_MICROCUTS` (3 o más micro-cortes en una hora) aparecen en el NOC con la marca "Silenciosa". **Nunca** envían email, Telegram ni notificación al celular.
+**Alertas silenciosas:** `APP_SERVICE_DOWN` y `APP_PERFORMANCE` (3 minutos seguidos) aparecen con la marca "Silenciosa". **Nunca** envían email, Telegram ni notificación al celular.
 
 **Backups de los ALOHA (agente 1.10.0 o superior):**
 
