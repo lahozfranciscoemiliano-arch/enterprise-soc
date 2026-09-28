@@ -18,7 +18,7 @@ import {
 import { Activity, ArrowDownToLine, ArrowUpFromLine, Cpu, Globe, HardDrive, MemoryStick, Network } from 'lucide-react';
 import { formatRate, internetLevel, RESOURCE_LEVEL_COLOR, RESOURCE_THRESHOLDS, resourceLevel } from '../lib/health';
 import { onTelemetry } from '../lib/liveBus';
-import type { MetricPoint, MetricRange, ServerSummary } from '../types';
+import type { MetricPoint, MetricRange, PerfDetail, ServerSummary } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -83,6 +83,7 @@ function KpiTile({
   children,
   percent,
   sub,
+  hint,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -90,10 +91,11 @@ function KpiTile({
   children: React.ReactNode;
   percent?: number | null;
   sub?: React.ReactNode;
+  hint?: string;
 }) {
   const color = level === 'none' ? null : RESOURCE_LEVEL_COLOR[level];
   return (
-    <motion.div layout className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-3">
+    <motion.div layout title={hint} className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-3">
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
           {icon}
@@ -138,6 +140,7 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState<MetricPoint | null>(null);
+  const [livePerf, setLivePerf] = useState<PerfDetail | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(
@@ -177,7 +180,7 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
         const point: MetricPoint = {
           t: d.recordedAt,
           cpu: d.cpuUsage,
-          cpuMax: d.cpuUsage,
+          cpuMax: d.perf?.cpuMax ?? d.cpuUsage,
           mem: d.memoryUsage,
           memMax: d.memoryUsage,
           disk: d.diskUsage,
@@ -188,6 +191,7 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
           loss: d.lossPct ?? null,
         };
         setLive(point);
+        if (d.perf) setLivePerf(d.perf);
         if (range === '1h') setPoints((prev) => [...prev, point].slice(-LIVE_MAX_POINTS));
       }),
     [server.id, range]
@@ -203,6 +207,7 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
   const secondsAgo = lastAt ? Math.max(0, Math.round((now - new Date(lastAt).getTime()) / 1000)) : null;
   const isLive = server.status === 'ONLINE' && secondsAgo !== null && secondsAgo < 150;
 
+  const perf = livePerf ?? server.perf ?? null;
   const cpu = last?.cpu ?? server.cpuUsage;
   const mem = last?.mem ?? server.memoryUsage;
   const disk = last?.disk ?? server.diskUsage;
@@ -286,7 +291,18 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
           label="CPU"
           level={cpu === null ? 'none' : resourceLevel(cpu, 'cpuUsage')}
           percent={cpu}
-          sub={s.cpu ? `Prom. ${s.cpu.avg.toFixed(0)}% · máx. ${s.cpu.max.toFixed(0)}%` : undefined}
+          sub={
+            perf?.cpuMax !== undefined && perf?.cpuMax !== null
+              ? `Pico del último minuto ${perf.cpuMax.toFixed(0)}%${perf.agentCpu ? ` · agente ${perf.agentCpu.toFixed(1)}%` : ''}`
+              : s.cpu
+                ? `Prom. ${s.cpu.avg.toFixed(0)}% · máx. ${s.cpu.max.toFixed(0)}%`
+                : undefined
+          }
+          hint={
+            perf?.cpuSource === 'utility'
+              ? 'Promedio del último minuto con el mismo contador que el Administrador de tareas (% Utilidad del procesador), medido cada segundo.'
+              : 'Promedio del último minuto, medido cada segundo.'
+          }
         >
           <AnimatedNumber value={cpu} decimals={1} suffix="%" />
         </KpiTile>
@@ -295,16 +311,26 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
           label="RAM"
           level={mem === null ? 'none' : resourceLevel(mem, 'memoryUsage')}
           percent={mem}
-          sub={s.mem ? `Prom. ${s.mem.avg.toFixed(0)}% · máx. ${s.mem.max.toFixed(0)}%` : undefined}
+          sub={
+            perf?.memAvailableMb && perf?.memTotalMb
+              ? `${(perf.memAvailableMb / 1024).toFixed(1)} GB libres de ${(perf.memTotalMb / 1024).toFixed(1)} GB`
+              : s.mem
+                ? `Prom. ${s.mem.avg.toFixed(0)}% · máx. ${s.mem.max.toFixed(0)}%`
+                : undefined
+          }
         >
           <AnimatedNumber value={mem} decimals={1} suffix="%" />
         </KpiTile>
         <KpiTile
           icon={<HardDrive className="h-3.5 w-3.5" />}
-          label="Disco C:"
+          label="Disco C: (espacio)"
           level={disk === null ? 'none' : resourceLevel(disk, 'diskUsage')}
           percent={disk}
-          sub="Unidad del sistema"
+          sub={
+            perf?.diskBusyAvg !== undefined && perf?.diskBusyAvg !== null
+              ? `Actividad ${perf.diskBusyAvg.toFixed(0)}% (pico ${(perf.diskBusyMax ?? 0).toFixed(0)}%)${perf.diskFreeGb !== null && perf.diskFreeGb !== undefined ? ` · ${perf.diskFreeGb} GB libres` : ''}`
+              : 'Espacio usado de la unidad del sistema'
+          }
         >
           <AnimatedNumber value={disk} decimals={1} suffix="%" />
         </KpiTile>
@@ -312,7 +338,13 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
           icon={<Network className="h-3.5 w-3.5" />}
           label="Tráfico"
           level={last?.netIn === null || last?.netIn === undefined ? 'none' : 'ok'}
-          sub={s.netIn ? `Pico de entrada ${formatRate(s.netIn.max)}` : undefined}
+          sub={
+            perf?.netUtilPct !== undefined && perf?.netUtilPct !== null
+              ? `Uso del enlace ${perf.netUtilPct.toFixed(1)}% de ${perf.nicSpeedMbps! >= 1000 ? `${perf.nicSpeedMbps! / 1000} Gbps` : `${perf.nicSpeedMbps} Mbps`}`
+              : s.netIn
+                ? `Pico de entrada ${formatRate(s.netIn.max)}`
+                : undefined
+          }
         >
           <span className="flex flex-col text-sm leading-tight">
             <span className="flex items-center gap-1">

@@ -738,6 +738,7 @@ app.get('/api/servers', authUser, async (req, res) => {
           cpuUsage: latest?.cpuUsage ?? null,
           memoryUsage: latest?.memoryUsage ?? null,
           diskUsage: latest?.diskUsage ?? null,
+          perf: latest?.metadata?.perf ?? null,
           recordedAt: latest?.recordedAt ?? null,
           thresholds: {
             cpuThresholdHigh: s.cpuThresholdHigh,
@@ -887,7 +888,8 @@ app.get('/api/servers/:id/metrics', authUser, async (req, res) => {
     const rows = await prisma.$queryRaw`
       SELECT
         date_bin(${bucket}::interval, "recordedAt", TIMESTAMP '2000-01-01') AS t,
-        AVG("cpuUsage") AS cpu, MAX("cpuUsage") AS "cpuMax",
+        AVG("cpuUsage") AS cpu,
+        MAX(COALESCE(("metadata"->'perf'->>'cpuMax')::float, "cpuUsage")) AS "cpuMax",
         AVG("memoryUsage") AS mem, MAX("memoryUsage") AS "memMax",
         MAX("diskUsage") AS disk,
         AVG("networkIn") AS "netIn", AVG("networkOut") AS "netOut",

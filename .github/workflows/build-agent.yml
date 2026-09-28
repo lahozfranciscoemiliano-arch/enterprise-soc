@@ -43,6 +43,7 @@ jobs:
           pyinstaller --onefile --name enterprise-soc-agent
           --hidden-import=win32timezone
           --hidden-import=win32api
+          --hidden-import=win32pdh
           agent.py
 
       - name: Publicar como Release (tag agent-latest)

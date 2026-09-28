@@ -56,6 +56,11 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
     win32evtlogutil = None
 
 try:
+    import win32pdh  # contadores de rendimiento (los mismos del Administrador de tareas)
+except ImportError:  # pragma: no cover
+    win32pdh = None
+
+try:
     import win32com.client
     import win32service
     import win32serviceutil
@@ -69,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.12.1"
+AGENT_VERSION = "1.13.0"
 
 
 def get_base_dir() -> Path:
@@ -177,44 +182,225 @@ _pending_diagnostics: dict[str, Any] | None = None
 _diagnostics_threaded = False
 
 
-def collect_network_throughput() -> tuple[float, float]:
-    """Devuelve (bytes/seg entrada, bytes/seg salida) desde la ultima lectura.
+# ---------------------------------------------------------------------------
+# Medicion de rendimiento (CPU, disco, red) igual que el Administrador de
+# tareas de Windows.
+#
+# Antes: una sola muestra de 1 s de CPU por minuto, tomada justo cuando el
+# agente arrancaba su propio trabajo; un pico de un segundo (el mismo agente
+# lanzando PowerShell, un antivirus) se reportaba como "100% de CPU" aunque
+# el servidor estuviera al 17%.
+#
+# Ahora: un hilo toma una muestra por segundo, todo el tiempo, con los
+# contadores de rendimiento de Windows que usa el Administrador de tareas:
+#   CPU   -> \Processor Information(_Total)\% Processor Utility (tiene en
+#            cuenta la frecuencia real del procesador); si no existe (Server
+#            2008/Win7) \Processor(_Total)\% Processor Time.
+#   Disco -> \PhysicalDisk(_Total)\% Idle Time => actividad = 100 - inactivo,
+#            y la cola de disco; bytes leidos/escritos por segundo.
+#   Red   -> bytes/s solo de las placas fisicas activas (sin loopback, ni
+#            adaptadores virtuales/tunel), y % de uso del enlace.
+# Cada telemetria informa el PROMEDIO del ultimo minuto (lo que se ve en el
+# Administrador de tareas) y aparte el pico y el percentil 95.
+# ---------------------------------------------------------------------------
+PERF_SAMPLE_SECONDS = 1.0
+PERF_WINDOW = 600  # 10 minutos de muestras
+_VIRTUAL_NIC_RE = re.compile(r"loopback|isatap|teredo|pseudo|6to4|vethernet|hyper-v|virtualbox|vmware|tap-|tunnel|bluetooth|npcap|wan miniport|forti", re.IGNORECASE)
 
-    psutil.net_io_counters() es un contador acumulado desde el arranque del
-    sistema, asi que se calcula la diferencia contra la muestra anterior
-    para reportar un valor instantaneo util para graficar.
-    """
-    global _last_net_sample
-    counters = psutil.net_io_counters()
-    now = time.monotonic()
 
-    if _last_net_sample is None:
-        _last_net_sample = NetSample(counters.bytes_sent, counters.bytes_recv, now)
-        return 0.0, 0.0
+class PerfSampler:
+    def __init__(self) -> None:
+        self.samples: list[dict[str, float | None]] = []
+        self.lock = threading.Lock()
+        self.cpu_source = "psutil"
+        self._query = None
+        self._counters: dict[str, Any] = {}
+        self._last_disk = None
+        self._last_net = None
+        self._last_time = None
+        self._last_report_at = time.monotonic()
+        self.started = False
 
-    elapsed = max(now - _last_net_sample.timestamp, 1e-6)
-    bytes_in = max(counters.bytes_recv - _last_net_sample.bytes_recv, 0) / elapsed
-    bytes_out = max(counters.bytes_sent - _last_net_sample.bytes_sent, 0) / elapsed
+    def _init_pdh(self) -> None:
+        if win32pdh is None:
+            return
+        try:
+            self._query = win32pdh.OpenQuery()
 
-    _last_net_sample = NetSample(counters.bytes_sent, counters.bytes_recv, now)
-    return round(bytes_in, 2), round(bytes_out, 2)
+            def add(key: str, *paths: str) -> None:
+                for path in paths:
+                    try:
+                        adder = getattr(win32pdh, "AddEnglishCounter", None) or win32pdh.AddCounter
+                        self._counters[key] = adder(self._query, path)
+                        if key == "cpu":
+                            self.cpu_source = "utility" if "Utility" in path else "time"
+                        return
+                    except Exception:
+                        continue
+
+            add("cpu", r"\Processor Information(_Total)\% Processor Utility", r"\Processor(_Total)\% Processor Time")
+            add("diskIdle", r"\PhysicalDisk(_Total)\% Idle Time")
+            add("diskQueue", r"\PhysicalDisk(_Total)\Avg. Disk Queue Length")
+            win32pdh.CollectQueryData(self._query)  # los contadores de tasa necesitan 2 lecturas
+        except Exception as exc:
+            logger.warning("Contadores de rendimiento de Windows no disponibles (%s); se usa psutil", exc)
+            self._query = None
+            self._counters = {}
+
+    def _pdh_value(self, key: str) -> float | None:
+        counter = self._counters.get(key)
+        if counter is None:
+            return None
+        try:
+            return float(win32pdh.GetFormattedCounterValue(counter, win32pdh.PDH_FMT_DOUBLE)[1])
+        except Exception:
+            return None  # p. ej. PDH_CALC_NEGATIVE_VALUE en una lectura puntual
+
+    @staticmethod
+    def _physical_nics() -> set[str]:
+        try:
+            stats = psutil.net_if_stats()
+        except Exception:
+            return set()
+        return {name for name, st in stats.items() if st.isup and not _VIRTUAL_NIC_RE.search(name)}
+
+    def sample(self) -> None:
+        now = time.monotonic()
+        cpu = None
+        disk_busy = disk_queue = None
+        if self._query is not None:
+            try:
+                win32pdh.CollectQueryData(self._query)
+                cpu = self._pdh_value("cpu")
+                idle = self._pdh_value("diskIdle")
+                disk_busy = None if idle is None else 100.0 - idle
+                disk_queue = self._pdh_value("diskQueue")
+            except Exception:
+                cpu = None
+        if cpu is None:
+            cpu = psutil.cpu_percent(None)  # desde la muestra anterior (1 s)
+            if self.cpu_source != "psutil" and self._query is None:
+                self.cpu_source = "psutil"
+
+        read_bps = write_bps = net_in = net_out = None
+        elapsed = (now - self._last_time) if self._last_time else None
+        try:
+            disk = psutil.disk_io_counters()
+            if disk and self._last_disk and elapsed:
+                read_bps = max(disk.read_bytes - self._last_disk.read_bytes, 0) / elapsed
+                write_bps = max(disk.write_bytes - self._last_disk.write_bytes, 0) / elapsed
+            self._last_disk = disk
+        except Exception:
+            pass
+        try:
+            nics = self._physical_nics()
+            per = psutil.net_io_counters(pernic=True)
+            rx = sum(c.bytes_recv for n, c in per.items() if n in nics)
+            tx = sum(c.bytes_sent for n, c in per.items() if n in nics)
+            if self._last_net and elapsed:
+                net_in = max(rx - self._last_net[0], 0) / elapsed
+                net_out = max(tx - self._last_net[1], 0) / elapsed
+            self._last_net = (rx, tx)
+        except Exception:
+            pass
+        self._last_time = now
+
+        clamp = lambda v: None if v is None else max(0.0, min(100.0, v))  # noqa: E731
+        with self.lock:
+            self.samples.append(
+                {"t": now, "cpu": clamp(cpu), "diskBusy": clamp(disk_busy), "diskQueue": disk_queue, "readBps": read_bps, "writeBps": write_bps, "netIn": net_in, "netOut": net_out}
+            )
+            if len(self.samples) > PERF_WINDOW:
+                del self.samples[: len(self.samples) - PERF_WINDOW]
+
+    def run(self) -> None:
+        self._init_pdh()
+        psutil.cpu_percent(None)
+        self.started = True
+        while True:
+            start = time.monotonic()
+            try:
+                self.sample()
+            except Exception as exc:
+                logger.debug("Muestra de rendimiento fallida: %s", exc)
+            time.sleep(max(0.05, PERF_SAMPLE_SECONDS - (time.monotonic() - start)))
+
+    def window(self, since: float) -> list[dict[str, float | None]]:
+        with self.lock:
+            return [x for x in self.samples if x["t"] >= since]
+
+
+_perf = PerfSampler()
+
+
+def _agg(values: list[float | None]) -> dict[str, float | None]:
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return {"avg": None, "max": None, "p95": None}
+    return {"avg": sum(vals) / len(vals), "max": vals[-1], "p95": vals[min(len(vals) - 1, int(len(vals) * 0.95))]}
+
+
+def _nic_speed_mbps() -> float | None:
+    try:
+        speeds = [st.speed for name, st in psutil.net_if_stats().items() if st.isup and st.speed and not _VIRTUAL_NIC_RE.search(name)]
+        return float(sum(speeds)) if speeds else None
+    except Exception:
+        return None
 
 
 def collect_system_metrics() -> dict[str, Any]:
-    """Metricas base con psutil: CPU, RAM, disco, red y numero de procesos."""
-    cpu_usage = psutil.cpu_percent(interval=1)  # bloquea 1s para una medicion real
+    """CPU, RAM, disco y red del ultimo intervalo, medidos como el
+    Administrador de tareas (ver PerfSampler)."""
+    now = time.monotonic()
+    since = _perf._last_report_at
+    window = _perf.window(since) if _perf.started else []
+    # Recien arrancado (o hilo caido): una medicion directa de 3 s, no de 1.
+    if len(window) < 3:
+        cpu_now = psutil.cpu_percent(interval=3)
+        window = [{"cpu": cpu_now, "diskBusy": None, "diskQueue": None, "readBps": None, "writeBps": None, "netIn": None, "netOut": None}]
+    _perf._last_report_at = now
+
+    cpu = _agg([x["cpu"] for x in window])
+    disk_busy = _agg([x["diskBusy"] for x in window])
+    net_in = _agg([x["netIn"] for x in window])
+    net_out = _agg([x["netOut"] for x in window])
     memory = psutil.virtual_memory()
     disk_path = "C:\\" if sys.platform == "win32" else "/"
     disk = psutil.disk_usage(disk_path)
-    net_in, net_out = collect_network_throughput()
+    speed = _nic_speed_mbps()
+    r2 = lambda v: None if v is None else round(v, 2)  # noqa: E731
+
+    try:
+        agent_cpu = psutil.Process().cpu_percent(None) / (psutil.cpu_count() or 1)
+    except Exception:
+        agent_cpu = None
 
     return {
-        "cpuUsage": round(cpu_usage, 2),
+        "cpuUsage": round(cpu["avg"] or 0.0, 2),
         "memoryUsage": round(memory.percent, 2),
         "diskUsage": round(disk.percent, 2),
-        "networkIn": net_in,
-        "networkOut": net_out,
+        "networkIn": round(net_in["avg"] or 0.0, 2),
+        "networkOut": round(net_out["avg"] or 0.0, 2),
         "processCount": len(psutil.pids()),
+        "perf": {
+            "samples": len(window),
+            "cpuSource": _perf.cpu_source,
+            "cpuMax": r2(cpu["max"]),
+            "cpuP95": r2(cpu["p95"]),
+            "memTotalMb": round(memory.total / 1048576),
+            "memAvailableMb": round(memory.available / 1048576),
+            "diskFreeGb": round(disk.free / 1073741824, 1),
+            "diskBusyAvg": r2(disk_busy["avg"]),
+            "diskBusyMax": r2(disk_busy["max"]),
+            "diskQueueAvg": r2(_agg([x["diskQueue"] for x in window])["avg"]),
+            "diskReadBps": r2(_agg([x["readBps"] for x in window])["avg"]),
+            "diskWriteBps": r2(_agg([x["writeBps"] for x in window])["avg"]),
+            "netInMax": r2(net_in["max"]),
+            "netOutMax": r2(net_out["max"]),
+            "nicSpeedMbps": speed,
+            "netUtilPct": r2(((max(net_in["avg"] or 0, net_out["avg"] or 0) * 8) / (speed * 1e6) * 100) if speed else None),
+            "agentCpu": r2(agent_cpu),
+        },
     }
 
 
@@ -2103,12 +2289,15 @@ def send_backup_status(payload: dict[str, Any]) -> None:
 def build_payload() -> dict[str, Any]:
     global _last_diagnostics_at
     metrics = collect_system_metrics()
+    perf = metrics.pop("perf", None)
     recent_errors = collect_recent_errors()
 
     metadata: dict[str, Any] = {
         "hostname": os.getenv("COMPUTERNAME", ""),
         "recentEventLogErrors": recent_errors,
     }
+    if perf:
+        metadata["perf"] = perf
 
     try:
         network = collect_network_status()
@@ -3745,6 +3934,7 @@ def main() -> None:
         global _diagnostics_threaded
         _diagnostics_threaded = True
         lower_process_priority()
+        threading.Thread(target=_perf.run, daemon=True).start()
         threading.Thread(target=inventory_loop, daemon=True).start()
         threading.Thread(target=diagnostics_loop, daemon=True).start()
         threading.Thread(target=backup_loop, args=(args.debug,), daemon=True).start()

@@ -186,6 +186,7 @@ export type ServerSummary = {
   cpuUsage: number | null;
   memoryUsage: number | null;
   diskUsage: number | null;
+  perf?: PerfDetail | null;
   recordedAt: string | null;
   thresholds: ServerThresholds;
   maintenanceUntil: string | null;
@@ -256,7 +257,29 @@ export type LiveTelemetry = {
   processCount?: number | null;
   latencyMs?: number | null;
   lossPct?: number | null;
+  perf?: PerfDetail | null;
   recordedAt: string;
+};
+
+/** Detalle de la medicion del ultimo minuto (agente >= 1.13.0), igual que el Administrador de tareas. */
+export type PerfDetail = {
+  samples?: number;
+  cpuSource?: 'utility' | 'time' | 'psutil';
+  cpuMax?: number | null;
+  cpuP95?: number | null;
+  memTotalMb?: number | null;
+  memAvailableMb?: number | null;
+  diskFreeGb?: number | null;
+  diskBusyAvg?: number | null;
+  diskBusyMax?: number | null;
+  diskQueueAvg?: number | null;
+  diskReadBps?: number | null;
+  diskWriteBps?: number | null;
+  netInMax?: number | null;
+  netOutMax?: number | null;
+  nicSpeedMbps?: number | null;
+  netUtilPct?: number | null;
+  agentCpu?: number | null;
 };
 
 export type Diagnostics = {

@@ -242,6 +242,7 @@ export default function Dashboard({
                   cpuUsage: d.cpuUsage,
                   memoryUsage: d.memoryUsage,
                   diskUsage: d.diskUsage,
+                  perf: d.perf ?? null,
                   recordedAt,
                 },
               };

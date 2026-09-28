@@ -107,6 +107,9 @@ function broadcastTelemetry(server, telemetry) {
       networkIn: telemetry.networkIn,
       networkOut: telemetry.networkOut,
       processCount: telemetry.processCount,
+      // Detalle de la medicion (agente >= 1.13.0): pico/p95 de CPU del
+      // minuto, actividad de disco, RAM libre, uso del enlace.
+      perf: telemetry.metadata?.perf ?? null,
       latencyMs: telemetry.metadata?.network?.latencyMs ?? null,
       lossPct: telemetry.metadata?.network?.lossPct ?? null,
       recordedAt: telemetry.recordedAt,
