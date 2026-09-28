@@ -433,11 +433,17 @@ model UnifiDevice {
   uptimeSeconds    Int?
   // Consola/host de UniFi al que pertenece (Site Manager) o sitio (API local).
   hostName         String?
+  // Sitio al que pertenece (UnifiSite.id) y datos extra leidos del
+  // controlador local: radios/canales, satisfaccion, CPU/RAM, uplink, puertos.
+  siteId           String?
+  source           String?   // cloud | local | agent
+  details          Json?
   // Ya se aviso que esta caido (se avisa una vez por caida, no en cada sondeo).
   notifiedOffline  Boolean   @default(false)
   statusChangedAt  DateTime  @default(now())
   lastSyncAt       DateTime  @default(now())
 
+  @@index([siteId])
   @@map("unifi_devices")
 }
 
@@ -636,6 +642,18 @@ model UnifiSite {
   hostOfflineSince  DateTime?
   notifiedHostDown  Boolean   @default(false)
   lastSyncAt        DateTime  @default(now())
+  // Nombre interno del sitio en el controlador ("default") e IPs LAN del
+  // controlador que informa la nube: con eso el agente de la sucursal
+  // consulta el controlador en la red local y trae el detalle completo.
+  siteKey           String?
+  lanIps            String[]  @default([])
+  // Detalle local (agente >= 1.8.0): quien lo leyo, cuando, salud por
+  // subsistema (WAN/LAN/WLAN) y el ultimo error de conexion/login.
+  localSource       String?
+  localAt           DateTime?
+  localError        String?
+  controllerUrl     String?
+  health            Json?
 
   @@map("unifi_sites")
 }

@@ -306,7 +306,45 @@ export type UnifiDevice = {
   lastSeenOnlineAt: string | null;
   statusChangedAt: string;
   lastSyncAt: string;
+  siteId?: string | null;
+  source?: string | null;
+  details?: UnifiDeviceDetails | null;
 };
+
+export type UnifiDeviceDetails = {
+  mac?: string;
+  serial?: string | null;
+  typeCode?: string | null;
+  satisfaction?: number | null;
+  cpu?: number | null;
+  mem?: number | null;
+  userClients?: number | null;
+  guestClients?: number | null;
+  upgradeTo?: string | null;
+  lastSeenAt?: string | null;
+  tempC?: number | null;
+  uplink?: { type: string | null; device: string | null; port: number | null; speed: number | null; fullDuplex: boolean | null } | null;
+  radios?: { band: string; channel: number | null; clients: number | null; satisfaction: number | null; utilization: number | null; txPower: number | null }[];
+  ports?: { total: number; up: number; poeWatts: number | null } | null;
+};
+
+export type UnifiHealth = Record<
+  string,
+  {
+    status: string | null;
+    users: number | null;
+    guests: number | null;
+    aps: number | null;
+    switches: number | null;
+    disconnected: number | null;
+    wanIp: string | null;
+    isp: string | null;
+    latencyMs: number | null;
+    downMbps: number | null;
+    upMbps: number | null;
+    uptimeSeconds: number | null;
+  }
+>;
 
 export type UnifiRun = {
   at: string;
@@ -349,6 +387,12 @@ export type UnifiSiteRow = {
   devicesDownSince: string | null;
   hostOfflineSince: string | null;
   lastSyncAt: string;
+  lanIps?: string[];
+  localSource?: string | null;
+  localAt?: string | null;
+  localError?: string | null;
+  controllerUrl?: string | null;
+  health?: UnifiHealth | null;
 };
 
 export type NetworkOverview = {
@@ -363,7 +407,7 @@ export type NetworkOverview = {
     ispSecondaryPublicIp: string | null;
     network: NetworkSummary | null;
   }[];
-  unifi: { lastRun: UnifiRun; devices: UnifiDevice[]; sites?: UnifiSiteRow[] };
+  unifi: { lastRun: UnifiRun; devices: UnifiDevice[]; sites?: UnifiSiteRow[]; agents?: { serverId: string; name: string; https: boolean }[] };
   recentEvents: SecurityAlert[];
 };
 
@@ -466,6 +510,10 @@ export type SystemSettings = {
   UNIFI_API_KEY: SensitiveSetting;
   UNIFI_CONTROLLER_URL: PlainSetting<string>;
   UNIFI_VERIFY_TLS: PlainSetting<boolean>;
+  UNIFI_LOCAL_ENABLED: PlainSetting<boolean>;
+  UNIFI_LOCAL_USERNAME: PlainSetting<string>;
+  UNIFI_LOCAL_PASSWORD: SensitiveSetting;
+  UNIFI_LOCAL_CONTROLLERS: PlainSetting<string>;
   REMOTE_ACCESS_ENABLED: PlainSetting<boolean>;
   TELEMETRY_RETENTION_DAYS: PlainSetting<number>;
   SECURITY_EVENT_RETENTION_DAYS: PlainSetting<number>;

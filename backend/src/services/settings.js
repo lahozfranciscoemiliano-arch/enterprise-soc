@@ -73,6 +73,13 @@ const SETTING_DEFS = {
   UNIFI_API_KEY: { envFallback: 'UNIFI_API_KEY', type: 'string', sensitive: true },
   UNIFI_CONTROLLER_URL: { envFallback: null, type: 'string', sensitive: false },
   UNIFI_VERIFY_TLS: { envFallback: null, type: 'boolean', sensitive: false },
+  // Detalle local (services/unifiLocal.js): cuenta de SOLO LECTURA creada en
+  // cada controlador (misma usuario/clave en todos) que usan los agentes de
+  // las sucursales para leer AP por AP. URLs extra: una por linea.
+  UNIFI_LOCAL_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
+  UNIFI_LOCAL_USERNAME: { envFallback: null, type: 'string', sensitive: false },
+  UNIFI_LOCAL_PASSWORD: { envFallback: null, type: 'string', sensitive: true },
+  UNIFI_LOCAL_CONTROLLERS: { envFallback: null, type: 'string', sensitive: false },
 
   // Acceso remoto
   REMOTE_ACCESS_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },

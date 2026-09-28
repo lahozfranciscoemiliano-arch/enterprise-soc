@@ -665,6 +665,37 @@ Comprobación:
     curl -s http://127.0.0.1:3000/health
     systemctl list-timers soc-autoheal.timer
 
+## 38. UniFi en detalle (AP por AP) con controladores autoalojados
+
+La nube de Ubiquiti solo informa un resumen por sitio de los controladores "Network Server" autoalojados. Los de versión 8.0.x no informan ni eso, por eso se veía "—". Además, los sitios internos "super" duplicaban cada sucursal; ahora se ocultan.
+
+El detalle lo lee el **agente de cada sucursal**, que está en la misma red local que el controlador (agente 1.8.0 o posterior):
+
+1. En **cada controlador**, crear un administrador local de **solo lectura**: Settings → Admins → Add Admin → "Restrict to local access only", rol *View Only*. Usar **el mismo usuario y la misma contraseña** en todos.
+2. En el NOC: Admin → Configuración → Ubiquiti UniFi → "Detalle completo por sucursal". Cargar ese usuario y esa contraseña.
+3. Los agentes reciben la cuenta y cada 2 minutos leen su controlador:
+   - La IP LAN del controlador sale de la nube.
+   - También se prueba `https://127.0.0.1:8443`, porque el controlador puede estar en el mismo servidor que el agente.
+   - Se pueden agregar URLs extra en la configuración.
+   - Si hay varios agentes en la misma red, lo lee uno solo.
+
+**Importante:** la contraseña del controlador **solo se entrega a agentes conectados por HTTPS**. Si los agentes usan `http://`, hay dos opciones:
+
+- **Recomendado:** activar HTTPS con certbot (sección 2) y reinstalar los agentes con `-BackendUrl https://...`.
+- **Alternativa:** cargar `UNIFI_USERNAME=...` y `UNIFI_PASSWORD=...` en el `.env` del agente de cada sucursal (`C:\SOC-Agent\.env`) y reiniciar la tarea `EnterpriseSOCAgent`.
+
+Cada tarjeta de la pestaña Red dice si el sitio tiene "Detalle local" o "Solo resumen de la nube". Si no se pudo entrar al controlador, también muestra el motivo, por ejemplo "no alcanzable" o "usuario o contraseña incorrectos". Al tocar una tarjeta se abre el detalle de cada equipo:
+
+- estado, IP y MAC;
+- clientes por radio y canal, uso del canal y satisfacción;
+- CPU y RAM;
+- uplink y velocidad;
+- puertos y PoE en los switches;
+- firmware, con aviso si hay actualización;
+- tiempo encendido.
+
+Un AP o switch caído se avisa una vez, y otra vez cuando vuelve.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

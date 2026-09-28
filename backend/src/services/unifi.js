@@ -171,16 +171,37 @@ function hostVersion(host) {
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
+// IPs privadas (LAN) del controlador que informa la nube: el agente de la
+// sucursal en esa misma red es el que lo consulta localmente.
+const PRIVATE_IPV4 = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)\d+\.\d+(\.\d+)?$/;
+function hostLanIps(host) {
+  const rs = host.reportedState ?? {};
+  const candidates = [host.ipAddress, rs.ip, rs.ipAddress, rs.lanIp, ...(Array.isArray(rs.ipAddrs) ? rs.ipAddrs : [])];
+  for (const iface of Array.isArray(rs.interfaces) ? rs.interfaces : []) {
+    candidates.push(iface?.ip, iface?.ipv4, ...(Array.isArray(iface?.ips) ? iface.ips : []));
+  }
+  return [...new Set(candidates.map((ip) => String(ip ?? '').split('/')[0].trim()).filter((ip) => PRIVATE_IPV4.test(ip)))].slice(0, 8);
+}
+
+// "super" es el sitio interno de administracion de los controladores
+// autoalojados: no tiene equipos y aparecia duplicando cada sucursal.
+function isInternalSite(site) {
+  const name = String(site.meta?.name ?? '').toLowerCase();
+  const desc = String(site.meta?.desc ?? '').toLowerCase();
+  return name === 'super' || desc === 'super';
+}
+
 // Resumen por sitio: /v1/hosts (estado del controlador) + /v1/sites
 // (contadores de equipos y clientes). Unico dato disponible para
 // controladores "Network Server" autoalojados.
 async function fetchCloudSites(apiKey, hostNames) {
   const [hosts, sites] = await Promise.all([fetchCloudList('/v1/hosts', apiKey), fetchCloudList('/v1/sites', apiKey)]);
   const hostById = new Map(hosts.map((h) => [h.id, h]));
+  const realSites = sites.filter((site) => !isInternalSite(site));
   const sitesPerHost = new Map();
-  for (const site of sites) sitesPerHost.set(site.hostId, (sitesPerHost.get(site.hostId) ?? 0) + 1);
+  for (const site of realSites) sitesPerHost.set(site.hostId, (sitesPerHost.get(site.hostId) ?? 0) + 1);
 
-  const rows = sites.map((site) => {
+  const rows = realSites.map((site) => {
     const host = hostById.get(site.hostId) ?? {};
     const rs = host.reportedState ?? {};
     const counts = site.statistics?.counts ?? {};
@@ -192,6 +213,8 @@ async function fetchCloudSites(apiKey, hostNames) {
       hostId: site.hostId,
       hostName,
       hostType: host.type ?? rs.host_type ?? null,
+      siteKey: site.meta?.name ?? null,
+      lanIps: hostLanIps(host),
       // Con un solo sitio por controlador ("Default") alcanza con el nombre del host.
       siteName: sitesPerHost.get(site.hostId) > 1 && desc ? desc : null,
       hostOnline: hostOnline(host),
@@ -228,14 +251,28 @@ async function fetchCloudSites(apiKey, hostNames) {
   return { rows, diag };
 }
 
+const COUNT_FIELDS = [
+  'totalDevices', 'offlineDevices', 'wifiDevices', 'offlineWifi', 'wiredDevices', 'offlineWired',
+  'gatewayDevices', 'offlineGateways', 'wifiClients', 'wiredClients', 'guestClients', 'pendingUpdates',
+];
+function pickCounts(row) {
+  return Object.fromEntries(COUNT_FIELDS.map((k) => [k, row[k]]));
+}
+
 async function syncSites(rows) {
   const now = new Date();
   const existing = new Map((await prisma.unifiSite.findMany()).map((s) => [s.id, s]));
   const notifications = [];
   const tz = process.env.APP_TIMEZONE || undefined;
 
-  for (const r of rows) {
-    const prev = existing.get(r.id);
+  const LOCAL_FRESH_MS = 10 * 60 * 1000;
+  for (const raw of rows) {
+    const prev = existing.get(raw.id);
+    // Si el agente de la sucursal leyo el controlador hace poco, sus
+    // contadores (exactos, equipo por equipo) mandan sobre el resumen de la
+    // nube, y las caidas las avisa cada equipo (syncDevices).
+    const localFresh = prev?.localAt && now - prev.localAt < LOCAL_FRESH_MS;
+    const r = localFresh ? { ...raw, ...pickCounts(prev) } : raw;
     const data = {
       ...r,
       lastSyncAt: now,
@@ -260,7 +297,7 @@ async function syncSites(rows) {
     }
 
     // Equipos caidos en el sitio: aviso cuando aparecen (o aumentan) y al normalizarse.
-    if (r.hostOnline !== false) {
+    if (r.hostOnline !== false && !localFresh) {
       if (r.offlineDevices > data.notifiedDown && now - data.devicesDownSince >= OFFLINE_GRACE_MS) {
         data.notifiedDown = r.offlineDevices;
         const parts = [
@@ -283,6 +320,16 @@ async function syncSites(rows) {
     await prisma.unifiSite.upsert({ where: { id: r.id }, create: data, update: data });
   }
   await prisma.unifiSite.deleteMany({ where: { lastSyncAt: { lt: new Date(now.getTime() - STALE_DELETE_DAYS * 86400000) } } });
+  // Sitios que la nube ya no informa (p. ej. los "super" internos) y que
+  // ningun agente leyo en la ultima media hora.
+  if (rows.length > 0) {
+    await prisma.unifiSite.deleteMany({
+      where: {
+        id: { notIn: rows.map((r) => r.id) },
+        OR: [{ localAt: null }, { localAt: { lt: new Date(now.getTime() - 30 * 60 * 1000) } }],
+      },
+    });
+  }
 
   for (const n of notifications) notifyGeneric({ ...n, source: 'unifi' }).catch(() => {});
   return notifications.length;
@@ -464,4 +511,4 @@ function scheduleUnifiPoll() {
   }, 20 * 1000);
 }
 
-module.exports = { runUnifiPoll, listUnifiDevices, listUnifiSites, syncSites, fetchCloudSites, getLastRun, scheduleUnifiPoll, syncDevices, classify, normalizeStatus };
+module.exports = { COUNT_FIELDS, hostLanIps, isInternalSite, runUnifiPoll, listUnifiDevices, listUnifiSites, syncSites, fetchCloudSites, getLastRun, scheduleUnifiPoll, syncDevices, classify, normalizeStatus };

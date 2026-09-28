@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.7.0"
+AGENT_VERSION = "1.8.0"
 
 
 def get_base_dir() -> Path:
@@ -2960,6 +2960,230 @@ def send_inventory(payload: dict[str, Any]) -> None:
 _inventory_paused_until: float = 0.0
 
 
+# ---------------------------------------------------------------------------
+# UniFi local: detalle completo de los controladores "Network Server" de la
+# sucursal (AP por AP, switches, clientes, canales, firmware, uplink). La
+# nube de Ubiquiti solo informa un resumen por sitio de estos controladores;
+# el agente, que esta en la misma LAN, lo lee directo con una cuenta de solo
+# lectura que le pasa el NOC (solo por HTTPS) o que se carga en su .env
+# (UNIFI_USERNAME / UNIFI_PASSWORD).
+# ---------------------------------------------------------------------------
+UNIFI_USERNAME = os.getenv("UNIFI_USERNAME", "")
+UNIFI_PASSWORD = os.getenv("UNIFI_PASSWORD", "")
+UNIFI_LOCAL_PROBES = ("https://127.0.0.1:8443",)
+_UNIFI_LOGIN_ERROR_BACKOFF = 30 * 60
+
+
+def _local_ipv4_networks() -> list[dict[str, Any]]:
+    nets = []
+    try:
+        for addrs in psutil.net_if_addrs().values():
+            for a in addrs:
+                if a.family != socket_module.AF_INET or not a.address or a.address.startswith(("127.", "169.254.")):
+                    continue
+                prefix = 24
+                if a.netmask:
+                    try:
+                        prefix = ipaddress.IPv4Network(f"0.0.0.0/{a.netmask}").prefixlen
+                    except ValueError:
+                        pass
+                nets.append({"ip": a.address, "prefix": prefix})
+    except Exception:
+        pass
+    return nets[:20]
+
+
+class UnifiController:
+    """Cliente minimo de la API del controlador UniFi Network. Soporta el
+    "Network Server" autoalojado (API clasica en :8443) y las consolas UniFi
+    OS (prefijo /proxy/network)."""
+
+    def __init__(self, base_url: str) -> None:
+        self.base = base_url.rstrip("/")
+        self.session = requests.Session()
+        self.session.verify = False  # los controladores usan certificado autofirmado
+        self.prefix = ""
+        self.version: str | None = None
+
+    def probe(self) -> bool:
+        try:
+            r = self.session.get(f"{self.base}/status", timeout=6)
+            if r.ok and "meta" in r.text:
+                meta = r.json().get("meta", {})
+                self.version = meta.get("server_version")
+                return True
+        except Exception:
+            pass
+        try:  # UniFi OS: la raiz responde y la API de red vive en /proxy/network
+            r = self.session.get(f"{self.base}/proxy/network/status", timeout=6)
+            if r.ok and "meta" in r.text:
+                self.prefix = "/proxy/network"
+                self.version = r.json().get("meta", {}).get("server_version")
+                return True
+        except Exception:
+            pass
+        return False
+
+    def login(self, username: str, password: str) -> None:
+        body = {"username": username, "password": password, "remember": False}
+        if self.prefix:
+            r = self.session.post(f"{self.base}/api/auth/login", json=body, timeout=15)
+            token = r.headers.get("X-CSRF-Token") or r.headers.get("x-csrf-token")
+            if token:
+                self.session.headers["X-CSRF-Token"] = token
+        else:
+            r = self.session.post(f"{self.base}/api/login", json=body, timeout=15)
+        if r.status_code in (400, 401, 403):
+            raise PermissionError("usuario o contrasena del controlador incorrectos")
+        r.raise_for_status()
+
+    def get(self, path: str) -> list[dict[str, Any]]:
+        r = self.session.get(f"{self.base}{self.prefix}{path}", timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("data", []) if isinstance(data, dict) else []
+
+    def logout(self) -> None:
+        try:
+            self.session.post(f"{self.base}{'/api/auth/logout' if self.prefix else '/api/logout'}", timeout=5)
+        except Exception:
+            pass
+
+
+_UNIFI_DEVICE_KEYS = (
+    "mac", "name", "model", "model_name", "type", "state", "ip", "version", "upgradable", "upgrade_to_firmware",
+    "uptime", "num_sta", "user-num_sta", "guest-num_sta", "satisfaction", "last_seen", "serial", "system-stats",
+    "uplink", "last_uplink", "radio_table_stats", "total_used_power", "general_temperature",
+)
+
+
+def _slim_unifi_device(d: dict[str, Any]) -> dict[str, Any]:
+    out = {k: d[k] for k in _UNIFI_DEVICE_KEYS if k in d}
+    if isinstance(d.get("port_table"), list):
+        out["port_table"] = [{"up": bool(p.get("up")), "poe_power": p.get("poe_power")} for p in d["port_table"][:64]]
+    if isinstance(out.get("uplink"), dict):
+        out["uplink"] = {k: out["uplink"].get(k) for k in ("type", "uplink_device_name", "uplink_remote_port", "speed", "full_duplex")}
+    if isinstance(out.get("last_uplink"), dict):
+        out["last_uplink"] = {k: out["last_uplink"].get(k) for k in ("uplink_device_name", "uplink_remote_port")}
+    if isinstance(out.get("radio_table_stats"), list):
+        out["radio_table_stats"] = [
+            {k: r.get(k) for k in ("radio", "channel", "num_sta", "satisfaction", "cu_total", "tx_power")} for r in out["radio_table_stats"][:4]
+        ]
+    return out
+
+
+def read_unifi_controller(urls: list[str], creds: tuple[str, str]) -> dict[str, Any]:
+    ctl = None
+    for url in urls:
+        candidate = UnifiController(url)
+        if candidate.probe():
+            ctl = candidate
+            break
+    if ctl is None:
+        return {"url": urls[0] if urls else None, "ok": False, "error": "controlador no alcanzable desde este servidor"}
+    try:
+        ctl.login(*creds)
+        sites = ctl.get("/api/self/sites")
+        out_sites = []
+        for site in sites[:50]:
+            key = site.get("name")
+            # "super" = sitio interno de administracion, sin equipos.
+            if not key or key == "super":
+                continue
+            devices = ctl.get(f"/api/s/{key}/stat/device")
+            try:
+                health = ctl.get(f"/api/s/{key}/stat/health")
+            except Exception:
+                health = []
+            out_sites.append(
+                {
+                    "siteId": site.get("_id"),
+                    "siteKey": key,
+                    "desc": site.get("desc"),
+                    "devices": [_slim_unifi_device(d) for d in devices[:500]],
+                    "health": health[:20],
+                }
+            )
+        return {"url": ctl.base, "ok": True, "version": ctl.version, "sites": out_sites}
+    except Exception as exc:
+        return {"url": ctl.base, "ok": False, "version": ctl.version, "error": str(exc)[:300]}
+    finally:
+        ctl.logout()
+
+
+def unifi_cycle() -> int:
+    """Una vuelta: pide tareas al NOC, lee los controladores y reporta.
+    Devuelve los segundos hasta la proxima vuelta."""
+    headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
+    r = requests.post(
+        f"{BACKEND_URL}/api/agent/unifi/tasks",
+        json={"ips": _local_ipv4_networks()},
+        headers=headers,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if r.status_code == 404:
+        return 3600  # backend viejo sin esta funcion
+    r.raise_for_status()
+    plan = r.json()
+    interval = int(plan.get("intervalSeconds") or 120)
+    if not plan.get("enabled"):
+        return 1800
+
+    tasks = list(plan.get("tasks") or [])
+    if plan.get("probeLocal"):
+        assigned = {u for t in tasks for u in t.get("urls", [])}
+        for url in UNIFI_LOCAL_PROBES:
+            if url not in assigned and UnifiController(url).probe():
+                tasks.append({"hostId": None, "urls": [url], "sites": []})
+    if not tasks:
+        return max(interval, 600)
+
+    creds_plan = plan.get("credentials") or {}
+    username = UNIFI_USERNAME or creds_plan.get("username")
+    password = UNIFI_PASSWORD or creds_plan.get("password")
+    if not username or not password:
+        reason = plan.get("credentialsBlocked")
+        msg = (
+            "el NOC no envia la cuenta de UniFi por HTTP: usar HTTPS o cargar UNIFI_USERNAME/UNIFI_PASSWORD en el .env del agente"
+            if reason == "https-required"
+            else "falta la cuenta de solo lectura de UniFi (Admin -> Configuracion -> UniFi)"
+        )
+        report = {"controllers": [{"url": t["urls"][0], "hostId": t.get("hostId"), "ok": False, "error": msg} for t in tasks]}
+    else:
+        report = {"controllers": []}
+        for t in tasks:
+            result = read_unifi_controller(t.get("urls", []), (username, password))
+            result["hostId"] = t.get("hostId")
+            report["controllers"].append(result)
+            if result.get("ok"):
+                total = sum(len(s["devices"]) for s in result.get("sites", []))
+                logger.info("UniFi %s: %d sitio(s), %d equipo(s) leidos", result["url"], len(result.get("sites", [])), total)
+            else:
+                logger.warning("UniFi %s: %s", result.get("url"), result.get("error"))
+
+    resp = requests.post(f"{BACKEND_URL}/api/agent/unifi/report", json=report, headers=headers, timeout=30)
+    resp.raise_for_status()
+    failed_login = any("contrasena" in str(c.get("error", "")) for c in report["controllers"])
+    return _UNIFI_LOGIN_ERROR_BACKOFF if failed_login else interval
+
+
+def unifi_loop() -> None:
+    try:
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+    time.sleep(45)
+    while True:
+        try:
+            wait = unifi_cycle()
+        except Exception as exc:
+            logger.warning("Lectura local de UniFi fallo: %s", exc)
+            wait = 600
+        time.sleep(max(60, wait))
+
+
 def inventory_loop() -> None:
     while True:
         try:
@@ -3212,6 +3436,7 @@ def main() -> None:
         threading.Thread(target=inventory_loop, daemon=True).start()
         threading.Thread(target=diagnostics_loop, daemon=True).start()
         threading.Thread(target=backup_loop, args=(args.debug,), daemon=True).start()
+        threading.Thread(target=unifi_loop, daemon=True).start()
 
     while True:
         cycle_start = time.monotonic()

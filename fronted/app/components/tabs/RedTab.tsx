@@ -23,6 +23,7 @@ import AlertRepeatInfo from '../AlertRepeatInfo';
 import ServiceMonitorsPanel from '../ServiceMonitorsPanel';
 import { formatUptime, internetLevel, ISP_LABEL, RESOURCE_LEVEL_COLOR, SEVERITY_STYLES, timeAgo } from '../../lib/health';
 import type { NetworkOverview, ServerSummary, UnifiDevice, UnifiSiteRow } from '../../types';
+import UnifiSiteModal from '../UnifiSiteModal';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -122,7 +123,19 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
   const lastRun = overview?.unifi.lastRun ?? null;
   // Con controladores autoalojados no hay lista de equipos: los totales
   // salen de los contadores de cada sitio.
-  const bySites = devices.length === 0 && unifiSites.length > 0;
+  const bySites = unifiSites.length > 0;
+  const [openSiteId, setOpenSiteId] = useState<string | null>(null);
+  const openSite = unifiSites.find((s) => s.id === openSiteId) ?? null;
+  const devicesBySite = useMemo(() => {
+    const map = new Map<string, UnifiDevice[]>();
+    for (const d of devices) {
+      if (!d.siteId) continue;
+      if (!map.has(d.siteId)) map.set(d.siteId, []);
+      map.get(d.siteId)!.push(d);
+    }
+    return map;
+  }, [devices]);
+  const localSites = unifiSites.filter((s) => s.localAt).length;
   const deviceStats = useMemo(
     () =>
       bySites
@@ -321,7 +334,9 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
                 </button>
               ))}
               <span className="ml-1 text-[10px] text-slate-400">
-                Controladores UniFi autoalojados: la nube informa el resumen de cada sitio (no el detalle de cada AP).
+                {localSites > 0
+                  ? `${localSites} de ${unifiSites.length} sitio(s) con detalle completo leído por el agente local. Tocá un sitio para ver cada equipo.`
+                  : 'Controladores autoalojados: la nube solo informa un resumen. Cargá la cuenta de solo lectura en Admin → UniFi para ver cada AP.'}
               </span>
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
@@ -336,7 +351,8 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: Math.min(i * 0.02, 0.3) }}
-                    className={`rounded-xl border p-3 ${tone}`}
+                    onClick={() => setOpenSiteId(s.id)}
+                    className={`cursor-pointer rounded-xl border p-3 transition-shadow hover:shadow-md ${tone}`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -372,6 +388,15 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
                     </div>
 
                     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-slate-500">
+                      {s.localAt ? (
+                        <span className="text-sky-700">
+                          Detalle local · {devicesBySite.get(s.id)?.length ?? s.totalDevices} equipo(s) · {s.wiredClients} por cable · {timeAgo(s.localAt)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">Solo resumen de la nube</span>
+                      )}
+                      {s.localError && <span className="text-amber-700">Controlador local: {s.localError}</span>}
+                      {(s.health?.www?.latencyMs ?? null) !== null && <span>Internet {s.health?.www?.latencyMs} ms</span>}
                       {s.ispName && <span>ISP: {s.ispName}</span>}
                       {s.wanUptime !== null && <span>WAN arriba {Number(s.wanUptime).toFixed(1)}%</span>}
                       {s.pendingUpdates > 0 && <span className="text-amber-700">{s.pendingUpdates} equipo(s) con firmware pendiente</span>}
@@ -485,6 +510,8 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
           </>
         )}
       </div>
+
+      {openSite && <UnifiSiteModal site={openSite} devices={devicesBySite.get(openSite.id) ?? []} onClose={() => setOpenSiteId(null)} />}
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-slate-800">

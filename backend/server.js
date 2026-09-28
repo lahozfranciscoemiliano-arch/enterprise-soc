@@ -6,6 +6,7 @@ const path = require('path');
 const http = require('http');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const express = require('express');
+const { z } = require('zod');
 const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -60,6 +61,7 @@ const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskFo
 const registerInventoryRoutes = require('./src/routes/inventory');
 const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
 const { seedMissingPlaybooks } = require('./src/services/recommendations');
+const unifiLocal = require('./src/services/unifiLocal');
 const { runUnifiPoll, listUnifiDevices, listUnifiSites, getLastRun: getUnifiLastRun, scheduleUnifiPoll } = require('./src/services/unifi');
 const { createAndDispatchEvent, resolveCleared, defaultDedupKey, toClientEvent } = require('./src/services/eventPipeline');
 const { getSetting, getPublicSettings, setSettings } = require('./src/services/settings');
@@ -957,7 +959,7 @@ app.get('/api/network/overview', authUser, async (req, res) => {
         ispSecondaryPublicIp: s.ispSecondaryPublicIp,
         network: summarizeNetwork(s, s.network, s.networkAt),
       })),
-      unifi: { lastRun: getUnifiLastRun(), devices, sites: unifiSites },
+      unifi: { lastRun: getUnifiLastRun(), devices, sites: unifiSites, agents: unifiLocal.agentStatus() },
       recentEvents: openOutages.map((e) => toClientEvent(e)),
     });
   } catch (err) {
@@ -2252,6 +2254,59 @@ app.post('/api/servers/enroll', enrollLimiter, async (req, res) => {
     return res.status(201).json({ serverId: server.id, apiKey });
   } catch (err) {
     console.error('Error en enrolamiento de servidor', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// UniFi local via agentes (services/unifiLocal.js).
+const unifiAgentLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false });
+const unifiTasksSchema = z.object({
+  ips: z.array(z.object({ ip: z.string().max(45), prefix: z.number().int().min(0).max(32) })).max(20),
+});
+app.post('/api/agent/unifi/tasks', unifiAgentLimiter, authServer, async (req, res) => {
+  const parsed = unifiTasksSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Payload inválido' });
+  try {
+    // req.secure respeta X-Forwarded-Proto de Nginx ("trust proxy").
+    return res.json(await unifiLocal.buildTasks(req.server, parsed.data.ips, req.secure));
+  } catch (err) {
+    console.error('Error armando tareas UniFi', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+const unifiReportSchema = z.object({
+  controllers: z
+    .array(
+      z.object({
+        url: z.string().max(300).optional(),
+        hostId: z.string().max(200).nullable().optional(),
+        ok: z.boolean(),
+        error: z.string().max(500).nullable().optional(),
+        version: z.string().max(50).nullable().optional(),
+        sites: z
+          .array(
+            z.object({
+              siteId: z.string().max(100),
+              siteKey: z.string().max(100).nullable().optional(),
+              desc: z.string().max(200).nullable().optional(),
+              devices: z.array(z.record(z.any())).max(500),
+              health: z.array(z.record(z.any())).max(20).optional(),
+            })
+          )
+          .max(50)
+          .optional(),
+      })
+    )
+    .max(20),
+});
+app.post('/api/agent/unifi/report', unifiAgentLimiter, authServer, async (req, res) => {
+  const parsed = unifiReportSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Payload inválido', details: parsed.error.flatten() });
+  try {
+    return res.json(await unifiLocal.processReport(req.server, parsed.data));
+  } catch (err) {
+    console.error('Error procesando reporte UniFi local', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

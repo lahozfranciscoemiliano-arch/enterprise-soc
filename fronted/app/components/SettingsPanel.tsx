@@ -82,6 +82,11 @@ export default function SettingsPanel() {
         UNIFI_API_KEY: '',
         UNIFI_CONTROLLER_URL: plainField(data, 'UNIFI_CONTROLLER_URL'),
         UNIFI_VERIFY_TLS: boolField(data, 'UNIFI_VERIFY_TLS'),
+        // Sin guardar todavia = activado.
+        UNIFI_LOCAL_ENABLED: data.UNIFI_LOCAL_ENABLED?.value ?? true,
+        UNIFI_LOCAL_USERNAME: plainField(data, 'UNIFI_LOCAL_USERNAME'),
+        UNIFI_LOCAL_PASSWORD: '',
+        UNIFI_LOCAL_CONTROLLERS: plainField(data, 'UNIFI_LOCAL_CONTROLLERS'),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -371,8 +376,23 @@ export default function SettingsPanel() {
             : 'API key creada en unifi.ui.com → API (Site Manager). No requiere abrir puertos en las sucursales: consulta el estado de todos los dispositivos registrados en la cuenta.'}{' '}
           Se consulta cada 2 minutos; un AP caído se avisa una sola vez (y otra al volver) por los canales de notificación.
         </p>
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <p className="mb-2 text-xs font-semibold text-slate-700">Detalle completo por sucursal (controladores autoalojados)</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {input('UNIFI_LOCAL_USERNAME', 'Usuario de solo lectura del controlador')}
+            {input('UNIFI_LOCAL_PASSWORD', `Contraseña (${sensitiveHint('UNIFI_LOCAL_PASSWORD')})`, 'password')}
+            <div className="sm:col-span-2">{input('UNIFI_LOCAL_CONTROLLERS', 'URLs extra de controladores, separadas por coma (ej. https://192.168.1.5:8443)')}</div>
+            {checkbox('UNIFI_LOCAL_ENABLED', 'Leer los controladores desde los agentes de cada sucursal')}
+          </div>
+          <p className="mt-2 text-[11px] text-slate-400">
+            La nube solo da un resumen por sitio de los controladores "Network Server" (los 8.0.x, ni eso). El agente de la sucursal lee su
+            controlador en la red local y trae AP por AP: estado, IP, MAC, clientes, canales, satisfacción, CPU/RAM, uplink, puertos y firmware.
+            Creá en cada controlador un administrador local de <strong>solo lectura</strong> (Settings → Admins → Add Admin → Restrict to local
+            access, rol View Only) con el mismo usuario y contraseña. La contraseña solo se entrega a agentes conectados por HTTPS.
+          </p>
+        </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {saveBtn('unifi', ['UNIFI_MODE', 'UNIFI_API_KEY', 'UNIFI_CONTROLLER_URL', 'UNIFI_VERIFY_TLS'])}
+          {saveBtn('unifi', ['UNIFI_MODE', 'UNIFI_API_KEY', 'UNIFI_CONTROLLER_URL', 'UNIFI_VERIFY_TLS', 'UNIFI_LOCAL_ENABLED', 'UNIFI_LOCAL_USERNAME', 'UNIFI_LOCAL_PASSWORD', 'UNIFI_LOCAL_CONTROLLERS'])}
           <button
             onClick={testUnifi}
             disabled={testingUnifi}
