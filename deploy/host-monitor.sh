@@ -93,7 +93,9 @@ read_cpu_sample() {
 cpu_now="$(read_cpu_sample)"
 cpu_prev=""
 if [ -f "$STATE_FILE" ]; then
-  cpu_prev="$(grep -E '^PREV_CPU=' "$STATE_FILE" | cut -d= -f2- | tr -d '"')"
+  # "|| true": con set -euo pipefail, un grep sin resultados (archivo de
+  # estado de la version anterior, sin PREV_CPU) cortaba el script entero.
+  cpu_prev="$(grep -E '^PREV_CPU=' "$STATE_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
 fi
 if [ -z "$cpu_prev" ]; then
   # Primera corrida: 5 s de muestra en vez de 1.
