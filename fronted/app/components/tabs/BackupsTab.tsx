@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, Clock, DatabaseBackup, FolderOpen, HardDrive, Percent, ShieldOff, Timer, XCircle } from 'lucide-react';
 import StatCard from '../StatCard';
 import BackupJobsList from '../BackupJobsList';
+import WsbDetailsPanel from '../WsbDetailsPanel';
 import { BACKUP_METHOD_LABELS, BACKUP_STYLES, backupAgeLevel, formatBytes, formatDuration } from '../../lib/health';
 import type { BackupHistoryEntry, BackupResult, ServerSummary } from '../../types';
 
@@ -232,14 +233,15 @@ export default function BackupsTab({ servers: allServers }: { servers: ServerSum
                               className="overflow-hidden"
                             >
                               <div className="space-y-3 px-4 py-4">
-                                {backup?.targetPath && (
+                                {backup?.wsb && <WsbDetailsPanel wsb={backup.wsb} />}
+                                {backup?.targetPath && !backup?.wsb?.target && (
                                   <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
                                     <FolderOpen className="h-3.5 w-3.5 shrink-0" />
                                     <span className="break-all font-mono">{backup.targetPath}</span>
                                   </p>
                                 )}
-                                {backup?.jobs && backup.jobs.length > 0 && <BackupJobsList jobs={backup.jobs} />}
-                                {backup?.detail && !backup?.jobs?.length && (
+                                {backup?.jobs && (backup.jobs.length > 1 || !backup.wsb) && <BackupJobsList jobs={backup.jobs} />}
+                                {backup?.detail && !backup?.jobs?.length && !backup?.wsb && (
                                   <pre className="whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 font-sans text-[11px] text-slate-600">
                                     {backup.detail}
                                   </pre>

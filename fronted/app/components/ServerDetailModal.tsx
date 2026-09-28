@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import WsbDetailsPanel from './WsbDetailsPanel';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
@@ -606,7 +607,7 @@ export default function ServerDetailModal({
                         </Row>
                         <Row label="Copias restaurables">{backup.successfulRuns ?? '—'}</Row>
                         <Row label="Servicio VSS">
-                          <Pill ok={backup.vssServiceOk}>{backup.vssServiceOk ? 'En ejecución' : 'Detenido'}</Pill>
+                          <Pill ok={backup.vssServiceOk}>{backup.vssServiceOk ? 'OK' : 'Deshabilitado'}</Pill>
                         </Row>
                         <Row label="Último chequeo">{timeAgo(backup.recordedAt)}</Row>
                         {backup.detail && (
@@ -616,6 +617,7 @@ export default function ServerDetailModal({
                         )}
                         <p className="mt-2 text-[11px] text-slate-400">El historial completo de corridas está en la pestaña Backups.</p>
                       </Card>
+                      {backup.wsb && <WsbDetailsPanel wsb={backup.wsb} />}
                     </>
                   ) : (
                     <p className="text-sm text-slate-400">Este servidor todavía no reportó estado de backup.</p>

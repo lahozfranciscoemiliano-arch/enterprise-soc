@@ -73,6 +73,47 @@ export type BackupInfo = {
   successfulRuns?: number | null;
   /** Todos los metodos de backup detectados en el equipo (agente >= 1.5.0). */
   jobs?: BackupJob[] | null;
+  /** Detalle de Windows Server Backup (agente >= 1.7.0). */
+  wsb?: WsbDetails | null;
+};
+
+export type WsbVolume = {
+  name: string;
+  transferredBytes: number | null;
+  sizeOnDiskBytes: number | null;
+  state?: string | null;
+  hresult?: string | null;
+};
+
+export type WsbDetails = {
+  finishedAt?: string | null;
+  target?: string | null;
+  backupType?: string | null;
+  volumes?: WsbVolume[];
+  transferredBytes?: number | null;
+  versions?: number | null;
+  nextBackupAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastResultHR?: number | null;
+  message?: string | null;
+  policy?: {
+    schedule?: string[];
+    bmr?: boolean;
+    systemState?: boolean;
+    vssOption?: string;
+    volumes?: string[];
+    targets?: string[];
+  } | null;
+  lastJob?: {
+    state?: string | null;
+    startedAt?: string | null;
+    endedAt?: string | null;
+    durationSeconds?: number | null;
+    hresult?: number | null;
+    error?: string | null;
+    failureLog?: string | null;
+  } | null;
+  lastFailure?: { at?: string | null; eventId?: number | null; hresult?: string | null; message?: string | null } | null;
 };
 
 export type BackupJob = {

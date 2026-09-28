@@ -779,6 +779,9 @@ app.get('/api/servers', authUser, async (req, res) => {
                 // Todos los metodos detectados en el equipo (agente >= 1.5.0):
                 // tareas con scripts, Historial de archivos, SQL, terceros.
                 jobs: Array.isArray(backup.metadata?.jobs) ? backup.metadata.jobs : null,
+                // Detalle de Windows Server Backup (agente >= 1.7.0): tipo,
+                // volumenes, programacion, politica, ultimo trabajo/error.
+                wsb: backup.metadata?.wsb ?? null,
                 successfulRuns: Array.isArray(backup.metadata?.versions)
                   ? backup.metadata.versions.length
                   : Array.isArray(backup.metadata?.runs)

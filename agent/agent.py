@@ -31,7 +31,9 @@ import re
 import socket as socket_module
 import subprocess
 import sys
+import html
 import ipaddress
+import xml.etree.ElementTree as ET
 import struct
 import threading
 import time
@@ -72,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.6.0"
+AGENT_VERSION = "1.7.0"
 
 
 def get_base_dir() -> Path:
@@ -1691,6 +1693,218 @@ def merge_backup_status(status: dict[str, Any], jobs: list[dict[str, Any]]) -> d
     return status
 
 
+# ---------------------------------------------------------------------------
+# Detalle de Windows Server Backup (mismas fuentes que usaba el script
+# Backup-Collect-Local.ps1, pero enviadas al NOC en vez de a un JSON):
+#   - Evento 4 de Microsoft-Windows-Backup (ultimo backup exitoso): destino,
+#     tipo (VSS completo / incremental) y el detalle por volumen de
+#     VolumesInfo (datos transferidos, tamano en disco).
+#   - Ultimo evento de error: codigo y descripcion.
+#   - Get-WBSummary / Get-WBPolicy / Get-WBJob -Previous 1 (solo Windows
+#     Server con la caracteristica): programacion, BMR, estado del sistema,
+#     opcion VSS, volumenes incluidos, versiones, proximo backup y la duracion
+#     exacta del ultimo trabajo.
+# ---------------------------------------------------------------------------
+_WSB_DATA_RE = re.compile(r"<Data Name=['\"]([^'\"]+)['\"]>([^<]*)</Data>")
+BACKUP_STALE_HOURS = 26  # backup diario + margen
+
+PS_WSB_DETAILS = r"""
+Import-Module WindowsServerBackup -ErrorAction Stop
+function D($d) { if ($d -and $d -is [datetime] -and $d.Year -gt 1601) { $d.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') } else { $null } }
+$out = [ordered]@{}
+try {
+  $s = Get-WBSummary -ErrorAction Stop
+  $out.summary = [ordered]@{
+    lastBackupAt = D $s.LastBackupTime; lastSuccessAt = D $s.LastSuccessfulBackupTime; nextBackupAt = D $s.NextBackupTime
+    lastResultHR = $s.LastBackupResultHR; lastDetailedHR = $s.LastBackupResultDetailedHR
+    versions = $s.NumberOfVersions; target = [string]$s.LastBackupTarget; message = [string]$s.DetailedMessage
+  }
+} catch {}
+try {
+  $p = Get-WBPolicy -ErrorAction Stop
+  if ($p) {
+    $out.policy = [ordered]@{
+      schedule = @($p.Schedule | ForEach-Object { try { (Get-Date $_).ToString('HH:mm') } catch { [string]$_ } })
+      bmr = [bool]$p.BMR; systemState = [bool]$p.SystemState; vssOption = [string]$p.VssBackupOptions
+      volumes = @($p.VolumesToBackup | ForEach-Object { if ($_.MountPath) { [string]$_.MountPath } else { [string]$_.VolumeLabel } })
+      targets = @(Get-WBBackupTarget -Policy $p -ErrorAction SilentlyContinue | ForEach-Object { (([string]$_.Label) + ' ' + ([string]$_.TargetPath)).Trim() })
+    }
+  }
+} catch {}
+try {
+  $j = Get-WBJob -Previous 1 -ErrorAction Stop
+  if ($j) {
+    $out.lastJob = [ordered]@{
+      state = [string]$j.JobState; startedAt = D $j.StartTime; endedAt = D $j.EndTime
+      hresult = $j.HResult; error = [string]$j.ErrorDescription; failureLog = [string]$j.FailureLogPath
+    }
+  }
+} catch {}
+ConvertTo-Json -InputObject $out -Depth 5 -Compress
+"""
+
+
+def _event_data(xml: str) -> dict[str, str]:
+    return {k: html.unescape(v) for k, v in _WSB_DATA_RE.findall(xml)}
+
+
+def _to_int(value: Any) -> int | None:
+    try:
+        n = int(str(value).strip())
+        return n if n >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_volumes_info(text: str) -> list[dict[str, Any]]:
+    """VolumesInfo es un XML embebido: <VolumeInfo><VolumeInfoItem .../>...
+    Los datos pueden venir como atributos o como elementos hijos."""
+    if not text or "<" not in text:
+        return []
+    try:
+        root = ET.fromstring(text.strip())
+    except ET.ParseError:
+        return []
+    volumes = []
+    for item in root.iter():
+        if not item.tag.endswith("VolumeInfoItem"):
+            continue
+        fields = dict(item.attrib)
+        for child in item:
+            if child.text and child.text.strip():
+                fields[child.tag] = child.text.strip()
+        transferred = _to_int(fields.get("DataTransferred"))
+        on_disk = _to_int(fields.get("SSBTotalSizeOnDisk"))
+        volumes.append(
+            {
+                "name": fields.get("Name") or fields.get("OriginalAccessPath") or "[Sistema/Reservado]",
+                "transferredBytes": transferred if transferred else on_disk,
+                "sizeOnDiskBytes": on_disk,
+                "state": fields.get("State"),
+                "hresult": fields.get("HResult") or fields.get("HR"),
+                "incremental": (fields.get("IsIncremental") or "").lower() == "true" if fields.get("IsIncremental") else None,
+            }
+        )
+    return volumes[:30]
+
+
+def read_last_backup_event_details() -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    success = _evt_query("Microsoft-Windows-Backup", "*[System[EventID=4]]", max_events=1)
+    if success:
+        xml = success[0]
+        data = _event_data(xml)
+        volumes = _parse_volumes_info(data.get("VolumesInfo", ""))
+        total = sum(v["transferredBytes"] or 0 for v in volumes)
+        details.update(
+            {
+                "finishedAt": _evt_time_iso(xml),
+                "target": data.get("BackupTarget") or None,
+                "backupType": "VSS completo" if data.get("VssFullBackup", "").lower() == "true" else "VSS incremental",
+                "volumes": volumes,
+                "transferredBytes": total or None,
+            }
+        )
+    failure_ids = " or ".join(f"EventID={i}" for i in sorted(BACKUP_EVENT_FAILURE))
+    failed = _evt_query("Microsoft-Windows-Backup", f"*[System[({failure_ids})]]", max_events=1)
+    if failed:
+        xml = failed[0]
+        data = _event_data(xml)
+        id_match = _EVT_ID_RE.search(xml)
+        message = data.get("ErrorMessage") or data.get("ErrorDescription") or data.get("DetailedError") or ""
+        hr = data.get("HRESULT") or data.get("HResult") or data.get("DetailedHResult")
+        details["lastFailure"] = {
+            "at": _evt_time_iso(xml),
+            "eventId": int(id_match.group(1)) if id_match else None,
+            "hresult": hr,
+            "message": message[:400] or None,
+        }
+    return details
+
+
+def read_wsb_powershell_details() -> dict[str, Any]:
+    if not _service_exists("wbengine") and not Path(windows_exe("wbadmin.exe")).exists():
+        return {}
+    try:
+        items = run_powershell_json(PS_WSB_DETAILS, timeout=90)
+    except Exception as exc:
+        # Windows 10/11 o Server sin la caracteristica: no tiene el modulo.
+        logger.debug("Cmdlets de Windows Server Backup no disponibles: %s", exc)
+        return {}
+    return items[0] if items and isinstance(items[0], dict) else {}
+
+
+def collect_wsb_details() -> dict[str, Any]:
+    wsb: dict[str, Any] = {}
+    try:
+        wsb.update(read_last_backup_event_details())
+    except Exception as exc:
+        logger.warning("No se pudo leer el detalle del ultimo backup del Visor de Eventos: %s", exc)
+    ps = read_wsb_powershell_details()
+    summary = ps.get("summary") or {}
+    policy = ps.get("policy") or {}
+    job = ps.get("lastJob") or {}
+    if summary:
+        wsb["versions"] = summary.get("versions")
+        wsb["nextBackupAt"] = summary.get("nextBackupAt")
+        wsb["lastSuccessAt"] = summary.get("lastSuccessAt")
+        wsb["lastResultHR"] = summary.get("lastResultHR")
+        if summary.get("message"):
+            wsb["message"] = summary["message"][:400]
+        if not wsb.get("target") and summary.get("target"):
+            wsb["target"] = summary["target"]
+    if policy:
+        wsb["policy"] = policy
+    if job:
+        duration = None
+        if job.get("startedAt") and job.get("endedAt"):
+            duration = int(_seconds_between(job["startedAt"], job["endedAt"]))
+            if duration < 0 or duration > 2 * 24 * 3600:
+                duration = None
+        wsb["lastJob"] = {**job, "durationSeconds": duration}
+    return wsb
+
+
+def apply_wsb_details(status: dict[str, Any]) -> None:
+    """Completa el estado del backup nativo con el detalle de WSB: tamano
+    real transferido, duracion exacta, destino, y marca ADVERTENCIA si no hay
+    un backup exitoso en las ultimas 26 hs teniendo una programacion diaria
+    (lo mismo que hacia el script .ps1)."""
+    wsb = collect_wsb_details()
+    if not wsb:
+        return
+    status["wsb"] = wsb
+    if wsb.get("transferredBytes"):
+        status["sizeBytes"] = wsb["transferredBytes"]
+    job = wsb.get("lastJob") or {}
+    if job.get("durationSeconds") is not None and str(job.get("state", "")).lower() in ("completed", "succeeded", ""):
+        status["durationSeconds"] = job["durationSeconds"]
+    if not status.get("targetPath") and wsb.get("target"):
+        status["targetPath"] = wsb["target"]
+    if wsb.get("lastSuccessAt") and not status.get("lastBackupAt"):
+        status["lastBackupAt"] = wsb["lastSuccessAt"]
+    if wsb.get("policy") and status.get("method") != "WINDOWS_SERVER_BACKUP":
+        # WMI no respondio pero los cmdlets si: es Windows Server Backup.
+        status["method"] = "WINDOWS_SERVER_BACKUP"
+
+    last_ok = wsb.get("lastSuccessAt") or wsb.get("finishedAt") or status.get("lastBackupAt")
+    hours = _hours_since(last_ok)
+    if (
+        status.get("result") == "SUCCESS"
+        and (wsb.get("policy") or {}).get("schedule")
+        and hours is not None
+        and hours > BACKUP_STALE_HOURS
+    ):
+        status["result"] = "WARNING"
+        status["detail"] = (
+            f"Sin backup exitoso en las ultimas {int(hours)} hs (programado a las "
+            f"{', '.join(wsb['policy']['schedule'])}). Ultimo exitoso: {last_ok}. " + (status.get("detail") or "")
+        )[:1000]
+    failure = wsb.get("lastFailure")
+    if status.get("result") == "FAILED" and failure and failure.get("message"):
+        status["detail"] = (f"Error: {failure['message']} " + (status.get("detail") or ""))[:1000]
+
+
 def get_backup_status() -> dict[str, Any]:
     """Determina el estado del backup nativo probando varios metodos en orden.
 
@@ -1756,10 +1970,16 @@ def get_backup_status() -> dict[str, Any]:
                 + (status.get("detail") or "")
             )
 
-    # Tamano real del backup: best-effort, solo si se detecto una ruta de
-    # destino y el ultimo resultado fue exitoso (si fallo, el contenido
-    # puede estar incompleto/no ser representativo).
-    if status.get("result") == "SUCCESS" and status.get("targetPath"):
+    # Detalle de Windows Server Backup (evento 4 + cmdlets WSB): tamano
+    # transferido, duracion, programacion, volumenes, ultimo error.
+    try:
+        apply_wsb_details(status)
+    except Exception as exc:
+        logger.warning("No se pudo leer el detalle de Windows Server Backup: %s", exc)
+
+    # Tamano: si el Visor de Eventos no lo informo, se estima recorriendo la
+    # carpeta destino (solo si el ultimo resultado fue exitoso).
+    if status.get("result") == "SUCCESS" and status.get("targetPath") and not status.get("sizeBytes"):
         try:
             size = estimate_backup_size(status["targetPath"])
             if size is not None:
@@ -1800,7 +2020,7 @@ def build_backup_payload() -> dict[str, Any]:
         payload["sizeBytes"] = status["sizeBytes"]
 
     metadata: dict[str, Any] = {}
-    for key in ("runs", "versions", "durationSeconds", "jobs"):
+    for key in ("runs", "versions", "durationSeconds", "jobs", "wsb"):
         if status.get(key):
             metadata[key] = status[key]
     if metadata:
