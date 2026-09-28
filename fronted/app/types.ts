@@ -122,6 +122,8 @@ export type BackupJob = {
   tool?: string | null;
   result: string;
   enabled?: boolean;
+  /** Advertencia informativa: hay otro backup exitoso reciente, no afecta el estado. */
+  advisory?: boolean;
   lastRunAt?: string | null;
   lastSuccessAt?: string | null;
   nextRunAt?: string | null;

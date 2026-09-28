@@ -69,7 +69,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.9.0"
+AGENT_VERSION = "1.10.0"
 
 
 def get_base_dir() -> Path:
@@ -1179,8 +1179,12 @@ def estimate_backup_size(target_path: str) -> int | None:
 
 BACKUP_TASK_PATTERN = (
     r"backup|respaldo|resguardo|copia|robocopy|xcopy|wbadmin|7z|7-zip|winrar|\brar\b|\.zip|compress-archive|"
-    r"sqlcmd|\.bak\b|cobian|veeam|acronis|macrium|syncback|freefilesync|goodsync|bvckup|aloha"
+    r"sqlcmd|\.bak\b|cobian|veeam|acronis|macrium|syncback|freefilesync|goodsync|bvckup"
 )
+# Nombre que por si solo indica que la tarea ES un backup. Cualquier otra
+# tarea candidata (ej. scripts de ALOHA: cierre de dia, polling, reportes)
+# solo cuenta si su script realmente copia/comprime/respalda hacia un destino.
+BACKUP_TASK_NAME_STRONG = re.compile(r"backup|respaldo|resguardo|copia de seguridad|\bbkp\b|\bbak\b", re.IGNORECASE)
 BACKUP_TASK_EXCLUDE = r"enterprisesoc|googleupdate|microsoftedgeupdate|onedrive|adobe|mozilla|office"
 
 PS_BACKUP_TASKS = r"""
@@ -1394,8 +1398,9 @@ def _task_result(exit_code: int, uses_robocopy_directly: bool) -> tuple[str, str
         return "RUNNING", "en ejecución ahora"
     if code == 0x41303:
         return "WARNING", "la tarea nunca se ejecutó"
-    if code in (0x41306, 0x800710E0):
-        return "WARNING", f"Windows no la ejecutó (código 0x{code:X}: condiciones/equipo apagado)"
+    if code in (0x41306, 0x800710E0, 0x41302):
+        # Detenida a mano / no ejecutada por condiciones: no es un fallo del backup.
+        return "UNKNOWN", f"sin resultado (código 0x{code:X}: detenida o no ejecutada por condiciones)"
     if uses_robocopy_directly:
         return ("SUCCESS", f"robocopy código {code}") if code < 8 else ("FAILED", f"robocopy código {code} (errores de copia)")
     if code == 0:
@@ -1430,7 +1435,21 @@ def detect_scheduled_backup_jobs() -> list[dict[str, Any]]:
                     base_dir = base_dir or os.path.dirname(path)
         analysis = _analyze_commands("\n".join(texts), base_dir)
 
-        result, reason = _task_result(int(t.get("lastResult") or 0), direct_robocopy)
+        # Solo backups de verdad: nombre inequivoco o comandos de copia con
+        # destino. Las tareas deshabilitadas/detenidas o que nunca corrieron
+        # no son un backup activo: no se informan (antes daban advertencias
+        # falsas en los ALOHA por scripts ajenos a los backups).
+        is_backup = bool(BACKUP_TASK_NAME_STRONG.search(t.get("name") or "")) or bool(analysis["tools"] and analysis["targets"])
+        if not is_backup or not t.get("enabled", True):
+            continue
+        code = int(t.get("lastResult") or 0) & 0xFFFFFFFF
+        if code == 0x41303 or (not t.get("lastRun") and code != 0x41301):
+            continue
+
+        # Un .bat/.ps1 cuyo trabajo es robocopy devuelve el codigo de robocopy
+        # (1-7 = copio bien): no es un error.
+        uses_robocopy = direct_robocopy or analysis["tools"] == ["robocopy"]
+        result, reason = _task_result(int(t.get("lastResult") or 0), uses_robocopy)
         last_run = t.get("lastRun")
         ran_ok = result == "SUCCESS"
         job: dict[str, Any] = {
@@ -1478,12 +1497,12 @@ def detect_scheduled_backup_jobs() -> list[dict[str, Any]]:
         if ran_ok:
             job["lastSuccessAt"] = last_run
         hours = _hours_since(last_run)
-        if not job["enabled"]:
-            job["result"] = "WARNING"
-            job["detail"] = "La tarea de backup está DESHABILITADA. " + job["detail"]
-        elif hours is not None and hours > STALE_HOURS and t.get("nextRun"):
+        # Atrasada solo si Windows registro corridas perdidas (equipo apagado,
+        # etc.). Un backup semanal que corrio hace 3 dias esta al dia.
+        missed = int(t.get("missedRuns") or 0)
+        if missed > 0 and hours is not None and hours > STALE_HOURS:
             job["result"] = "WARNING" if job["result"] != "FAILED" else "FAILED"
-            job["detail"] += f" · no corre hace {int(hours)} h"
+            job["detail"] += f" · {missed} corrida(s) perdida(s), la última hace {int(hours)} h"
         jobs.append(job)
     return jobs
 
@@ -1661,7 +1680,18 @@ def merge_backup_status(status: dict[str, Any], jobs: list[dict[str, Any]]) -> d
         return status
 
     status["jobs"] = all_jobs
-    known = [j for j in all_jobs if j.get("result") != "UNKNOWN"]
+    # Si hay al menos un backup EXITOSO reciente (<= 26 h), las advertencias
+    # del resto (script que no corrio hoy, robocopy que salteo archivos en
+    # uso) quedan informativas: se muestran pero no ponen el estado general en
+    # ADVERTENCIA. Un backup FALLIDO sigue contando siempre.
+    fresh_success = any(
+        j.get("result") in ("SUCCESS", "RUNNING") and (_hours_since(j.get("lastSuccessAt") or j.get("lastRunAt")) or 1e9) <= BACKUP_STALE_HOURS
+        for j in all_jobs
+    )
+    for j in all_jobs:
+        if fresh_success and j.get("result") == "WARNING":
+            j["advisory"] = True
+    known = [j for j in all_jobs if j.get("result") != "UNKNOWN" and not j.get("advisory")]
     worst = max(known, key=lambda j: RESULT_RANK.get(j.get("result"), 1)) if known else all_jobs[0]
     overall = worst.get("result") if known else "UNKNOWN"
     status["result"] = "SUCCESS" if overall == "RUNNING" else overall
@@ -1683,7 +1713,8 @@ def merge_backup_status(status: dict[str, Any], jobs: list[dict[str, Any]]) -> d
         when = j.get("lastRunAt")
         hours = _hours_since(when)
         ago = f"hace {int(hours)} h" if hours is not None and hours < 72 else (f"hace {int(hours / 24)} días" if hours is not None else "sin ejecuciones")
-        lines.append(f"[{j.get('result')}] {j.get('name')} ({j.get('tool')}): {ago}. {j.get('detail') or ''}".strip())
+        tag = f"{j.get('result')} - informativo" if j.get("advisory") else j.get("result")
+        lines.append(f"[{tag}] {j.get('name')} ({j.get('tool')}): {ago}. {j.get('detail') or ''}".strip())
     status["detail"] = "\n".join(lines)[:1000]
     return status
 

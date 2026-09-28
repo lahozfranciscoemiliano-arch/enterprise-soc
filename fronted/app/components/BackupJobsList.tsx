@@ -22,7 +22,7 @@ export default function BackupJobsList({ jobs }: { jobs: BackupJob[] }) {
       </p>
       <div className="grid gap-2 lg:grid-cols-2">
         {jobs.map((j, i) => {
-          const st = RESULT_STYLE[j.result] ?? RESULT_STYLE.UNKNOWN;
+          const st = j.advisory ? { label: 'Informativo', badge: 'border-slate-200 bg-slate-50 text-slate-500' } : RESULT_STYLE[j.result] ?? RESULT_STYLE.UNKNOWN;
           return (
             <div key={`${j.name}-${i}`} className="rounded-lg border border-slate-200 bg-white p-3 text-[11px]">
               <div className="flex items-start justify-between gap-2">

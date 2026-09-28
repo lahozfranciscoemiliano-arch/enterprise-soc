@@ -118,7 +118,7 @@ function evaluateTelemetry(server, telemetry, defaults = DEFAULT_THRESHOLDS) {
 function describeBackupJobs(backup, results) {
   const jobs = Array.isArray(backup.metadata?.jobs) ? backup.metadata.jobs : [];
   return jobs
-    .filter((j) => results.includes(j.result))
+    .filter((j) => results.includes(j.result) && !j.advisory)
     .slice(0, 4)
     .map((j) => `"${j.name}" (${j.tool ?? j.method}): ${j.detail ?? j.result}`)
     .join(' | ');
