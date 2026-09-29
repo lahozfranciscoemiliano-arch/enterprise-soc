@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.15.0"
+AGENT_VERSION = "1.15.1"
 
 
 def get_base_dir() -> Path:
@@ -2025,6 +2025,10 @@ try {
   }
 } catch {}
 try {
+  $c = Get-WBJob -ErrorAction Stop
+  if ($c -and "$($c.JobState)" -eq 'Running') { $out.currentJob = [ordered]@{ state = 'Running'; startedAt = D $c.StartTime } }
+} catch {}
+try {
   $j = Get-WBJob -Previous 1 -ErrorAction Stop
   if ($j) {
     $out.lastJob = [ordered]@{
@@ -2156,6 +2160,8 @@ def collect_wsb_details() -> dict[str, Any]:
     summary = ps.get("summary") or {}
     policy = ps.get("policy") or {}
     job = ps.get("lastJob") or {}
+    if ps.get("currentJob"):
+        wsb["currentJob"] = ps["currentJob"]
     if summary:
         wsb["versions"] = summary.get("versions")
         wsb["nextBackupAt"] = summary.get("nextBackupAt")
@@ -2228,14 +2234,24 @@ def _service_running(name: str) -> bool:
         return False
 
 
-def backup_running_since() -> str | None:
-    """Hora de inicio del backup que esta corriendo ahora, o None."""
+BACKUP_RUNNING_MAX_HOURS = 12
+
+
+def backup_running_since(wsb: dict[str, Any] | None = None) -> str | None:
+    """Hora de inicio del backup que esta corriendo AHORA, o None.
+
+    Solo cuenta evidencia de un trabajo real: un evento de inicio (1) mas
+    nuevo que la ultima corrida terminada y sin su evento de fin, o el
+    trabajo actual de Get-WBJob en estado Running. NO se usa el servicio
+    wbengine: lo arrancan las propias consultas (wbadmin / Get-WB*) y queda
+    encendido un rato aunque no haya ningun backup."""
+    job = (wsb or {}).get("currentJob") or {}
+    if str(job.get("state", "")).lower() == "running":
+        return job.get("startedAt") or _open_backup_start or _utc_now_iso()
     start = _open_backup_start
     hours = _hours_since(start) if start else None
-    if start and hours is not None and hours <= 20:
+    if start and hours is not None and hours <= BACKUP_RUNNING_MAX_HOURS:
         return start
-    if _service_running("wbengine"):
-        return start or _utc_now_iso()
     return None
 
 
@@ -2334,7 +2350,7 @@ def get_backup_status() -> dict[str, Any]:
     # corre mientras hay un trabajo, o hay un evento de inicio (1) sin fin.
     # Mientras corre no se informa "fallido" por el codigo del trabajo actual.
     try:
-        running_since = backup_running_since()
+        running_since = backup_running_since(status.get("wsb"))
     except Exception:
         running_since = None
     if running_since:
