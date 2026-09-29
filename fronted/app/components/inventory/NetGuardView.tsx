@@ -8,6 +8,13 @@ import { API_URL, useLiveData } from './useLiveData';
 import { NetworkGroup, networkOf, sortNetKeys, useNetworks } from './networks';
 import type { NetGuardOverview, NetLocation } from '../../types';
 
+type NetDeviceRow = NetGuardOverview['newDevices'][number] & { online: boolean; isNew: boolean; user: string | null };
+
+function ipNum(ip: string | null | undefined) {
+  const p = String(ip ?? '').split('.').map(Number);
+  return p.length === 4 && p.every((n) => !Number.isNaN(n)) ? ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3] : Number.MAX_SAFE_INTEGER;
+}
+
 
 function Location({ loc }: { loc: NetLocation }) {
   const where = loc.switchName
@@ -38,6 +45,9 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
   const [macQuery, setMacQuery] = useState('');
   const [located, setLocated] = useState<Record<string, NetLocation | 'loading'>>({});
   const [showRandom, setShowRandom] = useState(false);
+  const [onlyNew, setOnlyNew] = useState(false);
+  const [devQuery, setDevQuery] = useState('');
+  const { data: allDevices } = useLiveData<NetDeviceRow[]>('/api/netguard/devices', { intervalMs: 120_000 });
   const nets = useNetworks();
 
   const post = async (path: string, okMsg: string) => {
@@ -66,7 +76,12 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
 
   const rogue = data.dhcpServers.filter((d) => !d.authorized);
   const badGw = data.gateways.filter((g) => !g.ok);
-  const devices = data.newDevices.filter((d) => showRandom || !d.randomized);
+  const dq = devQuery.trim().toLowerCase();
+  const devices = (allDevices ?? [])
+    .filter((d) => showRandom || !d.randomized)
+    .filter((d) => !onlyNew || d.isNew)
+    .filter((d) => !dq || [d.mac, d.ip, d.hostname, d.vendor, d.user].some((v) => v?.toLowerCase().includes(dq)))
+    .sort((a, b) => ipNum(a.ip) - ipNum(b.ip));
   const allOk = rogue.length === 0 && badGw.length === 0;
   const queryLoc = located[macQuery.trim().toLowerCase()];
 
@@ -78,7 +93,7 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
     servers: string[];
     gateways: NetGuardOverview['gateways'];
     dhcp: NetGuardOverview['dhcpServers'];
-    devices: NetGuardOverview['newDevices'];
+    devices: NetDeviceRow[];
   };
   const byKey = new Map<string, Group>();
   const groupFor = (ip: string | null | undefined): Group => {
@@ -134,11 +149,22 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
 
       {groups.length === 0 && <p className="py-6 text-center text-xs text-slate-400">Todavía ningún agente informó datos de red (agente 1.14.0 o superior).</p>}
       <div className="flex items-center justify-between text-[11px] text-slate-500">
-        <span>Agrupado por gateway / red de cada sede.</span>
+        <span>Agrupado por gateway / red de cada sede. Se listan todos los equipos vistos en los últimos 7 días.</span>
+        <span className="flex flex-wrap items-center gap-3">
+        <input
+          value={devQuery}
+          onChange={(e) => setDevQuery(e.target.value)}
+          placeholder="Buscar equipo, IP, MAC, usuario..."
+          className="w-56 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] outline-none focus:border-brand-500"
+        />
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} /> Solo nuevos sin revisar
+        </label>
         <label className="flex items-center gap-1.5">
           <input type="checkbox" checked={showRandom} onChange={(e) => setShowRandom(e.target.checked)} />
           <Smartphone className="h-3 w-3" /> Mostrar celulares (MAC aleatoria)
         </label>
+        </span>
       </div>
       {groups.map((g) => {
         const problems = g.dhcp.filter((d) => !d.authorized).length + g.gateways.filter((x) => !x.ok).length;
@@ -257,9 +283,12 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
               </div>
             </div>
 
-            <h4 className="mb-1.5 mt-4 text-xs font-semibold text-slate-700">Equipos nuevos en esta red (14 días)</h4>
+            <h4 className="mb-1.5 mt-4 text-xs font-semibold text-slate-700">
+              Equipos en esta red ({g.devices.length} · {g.devices.filter((d) => d.online).length} en línea
+              {g.devices.some((d) => d.isNew) ? ` · ${g.devices.filter((d) => d.isNew).length} nuevos sin revisar` : ''})
+            </h4>
             {g.devices.length === 0 ? (
-              <p className="text-[11px] text-slate-400">Ningún equipo nuevo.</p>
+              <p className="text-[11px] text-slate-400">{allDevices === null ? 'Cargando...' : 'Sin equipos registrados en esta red todavía.'}</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
@@ -267,7 +296,8 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
                     <tr className="border-b border-slate-200 text-slate-400">
                       <th className="py-1.5 pr-3 font-medium">MAC / fabricante</th>
                       <th className="py-1.5 pr-3 font-medium">IP / nombre</th>
-                      <th className="py-1.5 pr-3 font-medium">Primera vez</th>
+                      <th className="py-1.5 pr-3 font-medium">Usuario</th>
+                      <th className="py-1.5 pr-3 font-medium">Visto</th>
                       <th className="py-1.5 pr-3 font-medium">Estado</th>
                       <th className="py-1.5" />
                     </tr>
@@ -286,19 +316,26 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
                             <span className="block font-mono">{d.ip ?? '—'}</span>
                             <span className="text-[10px] text-slate-400">{d.hostname ?? ''}</span>
                           </td>
-                          <td className="py-1.5 pr-3 text-slate-500">{timeAgo(d.firstSeenAt)}</td>
+                          <td className="py-1.5 pr-3 text-slate-600">{d.user ?? '—'}</td>
+                          <td className="py-1.5 pr-3 text-[11px] text-slate-500">
+                            <span className="flex items-center gap-1.5">
+                              <span className={`h-2 w-2 rounded-full ${d.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                              {d.online ? 'en línea' : timeAgo(d.lastSeenAt)}
+                            </span>
+                            <span className="text-[10px] text-slate-400">desde {timeAgo(d.firstSeenAt)}</span>
+                          </td>
                           <td className="py-1.5 pr-3">
-                            {d.approved ? (
-                              <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">Aprobado</span>
+                            {d.isNew ? (
+                              <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">Nuevo sin revisar</span>
                             ) : (
-                              <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">Sin revisar</span>
+                              <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">Conocido</span>
                             )}
                           </td>
                           <td className="space-x-1 whitespace-nowrap py-1.5 text-right">
                             <button onClick={() => locate(d.mac)} className="rounded border border-sky-200 px-2 py-0.5 text-[10px] text-sky-700 hover:bg-sky-50">
                               Ubicar
                             </button>
-                            {!d.approved && canWrite && (
+                            {d.isNew && canWrite && (
                               <button onClick={() => post(`/api/netguard/devices/${d.mac}/approve`, 'Equipo aprobado')} className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50">
                                 Aprobar
                               </button>

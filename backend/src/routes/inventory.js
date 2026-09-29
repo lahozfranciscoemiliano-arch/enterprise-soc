@@ -40,6 +40,8 @@ async function lastLogonByUser() {
   return new Map(rows.map((r) => [r.username, r]));
 }
 
+const identityStatus = new Map();
+
 module.exports = function registerInventoryRoutes(app, { authUser, authServer, requireRole, adminWriteLimiter }) {
   const wrap = (fn) => async (req, res) => {
     try {
@@ -72,7 +74,13 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
 
   // Sesiones del dominio: cada controlador de dominio las manda cada minuto
   // (agente >= 1.14.0), sea o no el recolector del inventario.
-  const logonLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+  const logonLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `logons:${req.header('x-server-id') || req.ip}`,
+  });
   app.post(
     '/api/inventory/logons',
     logonLimiter,
@@ -81,7 +89,56 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
       const parsed = logonBatchSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: 'Lote de sesiones inválido', details: parsed.error.flatten() });
       const result = await ingestLogons(parsed.data.logons);
+      // Estado de lectura del registro de Seguridad de cada DC (se muestra en Sesiones).
+      identityStatus.set(req.server.id, {
+        serverId: req.server.id,
+        serverName: req.server.name,
+        at: new Date(),
+        readable: parsed.data.status?.readable ?? null,
+        error: parsed.data.status?.error ?? null,
+        received: parsed.data.logons.length,
+        stored: result.stored,
+      });
       return res.json({ ok: true, ...result });
+    })
+  );
+
+  app.get(
+    '/api/inventory/identity-status',
+    authUser,
+    wrap(async (req, res) => {
+      const since = new Date(Date.now() - 60 * 60000);
+      const last = await prisma.$queryRaw`SELECT MAX(at) AS "lastLogonAt", COUNT(*)::int AS "lastHour" FROM logon_events WHERE at >= ${since}`;
+      return res.json({ dcs: [...identityStatus.values()], lastLogonAt: last[0]?.lastLogonAt ?? null, lastHour: last[0]?.lastHour ?? 0 });
+    })
+  );
+
+  // Todos los equipos vistos en la red (por MAC) en los ultimos 7 dias.
+  app.get(
+    '/api/netguard/devices',
+    authUser,
+    wrap(async (req, res) => {
+      const rows = await prisma.netDevice.findMany({
+        where: { lastSeenAt: { gte: new Date(Date.now() - 7 * 86400000) } },
+        orderBy: { ip: 'asc' },
+        take: 5000,
+      });
+      const now = Date.now();
+      // Usuario del dominio de cada equipo (si es una PC del AD).
+      const eps = await prisma.endpoint.findMany({ where: { macAddress: { in: rows.map((d) => d.mac) } }, select: { macAddress: true, hostname: true, lastUser: true, lastUserAt: true, online: true } });
+      const byMac = new Map(eps.map((e) => [e.macAddress, e]));
+      return res.json(
+        rows.map((d) => {
+          const ep = byMac.get(d.mac);
+          return {
+            ...d,
+            hostname: d.hostname ?? ep?.hostname ?? null,
+            user: ep?.lastUser ?? null,
+            online: now - d.lastSeenAt.getTime() < 25 * 60000,
+            isNew: !d.approved && now - d.firstSeenAt.getTime() < 14 * 86400000,
+          };
+        })
+      );
     })
   );
 

@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.15.1"
+AGENT_VERSION = "1.16.0"
 
 
 def get_base_dir() -> Path:
@@ -1237,6 +1237,37 @@ _EVT_ID_RE = re.compile(r"<EventID[^>]*>(\d+)</EventID>")
 _EVT_TIME_RE = re.compile(r"<TimeCreated SystemTime=['\"]([^'\"]+)['\"]")
 
 
+_evt_errors: dict[str, str] = {}
+
+PS_EVENTS_XML = r"""
+try {
+  $ev = @(Get-WinEvent -LogName '__CHANNEL__' -FilterXPath "__XPATH__" -MaxEvents __MAX__ -ErrorAction Stop | ForEach-Object { $_.ToXml() })
+} catch {
+  if ($_.FullyQualifiedErrorId -match 'NoMatchingEventsFound') { $ev = @() } else { throw }
+}
+ConvertTo-Json -InputObject $ev -Compress
+"""
+
+
+def _evt_query_ps(channel: str, xpath: str, max_events: int) -> list[str]:
+    """Respaldo con Get-WinEvent cuando la API EvtQuery falla."""
+    script = PS_EVENTS_XML.replace("__CHANNEL__", channel).replace("__XPATH__", xpath.replace('"', '`"')).replace("__MAX__", str(max_events))
+    try:
+        rows = run_powershell_json(script, timeout=180)
+        _evt_errors.pop(f"ps:{channel}", None)
+        return [r for r in rows if isinstance(r, str)]
+    except Exception as exc:
+        _evt_errors[f"ps:{channel}"] = str(exc)[:300]
+        return []
+
+
+def _evt_query_any(channel: str, xpath: str, max_events: int) -> list[str]:
+    rows = _evt_query(channel, xpath, max_events)
+    if not rows and channel in _evt_errors and sys.platform == "win32":
+        rows = _evt_query_ps(channel, xpath, max_events)
+    return rows
+
+
 def _evt_query(channel: str, xpath: str, max_events: int = 500) -> list[str]:
     """Devuelve el XML de los eventos de un canal (API moderna EvtQuery, que a
     diferencia de OpenEventLog tambien lee canales "Applications and Services
@@ -1248,8 +1279,12 @@ def _evt_query(channel: str, xpath: str, max_events: int = 500) -> list[str]:
         handle = win32evtlog.EvtQuery(
             channel, win32evtlog.EvtQueryChannelPath | win32evtlog.EvtQueryReverseDirection, xpath
         )
-    except Exception:
-        return []  # canal inexistente (caracteristica no instalada) o sin permisos
+        _evt_errors.pop(channel, None)
+    except Exception as exc:
+        # Canal inexistente (caracteristica no instalada) o sin permisos: se
+        # anota el motivo para poder informarlo al NOC.
+        _evt_errors[channel] = str(exc)[:300]
+        return []
     while len(results) < max_events:
         try:
             batch = win32evtlog.EvtNext(handle, 100)
@@ -2768,7 +2803,7 @@ def collect_security_events() -> dict[str, Any]:
     failures: dict[tuple[str, str | None], int] = {}
     newest = since
 
-    for xml in _evt_query("Security", f"*[System[(EventID=4771 or EventID=4625) and {time_filter}]]", max_events=5000):
+    for xml in _evt_query_any("Security", f"*[System[(EventID=4771 or EventID=4625) and {time_filter}]]", max_events=5000):
         when = _evt_time_iso(xml)
         data = _evt_data(xml)
         user = data.get("TargetUserName", "")
@@ -2780,7 +2815,7 @@ def collect_security_events() -> dict[str, Any]:
 
     ids = " or ".join(f"EventID={i}" for i in DIRECTORY_EVENT_IDS)
     directory: list[dict[str, Any]] = []
-    for xml in _evt_query("Security", f"*[System[({ids}) and {time_filter}]]", max_events=2000):
+    for xml in _evt_query_any("Security", f"*[System[({ids}) and {time_filter}]]", max_events=2000):
         when = _evt_time_iso(xml)
         id_match = _EVT_ID_RE.search(xml)
         if not when or not id_match:
@@ -2820,6 +2855,7 @@ IDENTITY_INTERVAL_SECONDS = int(os.getenv("IDENTITY_INTERVAL_SECONDS", "60"))
 _last_logon_query: str | None = None
 _activity_seen: dict[tuple[str, str], float] = {}
 _ACTIVITY_DEDUP_SECONDS = 600
+_identity_stats: dict[str, Any] = {}
 _IGNORED_ACCOUNTS = {"anonymous logon", "-", "", "system", "local service", "network service"}
 
 
@@ -2861,11 +2897,11 @@ def collect_logon_activity() -> list[dict[str, Any]]:
             _activity_seen[key] = now
         out.append({"user": user, "ip": ip, "at": when, "kind": kind})
 
-    for xml in _evt_query("Security", f"*[System[(EventID=4768 or EventID=4770) and {time_filter}]]", max_events=20000):
+    for xml in _evt_query_any("Security", f"*[System[(EventID=4768 or EventID=4770) and {time_filter}]]", max_events=20000):
         id_match = _EVT_ID_RE.search(xml)
         accept(xml, "logon" if id_match and id_match.group(1) == "4768" else "activity")
     network_logon = f"*[System[EventID=4624 and {time_filter}] and EventData[Data[@Name='LogonType']='3']]"
-    for xml in _evt_query("Security", network_logon, max_events=8000):
+    for xml in _evt_query_any("Security", network_logon, max_events=8000):
         accept(xml, "activity")
 
     if len(_activity_seen) > 50000:
@@ -2873,6 +2909,13 @@ def collect_logon_activity() -> list[dict[str, Any]]:
         for k in [k for k, v in _activity_seen.items() if v < cutoff]:
             _activity_seen.pop(k, None)
     _last_logon_query = newest
+    _identity_stats.update(
+        at=_utc_now_iso(),
+        readable="Security" not in _evt_errors or not _evt_errors.get("ps:Security"),
+        error=_evt_errors.get("ps:Security") or _evt_errors.get("Security"),
+        sent=len(out),
+        since=since,
+    )
     return out[-8000:]
 
 
@@ -2886,9 +2929,14 @@ def identity_loop() -> None:
                 wait = 6 * 3600  # no es controlador de dominio
             else:
                 logons = collect_logon_activity()
-                if logons:
+                # Se reporta siempre (aunque no haya sesiones nuevas): asi el NOC
+                # sabe que este DC esta leyendo el registro de Seguridad o por que no.
+                if True:
                     headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
-                    r = requests.post(f"{BACKEND_URL}/api/inventory/logons", json={"logons": logons}, headers=headers, timeout=30)
+                    status = {k: _identity_stats.get(k) for k in ("readable", "error", "since")}
+                    if status.get("error"):
+                        logger.warning("No se puede leer el registro de Seguridad: %s", status["error"])
+                    r = requests.post(f"{BACKEND_URL}/api/inventory/logons", json={"logons": logons, "status": status}, headers=headers, timeout=30)
                     if r.status_code == 404:
                         wait = 3600  # backend viejo
                     else:

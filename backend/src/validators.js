@@ -326,6 +326,13 @@ const logonBatchSchema = z
         })
       )
       .max(10000),
+    status: z
+      .object({
+        readable: z.boolean().nullable().optional(),
+        error: z.string().max(400).nullable().optional(),
+        since: z.string().max(50).nullable().optional(),
+      })
+      .optional(),
   })
   .strict();
 

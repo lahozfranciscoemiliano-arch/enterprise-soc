@@ -37,6 +37,11 @@ export default function AuditView() {
   const events = useLiveData<DirectoryEventRow[]>('/api/inventory/directory-events?limit=200');
   const logons = useLiveData<LogonRecord[]>('/api/inventory/logons?limit=600');
   const nets = useNetworks();
+  const identity = useLiveData<{
+    dcs: { serverId: string; serverName: string; at: string; readable: boolean | null; error: string | null; received: number; stored: number }[];
+    lastLogonAt: string | null;
+    lastHour: number;
+  }>('/api/inventory/identity-status', { intervalMs: 60_000 });
   // Sesiones agrupadas por la red (gateway) desde la que se conectaron.
   const logonGroups = useMemo(() => {
     const map = new Map<string, { key: string; label: string; gateway: string | null; servers: string[]; rows: LogonRecord[] }>();
@@ -97,6 +102,34 @@ export default function AuditView() {
           <LogIn className="h-4 w-4 text-slate-400" />
           Inicios de sesión en tiempo real (por red / gateway)
         </p>
+        <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-[11px]">
+          <p className="mb-1 font-medium text-slate-600">
+            Controladores de dominio leyendo el registro de Seguridad · {identity.data?.lastHour ?? 0} sesión(es) en la última hora
+          </p>
+          {!identity.data || identity.data.dcs.length === 0 ? (
+            <p className="text-amber-700">
+              Ningún controlador de dominio informó todavía (agente 1.16.0 o superior en cada DC). Las sesiones salen de los eventos 4768/4770/4624 del
+              registro de Seguridad de los DC.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {identity.data.dcs.map((d) => {
+                const stale = Date.now() - new Date(d.at).getTime() > 5 * 60000;
+                const bad = d.readable === false || Boolean(d.error);
+                return (
+                  <li key={d.serverId} className="flex flex-wrap items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${bad ? 'bg-red-500' : stale ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                    <b className="text-slate-700">{d.serverName}</b>
+                    <span className="text-slate-500">
+                      {bad ? 'no puede leer el registro de Seguridad' : `lee OK · ${d.received} evento(s) en el último envío`} · {new Date(d.at).toLocaleTimeString('es-AR')}
+                    </span>
+                    {d.error && <span className="w-full pl-4 text-red-700">{d.error}</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
         {logons.data === null ? (
           <p className="text-xs text-slate-400">Cargando...</p>
         ) : logons.data.length === 0 ? (

@@ -123,7 +123,15 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
     }
   };
   const pinLimiter = rateLimit({ windowMs: 15 * 60000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'Demasiados intentos con PIN' } });
-  const agentLimiter = rateLimit({ windowMs: 60000, max: 30, standardHeaders: true, legacyHeaders: false });
+  // Por agente (no por IP): varias sedes tienen muchos servidores detras de la
+  // misma IP publica.
+  const agentLimiter = rateLimit({
+    windowMs: 60000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `agent:${req.header('x-server-id') || req.ip}`,
+  });
   const writer = requireRole('ADMIN', 'ANALYST');
 
   async function checkPin(req, res, pin) {
