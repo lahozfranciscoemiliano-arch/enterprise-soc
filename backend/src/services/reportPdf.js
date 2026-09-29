@@ -94,6 +94,10 @@ const TYPE_LABEL = {
   APP_SERVICE_DOWN: 'Aplicación caída',
   APP_PERFORMANCE: 'Aplicación lenta',
   NETWORK_MICROCUTS: 'Micro-cortes de red',
+  ROGUE_DHCP: 'DHCP no autorizado',
+  GATEWAY_CONFLICT: 'Gateway duplicado',
+  UNKNOWN_DEVICE: 'Equipo desconocido',
+  SPEEDTEST_LOW: 'Velocidad baja',
 };
 
 const PAGE = { w: 595.28, h: 841.89, m: 40 };

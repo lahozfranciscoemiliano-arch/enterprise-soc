@@ -14,6 +14,7 @@ const { Prisma } = require('@prisma/client');
 const { getSetting, setSettings } = require('./settings');
 const { createAndDispatchEvent, resolveCleared } = require('./eventPipeline');
 const { broadcast } = require('../websocket/socketServer');
+const netGuard = require('./netGuard');
 
 const PRIVILEGED_GROUPS = [
   'domain admins',
@@ -40,6 +41,10 @@ const PRINTER_OFFLINE_GRACE_MS = 30 * 60 * 1000;
 const PRINTER_BLOCKING_ERRORS = ['noPaper', 'noToner', 'doorOpen', 'jammed', 'offline', 'serviceRequested', 'markerSupplyMissing', 'inputTrayEmpty', 'outputFull'];
 const PRINTER_WARNING_ERRORS = ['lowPaper', 'lowToner', 'outputNearFull', 'overduePreventMaint'];
 const SUPPLY_LOW_PCT = 10;
+const PRINTER_FORGET_MS = 3 * 86400000;
+const ACTIVE_SESSION_MS = 12 * 3600000; // un TGT de Kerberos dura 10 h
+const RECENT_ACTIVITY_MS = 15 * 60000;
+let lastIpHost = new Map();
 
 const PRINTER_ERROR_LABEL = {
   lowPaper: 'poco papel',
@@ -175,6 +180,94 @@ function countStatuses(addresses) {
   return counts;
 }
 
+// --- Sesiones del dominio ----------------------------------------------------
+async function lastUserByHost() {
+  return prisma.$queryRaw`
+    SELECT DISTINCT ON (hostname) hostname, username, at
+    FROM logon_events
+    WHERE hostname IS NOT NULL AND at >= NOW() - INTERVAL '30 days'
+    ORDER BY hostname, at DESC
+  `;
+}
+
+async function recentActivityIps() {
+  const rows = await prisma.$queryRaw`
+    SELECT DISTINCT "ipAddress" FROM logon_events WHERE at >= ${new Date(Date.now() - RECENT_ACTIVITY_MS)}
+  `;
+  return new Set(rows.map((r) => r.ipAddress));
+}
+
+// IP -> equipo: DHCP (ultimo inventario) o la IP registrada del equipo.
+async function hostForIps(ips) {
+  const out = new Map();
+  for (const ip of ips) if (lastIpHost.has(ip)) out.set(ip, lastIpHost.get(ip));
+  const missing = ips.filter((ip) => !out.has(ip));
+  if (missing.length) {
+    const eps = await prisma.endpoint.findMany({ where: { ipAddress: { in: missing } }, select: { hostname: true, ipAddress: true } });
+    for (const e of eps) out.set(e.ipAddress, e.hostname);
+  }
+  return out;
+}
+
+// Inicios de sesion y actividad que mandan los controladores de dominio
+// cada minuto: se guardan y se actualiza al instante el usuario y el estado
+// "encendido" de cada equipo.
+async function ingestLogons(logons, { refreshEndpoints = true } = {}) {
+  const valid = logons.filter((l) => l.user && l.ip && l.at && !Number.isNaN(new Date(l.at).getTime()));
+  if (valid.length === 0) return { stored: 0, endpoints: 0 };
+  const ipHosts = await hostForIps([...new Set(valid.map((l) => l.ip))]);
+  const rows = valid.map((l) => ({
+    username: String(l.user).toLowerCase(),
+    ipAddress: l.ip,
+    hostname: ipHosts.get(l.ip) ?? null,
+    kind: l.kind === 'activity' ? 'activity' : 'logon',
+    at: new Date(l.at),
+  }));
+  const { count } = await prisma.logonEvent.createMany({ data: rows, skipDuplicates: true });
+  if (!refreshEndpoints) return { stored: count, endpoints: 0 };
+
+  // Ultimo usuario de cada equipo afectado.
+  const latest = new Map();
+  for (const r of rows) {
+    if (!r.hostname) continue;
+    const cur = latest.get(r.hostname);
+    if (!cur || r.at > cur.at) latest.set(r.hostname, r);
+  }
+  let updated = 0;
+  const now = new Date();
+  for (const [hostname, r] of latest) {
+    // eslint-disable-next-line no-await-in-loop
+    const ep = await prisma.endpoint.findUnique({ where: { hostname } });
+    if (!ep) continue;
+    const data = {};
+    if (!ep.lastUserAt || r.at >= ep.lastUserAt) {
+      data.lastUser = r.username;
+      data.lastUserAt = r.at;
+    }
+    if (now - r.at < RECENT_ACTIVITY_MS) {
+      if (!ep.online) {
+        data.online = true;
+        data.statusChangedAt = now;
+      }
+      data.lastSeenOnlineAt = now;
+      if (ep.ipAddress !== r.ipAddress) data.ipAddress = r.ipAddress;
+    }
+    if (Object.keys(data).length === 0) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await prisma.endpoint.update({ where: { hostname }, data });
+    updated += 1;
+  }
+  if (updated > 0) broadcast({ type: 'INVENTORY_UPDATE', at: now.toISOString(), partial: 'logons' });
+  return { stored: count, endpoints: updated };
+}
+
+// Sesion activa probable: equipo encendido y su ultimo usuario inicio o uso
+// la sesion hace menos de 12 h.
+function activeSessionOf(e) {
+  if (!e.online || !e.lastUser || !e.lastUserAt) return null;
+  return Date.now() - new Date(e.lastUserAt).getTime() < ACTIVE_SESSION_MS ? e.lastUser : null;
+}
+
 // --- Procesamiento principal -------------------------------------------------
 async function processInventory(server, payload) {
   const now = new Date();
@@ -200,25 +293,29 @@ async function processInventory(server, payload) {
     }
   }
 
-  // 1. Inicios de sesion (con el equipo resuelto por la IP en ese momento).
-  if (logons.length > 0) {
-    await prisma.logonEvent.createMany({
-      data: logons
-        .filter((l) => l.user && l.ip && l.at)
-        .map((l) => ({ username: String(l.user).toLowerCase(), ipAddress: l.ip, hostname: ipHost.get(l.ip) ?? null, at: new Date(l.at) })),
-      skipDuplicates: true,
-    });
+  // Nombres por DNS inverso de IPs activas sin concesion DHCP.
+  for (const [ip, name] of Object.entries(payload.reverseNames ?? {})) {
+    const h = shortHost(name);
+    if (h && !ipHost.has(ip)) ipHost.set(ip, h);
   }
+  // IP por DNS del dominio (equipos con IP fija o que el DHCP no registra).
+  for (const c of computers) {
+    const h = shortHost(c.name);
+    if (h && c.ip && !hostLease.has(h) && (ipHost.get(c.ip) ?? h) === h) {
+      ipHost.set(c.ip, h);
+      hostLease.set(h, { ip: c.ip, mac: normalizeMac(alive[c.ip]?.mac) });
+    }
+  }
+  lastIpHost = ipHost;
 
-  // Ultimo usuario por equipo (una sola query con DISTINCT ON).
-  const lastByHost = await prisma.$queryRaw`
-    SELECT DISTINCT ON (hostname) hostname, username, at
-    FROM logon_events
-    WHERE hostname IS NOT NULL AND at >= NOW() - INTERVAL '30 days'
-    ORDER BY hostname, at DESC
-  `;
+  // 1. Inicios de sesion (agentes viejos los mandan en el inventario).
+  if (logons.length > 0) await ingestLogons(logons, { refreshEndpoints: false });
+
+  // Ultimo usuario por equipo y actividad reciente por IP.
+  const lastByHost = await lastUserByHost();
   const hostUsers = new Map(lastByHost.map((r) => [r.hostname, r.username]));
   const hostUserAt = new Map(lastByHost.map((r) => [r.hostname, r.at]));
+  const recentIps = await recentActivityIps();
 
   // 2. Equipos del AD.
   if (computers.length > 0) {
@@ -229,7 +326,9 @@ async function processInventory(server, payload) {
       seen.push(hostname);
       const lease = hostLease.get(hostname);
       const ip = lease?.ip ?? null;
-      const online = Boolean(ip && alive[ip]);
+      // Encendido: responde en el barrido (ping/puertos/ARP) o tuvo actividad
+      // de sesion en el dominio en los ultimos minutos.
+      const online = Boolean(ip && (alive[ip] || recentIps.has(ip)));
       // eslint-disable-next-line no-await-in-loop
       const prev = await prisma.endpoint.findUnique({ where: { hostname } });
       const data = {
@@ -300,15 +399,40 @@ async function processInventory(server, payload) {
     });
   }
 
-  // 5. Impresoras.
+  // 5. Impresoras. Se identifican por MAC (o numero de serie): si una
+  // impresora cambio de IP, la entrada de la IP vieja se borra en vez de
+  // quedar duplicada y "sin respuesta".
   const seenPrinters = new Set();
+  const existingPrinters = await prisma.printer.findMany();
+  const removedPrinters = new Set();
   for (const p of printers) {
     if (!p.ip) continue;
     seenPrinters.add(p.ip);
+    const mac = normalizeMac(p.mac ?? alive[p.ip]?.mac);
     const online = Boolean(p.printerStatus) || Boolean(alive[p.ip]) || Boolean(p.reachable);
-    // eslint-disable-next-line no-await-in-loop
-    const prev = await prisma.printer.findUnique({ where: { id: p.ip } });
+    const prev = existingPrinters.find((x) => x.id === p.ip);
+    if (online && (mac || p.serial)) {
+      const moved = existingPrinters.filter(
+        (x) => x.id !== p.ip && !removedPrinters.has(x.id) && ((mac && x.macAddress === mac) || (p.serial && x.serial && x.serial === p.serial))
+      );
+      for (const old of moved) {
+        removedPrinters.add(old.id);
+        // eslint-disable-next-line no-await-in-loop
+        await prisma.printer.delete({ where: { id: old.id } }).catch(() => {});
+        // eslint-disable-next-line no-await-in-loop
+        await resolveCleared(server.id, [`PRINTER:${old.id}`], [], server.name);
+        console.log(`Inventario: impresora ${old.name ?? old.id} cambió de IP ${old.id} -> ${p.ip}; se borra la entrada vieja`);
+      }
+    }
+    // La IP ahora la usa OTRO equipo (otra MAC): la impresora vieja ya no esta ahi.
+    if (prev && prev.macAddress && mac && prev.macAddress !== mac && !p.printerStatus) {
+      removedPrinters.add(prev.id);
+      // eslint-disable-next-line no-await-in-loop
+      await prisma.printer.delete({ where: { id: prev.id } }).catch(() => {});
+      continue;
+    }
     const data = {
+      macAddress: mac ?? prev?.macAddress ?? null,
       name: p.queues?.[0]?.name ?? p.sysName ?? prev?.name ?? null,
       model: p.model ?? prev?.model ?? null,
       serial: p.serial ?? prev?.serial ?? null,
@@ -333,6 +457,12 @@ async function processInventory(server, payload) {
     // eslint-disable-next-line no-await-in-loop
     await prisma.printer.update({ where: { id: p.id }, data: { online: false, status: 'offline', statusChangedAt: now } });
   }
+  // Sin responder hace mas de 3 dias y sin ninguna cola que la use: fue dada
+  // de baja o cambio de IP sin poder identificarla. Se quita del inventario.
+  const gone = await prisma.printer.deleteMany({
+    where: { online: false, id: { notIn: [...seenPrinters] }, statusChangedAt: { lt: new Date(Date.now() - PRINTER_FORGET_MS) } },
+  });
+  if (gone.count > 0) console.log(`Inventario: ${gone.count} impresora(s) sin respuesta hace mas de 3 dias quitadas`);
 
   // 6. Mapa de IPs por ambito (+ subredes fijas sin DHCP).
   const scopeRows = [];
@@ -403,7 +533,27 @@ async function processInventory(server, payload) {
   };
   await prisma.server.update({ where: { id: server.id }, data: { inventoryAt: now, inventorySummary: summary } });
 
-  await evaluateInventoryAlerts(server, { roles, scopes, scopeRows, users, directoryEvents, failedAuth: payload.failedAuth ?? [], ipHost });
+  // Guardian de red: MACs nunca vistas (DHCP + barrido).
+  const seenDevices = [];
+  for (const scope of scopes) {
+    for (const l of scope.leases ?? []) {
+      if (String(l.state ?? '').startsWith('Active')) seenDevices.push({ mac: l.mac, ip: l.ip, hostname: shortHost(l.host), source: 'dhcp' });
+    }
+  }
+  const leaseMacByIp = new Map(seenDevices.map((d) => [d.ip, normalizeMac(d.mac)]));
+  for (const [ip, a] of Object.entries(alive)) {
+    if (!a?.mac) continue;
+    // El nombre de la concesion solo vale si es la misma MAC (si no, es otro equipo usando esa IP).
+    const sameAsLease = !leaseMacByIp.has(ip) || leaseMacByIp.get(ip) === normalizeMac(a.mac);
+    seenDevices.push({ mac: a.mac, ip, hostname: sameAsLease ? ipHost.get(ip) ?? null : null, source: 'arp' });
+  }
+  try {
+    await netGuard.observeDevices(server, seenDevices);
+  } catch (err) {
+    console.error('Guardian de red: error registrando equipos', err.message);
+  }
+
+  await evaluateInventoryAlerts(server, { roles, scopes, scopeRows, users, directoryEvents, failedAuth: payload.failedAuth ?? [], ipHost, alive });
 
   broadcast({ type: 'INVENTORY_UPDATE', at: now.toISOString(), serverId: server.id });
   return summary;
@@ -450,6 +600,17 @@ async function evaluateInventoryAlerts(server, ctx) {
         dedupKey: key,
       });
     }
+  }
+
+  // IP duplicada: el DHCP dice una MAC y en la red responde otra.
+  const openDup = await prisma.securityEvent.findMany({
+    where: { serverId: server.id, dedupKey: { startsWith: 'IP_DUP:' }, status: { in: ['OPEN', 'ACKNOWLEDGED'] } },
+    select: { dedupKey: true },
+  });
+  managed.push(...openDup.map((e) => e.dedupKey));
+  for (const a of await netGuard.duplicateIpAlerts(ctx.scopes, ctx.alive ?? {})) {
+    managed.push(a.dedupKey);
+    alerts.push(a);
   }
 
   // Impresoras.
@@ -550,7 +711,7 @@ async function evaluateInventoryAlerts(server, ctx) {
 
   // Impresoras: se confirma en 2 inventarios seguidos (~10 min): un atasco
   // que alguien resolvio enseguida no llega a ser alerta.
-  await Promise.all(alerts.map((a) => createAndDispatchEvent({ ...base, ...a, confirmations: a.type === 'PRINTER_ISSUE' ? 2 : 1 })));
+  await Promise.all(alerts.map((a) => createAndDispatchEvent({ ...base, ...a, confirmations: a.confirmations ?? (a.type === 'PRINTER_ISSUE' ? 2 : 1) })));
   await resolveCleared(
     server.id,
     [...new Set(managed.filter(Boolean))],
@@ -565,7 +726,7 @@ async function evaluateInventoryAlerts(server, ctx) {
 // ambito y cuenta bloqueada se alertaria una vez por servidor. Solo se acepta
 // el del recolector configurado (Admin -> Configuracion -> Monitoreo
 // preventivo), o si no hay uno, el primer servidor con DHCP que reporte.
-const INVENTORY_ALERT_TYPES = ['PRINTER_ISSUE', 'DHCP_SCOPE_EXHAUSTED', 'IP_CONFLICT', 'AD_ACCOUNT_LOCKOUT', 'PRIVILEGED_GROUP_CHANGE'];
+const INVENTORY_ALERT_TYPES = ['PRINTER_ISSUE', 'DHCP_SCOPE_EXHAUSTED', 'IP_CONFLICT', 'AD_ACCOUNT_LOCKOUT', 'PRIVILEGED_GROUP_CHANGE', 'UNKNOWN_DEVICE'];
 
 async function isInventoryCollector(server, payload) {
   const configured = (await getSetting('INVENTORY_COLLECTOR'))?.trim();
@@ -602,6 +763,10 @@ async function purgeNonCollectorData(collectorId) {
 }
 
 module.exports = {
+  ingestLogons,
+  activeSessionOf,
+  normalizeMac,
+  shortHost,
   isInventoryCollector,
   purgeNonCollectorData,
   processInventory,

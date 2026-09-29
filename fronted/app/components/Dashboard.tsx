@@ -7,6 +7,7 @@ import { useToast } from './Toast';
 import Header from './Header';
 import TabNav from './TabNav';
 import GeneralTab from './tabs/GeneralTab';
+import OperacionesTab from './tabs/OperacionesTab';
 import MonitoreoTab from './tabs/MonitoreoTab';
 import TopologiaTab from './tabs/TopologiaTab';
 import MapaTab from './tabs/MapaTab';
@@ -338,6 +339,20 @@ export default function Dashboard({
             window.dispatchEvent(new CustomEvent('soc:service-check', { detail: message.check }));
           }
 
+          // Operaciones: tickets, remediaciones, pruebas de velocidad.
+          if (message.type === 'TICKET_UPDATE') {
+            window.dispatchEvent(new CustomEvent('soc:tickets', { detail: message.ticket }));
+          }
+          if (message.type === 'REMEDIATION_UPDATE') {
+            window.dispatchEvent(new CustomEvent('soc:remediation', { detail: message.action }));
+          }
+          if (message.type === 'SPEEDTEST_UPDATE') {
+            window.dispatchEvent(new CustomEvent('soc:speedtest', { detail: message.test }));
+          }
+          if (message.type === 'SECURITY_ALERT' && ['ROGUE_DHCP', 'GATEWAY_CONFLICT', 'UNKNOWN_DEVICE', 'IP_CONFLICT'].includes(message.event?.type)) {
+            window.dispatchEvent(new CustomEvent('soc:netguard', { detail: message.event }));
+          }
+
           if (message.type === 'APPS_UPDATE') {
             window.dispatchEvent(new CustomEvent('soc:apps', { detail: message }));
           }
@@ -448,7 +463,8 @@ export default function Dashboard({
           )}
           {activeTab === 'red' && <RedTab servers={serverList} isAdmin={role === 'ADMIN'} />}
           {activeTab === 'aplicaciones' && <AplicacionesTab />}
-          {activeTab === 'inventario' && <InventarioTab />}
+          {activeTab === 'inventario' && <InventarioTab isAdmin={role === 'ADMIN'} canWrite={role !== 'VIEWER'} />}
+          {activeTab === 'operaciones' && <OperacionesTab servers={serverList} isAdmin={role === 'ADMIN'} canWrite={role !== 'VIEWER'} />}
           {activeTab === 'topologia' && <TopologiaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'mapa' && <MapaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'backups' && <BackupsTab servers={serverList} />}

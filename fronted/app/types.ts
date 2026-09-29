@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'red' | 'aplicaciones' | 'inventario' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'red' | 'aplicaciones' | 'inventario' | 'operaciones' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {
@@ -627,6 +627,23 @@ export type DashboardSummary = {
   healthBreakdown: { OK: number; WARNING: number; CRITICAL: number; UNKNOWN: number };
   backupBreakdown: { SUCCESS: number; WARNING: number; FAILED: number; NOT_CONFIGURED: number; UNKNOWN: number };
   backupServers?: number;
+  healthServers?: Record<'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN', HealthServerRef[]>;
+  backupServerList?: Record<'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN', BackupServerRef[]>;
+  openAlertList?: OpenAlertRef[];
+};
+
+export type HealthServerRef = { id: string; name: string; cpu: number | null; ram: number | null; disk: number | null; status: string };
+export type BackupServerRef = { id: string; name: string; lastBackupAt: string | null; detail: string | null };
+export type OpenAlertRef = {
+  id: string;
+  type: string;
+  severity: Severity;
+  silent: boolean;
+  occurrences: number;
+  serverId: string | null;
+  serverName: string | null;
+  summary: string;
+  createdAt: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -671,9 +688,11 @@ export type InventoryEndpoint = {
   statusChangedAt: string;
   lastUser: string | null;
   lastUserAt: string | null;
+  /** Usuario con sesion activa probable (equipo encendido + actividad < 12 h). */
+  activeUser?: string | null;
 };
 
-export type LogonRecord = { id: string; username: string; ipAddress: string; hostname: string | null; at: string };
+export type LogonRecord = { id: string; username: string; ipAddress: string; hostname: string | null; kind?: 'logon' | 'activity'; at: string };
 
 export type DirectoryUserRow = {
   sam: string;
@@ -693,6 +712,7 @@ export type DirectoryUserRow = {
 };
 
 export type PrinterRow = {
+  macAddress?: string | null;
   id: string;
   name: string | null;
   model: string | null;
@@ -839,3 +859,153 @@ export type MicrocutAnalysis = {
   insights: string[];
   events: MicroOutageRow[];
 };
+
+// ---------------------------------------------------------------------------
+// Operaciones: tickets, base de conocimiento, remediaciones, parches,
+// velocidad, guardian de red y topologia automatica.
+// ---------------------------------------------------------------------------
+export type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'WAITING' | 'RESOLVED' | 'CLOSED';
+export type Ticket = {
+  id: string;
+  number: number;
+  title: string;
+  description: string | null;
+  status: TicketStatus;
+  priority: Severity;
+  eventId: string | null;
+  eventType: string | null;
+  serverId: string | null;
+  serverName: string | null;
+  assigneeId: string | null;
+  assigneeName: string | null;
+  createdByName: string;
+  resolution: string | null;
+  firstResponseAt: string | null;
+  resolvedAt: string | null;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  _count?: { comments: number };
+};
+export type TicketComment = { id: string; userName: string; kind: string; body: string; createdAt: string };
+export type KnowledgeArticle = {
+  id: string;
+  title: string;
+  problem: string;
+  solution: string;
+  tags: string[];
+  alertType: string | null;
+  sourceTicketId: string | null;
+  createdByName: string;
+  uses: number;
+  score?: number;
+  updatedAt: string;
+};
+export type RemediationAction = {
+  id: string;
+  serverId: string;
+  serverName: string;
+  eventId: string | null;
+  ticketId: string | null;
+  action: string;
+  params: Record<string, string> | null;
+  status: 'PENDING' | 'SENT' | 'SUCCESS' | 'FAILED' | 'EXPIRED';
+  requestedByName: string;
+  output: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+};
+export type TicketDetail = Ticket & { comments: TicketComment[]; actions: RemediationAction[]; suggestions: KnowledgeArticle[] };
+export type RemediationOption = {
+  action: string;
+  label: string;
+  risk: 'bajo' | 'medio' | 'alto';
+  help: string;
+  param?: 'name' | 'sam';
+  params: Record<string, string>;
+  why: string | null;
+  generic?: boolean;
+  custom?: boolean;
+};
+export type PatchItem = { title: string; kb: string[]; severity: string | null; categories: string[]; url: string | null; releasedAt: string | null; sizeMb: number | null; reboot: boolean };
+export type ServerPatches = {
+  id: string;
+  name: string;
+  status: string;
+  lastInstalledAt: string | null;
+  pending: number | null;
+  pendingCritical: number | null;
+  checkedAt: string | null;
+  rebootPending: boolean;
+  list: PatchItem[];
+};
+export type SpeedTestRow = {
+  id: string;
+  serverId: string;
+  serverName: string;
+  publicIp: string | null;
+  ok: boolean;
+  error: string | null;
+  downloadMbps: number | null;
+  uploadMbps: number | null;
+  latencyMs: number | null;
+  jitterMs: number | null;
+  contractedDownMbps: number | null;
+  contractedUpMbps: number | null;
+  manual: boolean;
+  at: string;
+};
+export type SpeedSiteServer = { id: string; name: string; publicIp: string; contractedDownMbps: number | null; contractedUpMbps: number | null; ispPrimaryName: string | null; status: string };
+export type NetLocation = {
+  mac: string;
+  vendor: string | null;
+  ip: string | null;
+  hostname: string | null;
+  site: string | null;
+  switchName: string | null;
+  switchPort: number | null;
+  apName: string | null;
+  essid: string | null;
+  kind: string | null;
+};
+export type NetGuardOverview = {
+  gateways: {
+    serverId: string;
+    serverName: string;
+    gatewayIp: string;
+    baselineMac: string | null;
+    baselineVendor: string | null;
+    currentMac: string | null;
+    currentVendor: string | null;
+    ok: boolean;
+    history: { mac: string; at: string }[];
+    updatedAt: string;
+  }[];
+  dhcpServers: {
+    id: string;
+    serverId: string;
+    serverName: string;
+    dhcpServer: string;
+    mac: string | null;
+    vendor: string | null;
+    router: string | null;
+    offeredIp: string | null;
+    dns: string[];
+    authorized: boolean;
+    lastSeenAt: string;
+  }[];
+  newDevices: {
+    mac: string;
+    ip: string | null;
+    hostname: string | null;
+    vendor: string | null;
+    source: string | null;
+    randomized: boolean;
+    approved: boolean;
+    firstSeenAt: string;
+    lastSeenAt: string;
+  }[];
+  knownDevices: number;
+};
+export type TopoNode = { id: string; type: 'internet' | 'gateway' | 'switch' | 'ap' | 'device' | 'server'; name: string; ip?: string | null; status: 'ok' | 'warning' | 'critical' | 'down'; detail?: string | null; serverId?: string };
+export type TopoSite = { id: string; name: string; source: string; counts: { devices: number; offline: number; clients: number }; nodes: TopoNode[]; edges: { from: string; to: string; label?: string | null }[] };

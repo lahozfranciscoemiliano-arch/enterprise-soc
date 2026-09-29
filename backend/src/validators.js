@@ -142,6 +142,11 @@ const settingsSchema = z
     UNIFI_LOCAL_USERNAME: z.string().max(200).optional(),
     UNIFI_LOCAL_PASSWORD: z.string().max(500).optional(),
     UNIFI_LOCAL_CONTROLLERS: z.string().max(4000).optional(),
+    NETGUARD_DHCP_SERVERS: z.string().max(1000).optional(),
+    NETGUARD_UNKNOWN_DEVICE_ALERTS: z.boolean().optional(),
+    SPEEDTEST_ENABLED: z.boolean().optional(),
+    SPEEDTEST_HOUR: z.number().int().min(0).max(23).optional(),
+    SPEEDTEST_THRESHOLD_PCT: z.number().int().min(10).max(100).optional(),
     TELEMETRY_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
     SECURITY_EVENT_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
     BACKUP_STATUS_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).optional(),
@@ -302,8 +307,25 @@ const inventorySchema = z
     printers: z.array(z.record(z.any())).max(2000).optional(),
     sweep: z.object({ scanned: z.number(), alive: z.record(z.any()) }).optional(),
     extraSubnets: z.array(z.string().max(50)).max(50).optional(),
+    reverseNames: z.record(z.string().max(255)).optional(),
     errors: z.array(z.string().max(500)).max(50).optional(),
     durationSeconds: z.number().optional(),
+  })
+  .strict();
+
+const logonBatchSchema = z
+  .object({
+    logons: z
+      .array(
+        z.object({
+          user: z.string().min(1).max(128),
+          ip: z.string().max(64),
+          at: z.string().max(50),
+          kind: z.enum(['logon', 'activity']).optional(),
+          domain: z.string().max(128).nullable().optional(),
+        })
+      )
+      .max(10000),
   })
   .strict();
 
@@ -326,6 +348,7 @@ const serviceCheckSchema = z
 
 module.exports = {
   inventorySchema,
+  logonBatchSchema,
   serviceCheckSchema,
   telemetrySchema,
   loginSchema,

@@ -2,8 +2,8 @@
 // IPs, auditoria del directorio) y de los monitores de servicios.
 const rateLimit = require('express-rate-limit');
 const prisma = require('../prismaClient');
-const { inventorySchema, serviceCheckSchema } = require('../validators');
-const { processInventory, compressRanges, countStatuses, isInventoryCollector, purgeNonCollectorData } = require('../services/inventory');
+const { inventorySchema, logonBatchSchema, serviceCheckSchema } = require('../validators');
+const { processInventory, compressRanges, countStatuses, isInventoryCollector, purgeNonCollectorData, ingestLogons, activeSessionOf } = require('../services/inventory');
 const { listServiceChecks } = require('../services/serviceMonitor');
 const { logAudit } = require('../services/auditLog');
 
@@ -70,6 +70,21 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
     })
   );
 
+  // Sesiones del dominio: cada controlador de dominio las manda cada minuto
+  // (agente >= 1.14.0), sea o no el recolector del inventario.
+  const logonLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+  app.post(
+    '/api/inventory/logons',
+    logonLimiter,
+    authServer,
+    wrap(async (req, res) => {
+      const parsed = logonBatchSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'Lote de sesiones inválido', details: parsed.error.flatten() });
+      const result = await ingestLogons(parsed.data.logons);
+      return res.json({ ok: true, ...result });
+    })
+  );
+
   // --- Consultas ------------------------------------------------------------
   app.get(
     '/api/inventory/summary',
@@ -117,7 +132,7 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
     authUser,
     wrap(async (req, res) => {
       const endpoints = await prisma.endpoint.findMany({ orderBy: { hostname: 'asc' } });
-      return res.json(endpoints);
+      return res.json(endpoints.map((e) => ({ ...e, activeUser: activeSessionOf(e) })));
     })
   );
 
@@ -165,6 +180,23 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
     wrap(async (req, res) => {
       const printers = await prisma.printer.findMany({ orderBy: [{ online: 'asc' }, { name: 'asc' }] });
       return res.json(printers);
+    })
+  );
+
+  app.delete(
+    '/api/inventory/printers/:id',
+    authUser,
+    requireRole('ADMIN', 'ANALYST'),
+    wrap(async (req, res) => {
+      const p = await prisma.printer.findUnique({ where: { id: req.params.id } });
+      if (!p) return res.status(404).json({ error: 'Impresora no encontrada' });
+      await prisma.printer.delete({ where: { id: p.id } });
+      await prisma.securityEvent.updateMany({
+        where: { dedupKey: `PRINTER:${p.id}`, status: { in: ['OPEN', 'ACKNOWLEDGED'] } },
+        data: { status: 'RESOLVED', resolvedAt: new Date(), autoResolved: true },
+      });
+      logAudit({ userId: req.user.sub, action: 'PRINTER_DELETE', targetType: 'Printer', targetId: p.id, metadata: { name: p.name } });
+      return res.json({ ok: true });
     })
   );
 

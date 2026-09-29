@@ -160,6 +160,7 @@ function normalizeLocalDevice(d, site) {
             type: d.uplink.type || null,
             device: d.uplink.uplink_device_name || d.last_uplink?.uplink_device_name || null,
             port: n(d.uplink.uplink_remote_port ?? d.last_uplink?.uplink_remote_port),
+            mac: String(d.uplink.uplink_mac || d.last_uplink?.uplink_mac || '').toLowerCase() || null,
             speed: n(d.uplink.speed),
             fullDuplex: d.uplink.full_duplex ?? null,
           }
@@ -268,6 +269,7 @@ async function processReport(server, report) {
         localError: null,
         controllerUrl: ctl.url ?? null,
         health,
+        ...(Array.isArray(site.clients) ? { clients: site.clients.slice(0, 3000) } : {}),
         ...(ctl.version ? { version: String(ctl.version) } : {}),
         ...(existing ? {} : { hostOnline: true }),
       };

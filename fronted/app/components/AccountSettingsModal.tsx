@@ -1,3 +1,4 @@
+import PinSetup from './ops/PinSetup';
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Check, ShieldCheck, X } from 'lucide-react';
@@ -102,7 +103,7 @@ export default function AccountSettingsModal({
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.15 }}
-        className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-2xl"
+        className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-6 shadow-2xl"
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-900">Mi cuenta</h2>
@@ -229,6 +230,8 @@ export default function AccountSettingsModal({
             )}
           </div>
         )}
+
+        <PinSetup />
 
         {error && <p className="mb-4 text-xs text-red-700">{error}</p>}
 

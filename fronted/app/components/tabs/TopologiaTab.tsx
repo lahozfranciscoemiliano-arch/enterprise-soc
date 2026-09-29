@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Network, Search } from 'lucide-react';
 import ServerDetailModal from '../ServerDetailModal';
+import NetworkTopology from '../NetworkTopology';
 import type { SecurityAlert, ServerSummary } from '../../types';
 
 const TopologiaGraph = dynamic(() => import('../TopologiaGraph'), {
@@ -17,6 +18,7 @@ export default function TopologiaTab({ servers, alerts }: { servers: ServerSumma
   const [search, setSearch] = useState('');
   const [focusServerId, setFocusServerId] = useState<string | null>(null);
   const [modalServerId, setModalServerId] = useState<string | null>(null);
+  const [mode, setMode] = useState<'red' | 'servidores'>('red');
 
   const healthCounts = useMemo(() => {
     const counts = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
@@ -33,8 +35,25 @@ export default function TopologiaTab({ servers, alerts }: { servers: ServerSumma
   const modalAlerts = modalServer ? alerts.filter((a) => a.serverName === modalServer.name).slice(0, 20) : [];
 
   return (
-    <div className="px-3 py-4 sm:px-6 sm:py-6">
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
+    <div className="space-y-4 px-3 py-4 sm:px-6 sm:py-6">
+      <div className="flex gap-1.5">
+        {(
+          [
+            ['red', 'Red por sede (automática)'],
+            ['servidores', 'Grafo de servidores'],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setMode(id)}
+            className={`rounded-full border px-3 py-1 text-xs font-medium ${mode === id ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {mode === 'red' && <NetworkTopology onServer={setModalServerId} />}
+      <div className={`rounded-xl border border-slate-200 bg-white p-4 shadow-card ${mode === 'red' ? 'hidden' : ''}`}>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
             <Network className="h-4 w-4 text-slate-400" />
@@ -85,7 +104,7 @@ export default function TopologiaTab({ servers, alerts }: { servers: ServerSumma
           </div>
         </div>
 
-        {servers.length === 0 ? (
+        {mode !== 'servidores' ? null : servers.length === 0 ? (
           <div className="flex h-[500px] items-center justify-center text-sm text-slate-400">
             Sin nodos registrados todavía
           </div>

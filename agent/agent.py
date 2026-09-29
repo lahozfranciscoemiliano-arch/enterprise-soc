@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.13.0"
+AGENT_VERSION = "1.14.0"
 
 
 def get_base_dir() -> Path:
@@ -712,11 +712,36 @@ def _search_pending_updates() -> None:
         session = win32com.client.Dispatch("Microsoft.Update.Session")
         result = session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0")
         critical = 0
+        items = []
         for i in range(result.Updates.Count):
-            severity = str(_safe_attr(result.Updates.Item(i), "MsrcSeverity") or "")
+            u = result.Updates.Item(i)
+            severity = str(_safe_attr(u, "MsrcSeverity") or "")
             if severity in ("Critical", "Important"):
                 critical += 1
-        _updates_cache.update(pending=result.Updates.Count, pendingCritical=critical, checkedAt=_utc_now_iso())
+            try:
+                kbs = [f"KB{k}" for k in u.KBArticleIDs]
+            except Exception:
+                kbs = []
+            try:
+                cats = [str(c.Name) for c in u.Categories][:3]
+            except Exception:
+                cats = []
+            size = _safe_attr(u, "MaxDownloadSize")
+            items.append(
+                {
+                    "title": str(_safe_attr(u, "Title") or "")[:200],
+                    "kb": kbs[:3],
+                    "severity": severity or None,
+                    "categories": cats,
+                    "url": str(_safe_attr(u, "SupportUrl") or "") or None,
+                    "releasedAt": _com_date_to_iso(_safe_attr(u, "LastDeploymentChangeTime")),
+                    "sizeMb": round(float(size) / 1048576, 1) if size else None,
+                    "reboot": bool(_safe_attr(u, "RebootRequired")),
+                }
+            )
+        rank = {"Critical": 0, "Important": 1, "Moderate": 2, "Low": 3}
+        items.sort(key=lambda x: rank.get(x["severity"] or "", 4))
+        _updates_cache.update(pending=result.Updates.Count, pendingCritical=critical, list=items[:80], checkedAt=_utc_now_iso())
     except Exception as exc:
         logger.info("No se pudo consultar Windows Update: %s", exc)
     finally:
@@ -749,6 +774,7 @@ def collect_update_status() -> dict[str, Any]:
         threading.Thread(target=_search_pending_updates, daemon=True).start()
     status["pending"] = _updates_cache.get("pending")
     status["pendingCritical"] = _updates_cache.get("pendingCritical")
+    status["list"] = _updates_cache.get("list")
     status["pendingCheckedAt"] = _updates_cache.get("checkedAt")
     return status
 
@@ -1259,18 +1285,49 @@ def _seconds_between(start_iso: str, end_iso: str) -> float:
     return (datetime.strptime(end_iso, fmt) - datetime.strptime(start_iso, fmt)).total_seconds()
 
 
-def read_backup_runs(max_runs: int = 30) -> list[dict[str, Any]]:
-    """Corridas de backup reconstruidas desde el Visor de Eventos, mas nuevas
-    primero: [{startedAt, finishedAt, durationSeconds, result, eventId}]."""
-    ids = sorted(BACKUP_EVENT_START | BACKUP_EVENT_SUCCESS | BACKUP_EVENT_FAILURE)
+BACKUP_EVENT_COMPLETED = {14}  # "la operacion de backup se completo" (sigue al 4 o al error)
+BACKUP_CHANNELS = ("Microsoft-Windows-Backup", "Microsoft-Windows-Backup/Operational")
+
+PS_BACKUP_EVENTS = r"""
+$ev = @(Get-WinEvent -FilterHashtable @{ ProviderName = 'Microsoft-Windows-Backup'; StartTime = (Get-Date).AddDays(-45) } -MaxEvents 600 -ErrorAction SilentlyContinue |
+  ForEach-Object { [pscustomobject]@{ id = $_.Id; at = $_.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ') } })
+ConvertTo-Json -InputObject $ev -Compress
+"""
+
+
+def _backup_events(max_events: int) -> list[tuple[str, int]]:
+    """(hora ISO, EventID) de inicio/fin de backup. Primero la API EvtQuery
+    sobre el canal; si no devuelve nada (canal con otro nombre o sin
+    permisos) se consulta por proveedor con Get-WinEvent."""
+    ids = sorted(BACKUP_EVENT_START | BACKUP_EVENT_SUCCESS | BACKUP_EVENT_FAILURE | BACKUP_EVENT_COMPLETED)
     xpath = "*[System[(" + " or ".join(f"EventID={i}" for i in ids) + ")]]"
     events: list[tuple[str, int]] = []
-    for xml in _evt_query("Microsoft-Windows-Backup", xpath, max_events=max_runs * 4):
-        id_match = _EVT_ID_RE.search(xml)
-        when = _evt_time_iso(xml)
-        if id_match and when:
-            events.append((when, int(id_match.group(1))))
-    events.sort()  # cronologico para emparejar inicio -> fin
+    for channel in BACKUP_CHANNELS:
+        for xml in _evt_query(channel, xpath, max_events=max_events):
+            id_match = _EVT_ID_RE.search(xml)
+            when = _evt_time_iso(xml)
+            if id_match and when:
+                events.append((when, int(id_match.group(1))))
+        if events:
+            return events
+    if sys.platform != "win32":
+        return events
+    try:
+        for item in run_powershell_json(PS_BACKUP_EVENTS, timeout=60):
+            if isinstance(item, dict) and item.get("id") in ids and item.get("at"):
+                base, _, frac = str(item["at"]).rstrip("Z").partition(".")
+                events.append((f"{base}.{(frac + '000000')[:6]}Z", int(item["id"])))
+    except Exception as exc:
+        logger.debug("Get-WinEvent de Microsoft-Windows-Backup no disponible: %s", exc)
+    return events
+
+
+def read_backup_runs(max_runs: int = 30) -> list[dict[str, Any]]:
+    """Corridas de backup reconstruidas desde el Visor de Eventos, mas nuevas
+    primero: [{startedAt, finishedAt, durationSeconds, result, eventId}].
+    La duracion es la diferencia entre el evento de inicio (1) y el de fin
+    (4 exitoso / 14 completado / error)."""
+    events = sorted(set(_backup_events(max_runs * 6)))  # cronologico para emparejar inicio -> fin
 
     runs: list[dict[str, Any]] = []
     started_at: str | None = None
@@ -1278,6 +1335,11 @@ def read_backup_runs(max_runs: int = 30) -> list[dict[str, Any]]:
         if event_id in BACKUP_EVENT_START:
             started_at = when
             continue
+        if event_id in BACKUP_EVENT_COMPLETED:
+            # Solo cierra una corrida que no cerro el 4 ni un error.
+            if not started_at:
+                continue
+            event_id = 4
         result = "SUCCESS" if event_id in BACKUP_EVENT_SUCCESS else "FAILED"
         # Una corrida fallida puede escribir varios eventos de error seguidos:
         # solo el primero cierra la corrida.
@@ -2015,9 +2077,17 @@ def _parse_volumes_info(text: str) -> list[dict[str, Any]]:
     return volumes[:30]
 
 
+def _evt_query_backup(xpath: str, max_events: int) -> list[str]:
+    for channel in BACKUP_CHANNELS:
+        found = _evt_query(channel, xpath, max_events=max_events)
+        if found:
+            return found
+    return []
+
+
 def read_last_backup_event_details() -> dict[str, Any]:
     details: dict[str, Any] = {}
-    success = _evt_query("Microsoft-Windows-Backup", "*[System[EventID=4]]", max_events=1)
+    success = _evt_query_backup("*[System[EventID=4]]", 1)
     if success:
         xml = success[0]
         data = _event_data(xml)
@@ -2032,8 +2102,19 @@ def read_last_backup_event_details() -> dict[str, Any]:
                 "transferredBytes": total or None,
             }
         )
+        # Duracion: desde el evento 1 (inicio) inmediatamente anterior.
+        finished = details["finishedAt"]
+        if finished:
+            for start_xml in _evt_query_backup("*[System[EventID=1]]", 5):
+                started = _evt_time_iso(start_xml)
+                if started and started <= finished:
+                    secs = int(_seconds_between(started, finished))
+                    if 0 <= secs <= 2 * 24 * 3600:
+                        details["startedAt"] = started
+                        details["durationSeconds"] = secs
+                    break
     failure_ids = " or ".join(f"EventID={i}" for i in sorted(BACKUP_EVENT_FAILURE))
-    failed = _evt_query("Microsoft-Windows-Backup", f"*[System[({failure_ids})]]", max_events=1)
+    failed = _evt_query_backup(f"*[System[({failure_ids})]]", 1)
     if failed:
         xml = failed[0]
         data = _event_data(xml)
@@ -2106,6 +2187,8 @@ def apply_wsb_details(status: dict[str, Any]) -> None:
     job = wsb.get("lastJob") or {}
     if job.get("durationSeconds") is not None and str(job.get("state", "")).lower() in ("completed", "succeeded", ""):
         status["durationSeconds"] = job["durationSeconds"]
+    elif status.get("durationSeconds") is None and wsb.get("durationSeconds") is not None:
+        status["durationSeconds"] = wsb["durationSeconds"]
     if not status.get("targetPath") and wsb.get("target"):
         status["targetPath"] = wsb["target"]
     if wsb.get("lastSuccessAt") and not status.get("lastBackupAt"):
@@ -2606,33 +2689,16 @@ def _clean_ip(value: str | None) -> str | None:
 
 
 def collect_security_events() -> dict[str, Any]:
-    """Inicios de sesion (4768: el DC entrega un TGT de Kerberos cuando un
-    usuario inicia sesion en una PC; trae usuario + IP de la PC), intentos
-    fallidos (4771) y auditoria del directorio. Incremental: solo lo nuevo
-    desde la corrida anterior (la primera mira las ultimas 24 h)."""
+    """Intentos fallidos (4771/4625) y auditoria del directorio del
+    controlador de dominio. Incremental: solo lo nuevo desde la corrida
+    anterior (la primera mira las ultimas 24 h). Los inicios de sesion van
+    aparte, cada minuto (collect_logon_activity / identity_loop)."""
     global _last_security_query
     since = _last_security_query or datetime.fromtimestamp(time.time() - 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     time_filter = f"TimeCreated[@SystemTime>'{since}']"
 
-    logons: list[dict[str, Any]] = []
     failures: dict[tuple[str, str | None], int] = {}
     newest = since
-
-    for xml in _evt_query("Security", f"*[System[(EventID=4768) and {time_filter}]]", max_events=20000):
-        when = _evt_time_iso(xml)
-        data = _evt_data(xml)
-        user = data.get("TargetUserName", "")
-        if not when or not user or user.endswith("$") or data.get("Status", "0x0") != "0x0":
-            continue
-        ip = _clean_ip(data.get("IpAddress"))
-        if not ip:
-            continue
-        newest = max(newest, when)
-        prev = _ip_last_user.get(ip)
-        if prev and prev["user"] == user and prev["at"] >= when:
-            continue
-        _ip_last_user[ip] = {"user": user, "at": when}
-        logons.append({"user": user, "domain": data.get("TargetDomainName"), "ip": ip, "at": when})
 
     for xml in _evt_query("Security", f"*[System[(EventID=4771 or EventID=4625) and {time_filter}]]", max_events=5000):
         when = _evt_time_iso(xml)
@@ -2668,10 +2734,101 @@ def collect_security_events() -> dict[str, Any]:
 
     _last_security_query = newest
     return {
-        "logons": logons[-5000:],
         "failedAuth": [{"user": u, "ip": ip, "count": c} for (u, ip), c in sorted(failures.items(), key=lambda x: -x[1])][:200],
         "directoryEvents": directory,
     }
+
+
+# --- Sesiones del dominio casi en tiempo real ------------------------------
+# Cada controlador de dominio (no solo el recolector del inventario) manda
+# cada minuto quien inicio sesion y desde que IP:
+#   4768  el DC entrega un TGT de Kerberos (inicio de sesion en una PC),
+#   4770  se renovo el TGT (la sesion sigue abierta),
+#   4624  inicio de sesion de red en el DC (tipo 3: GPO, unidades de red,
+#         SYSVOL) -- mientras un usuario trabaja, su PC lo genera seguido.
+# Con varios DC, cada uno ve solo a los usuarios que autentico el: por eso
+# lo reportan todos.
+IDENTITY_INTERVAL_SECONDS = int(os.getenv("IDENTITY_INTERVAL_SECONDS", "60"))
+_last_logon_query: str | None = None
+_activity_seen: dict[tuple[str, str], float] = {}
+_ACTIVITY_DEDUP_SECONDS = 600
+_IGNORED_ACCOUNTS = {"anonymous logon", "-", "", "system", "local service", "network service"}
+
+
+def _local_ips() -> set[str]:
+    return {n["ip"] for n in _local_ipv4_networks()} | {"127.0.0.1"}
+
+
+def collect_logon_activity() -> list[dict[str, Any]]:
+    global _last_logon_query
+    since = _last_logon_query or datetime.fromtimestamp(time.time() - 12 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    time_filter = f"TimeCreated[@SystemTime>'{since}']"
+    own = _local_ips()
+    out: list[dict[str, Any]] = []
+    newest = since
+    now = time.monotonic()
+
+    def accept(xml: str, kind: str) -> None:
+        nonlocal newest
+        when = _evt_time_iso(xml)
+        data = _evt_data(xml)
+        user = (data.get("TargetUserName") or "").strip()
+        if not when or user.endswith("$") or user.lower() in _IGNORED_ACCOUNTS:
+            return
+        newest = max(newest, when)
+        ip = _clean_ip(data.get("IpAddress"))
+        if not ip or ip in own or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
+            return
+        if kind == "logon":
+            if data.get("Status", "0x0") != "0x0":
+                return
+            prev = _ip_last_user.get(ip)
+            if prev and prev["user"] == user and prev["at"] >= when:
+                return
+            _ip_last_user[ip] = {"user": user, "at": when}
+        else:
+            key = (ip, user.lower())
+            if now - _activity_seen.get(key, float("-inf")) < _ACTIVITY_DEDUP_SECONDS:
+                return
+            _activity_seen[key] = now
+        out.append({"user": user, "ip": ip, "at": when, "kind": kind})
+
+    for xml in _evt_query("Security", f"*[System[(EventID=4768 or EventID=4770) and {time_filter}]]", max_events=20000):
+        id_match = _EVT_ID_RE.search(xml)
+        accept(xml, "logon" if id_match and id_match.group(1) == "4768" else "activity")
+    network_logon = f"*[System[EventID=4624 and {time_filter}] and EventData[Data[@Name='LogonType']='3']]"
+    for xml in _evt_query("Security", network_logon, max_events=8000):
+        accept(xml, "activity")
+
+    if len(_activity_seen) > 50000:
+        cutoff = now - _ACTIVITY_DEDUP_SECONDS
+        for k in [k for k, v in _activity_seen.items() if v < cutoff]:
+            _activity_seen.pop(k, None)
+    _last_logon_query = newest
+    return out[-8000:]
+
+
+def identity_loop() -> None:
+    time.sleep(30)
+    while True:
+        wait = IDENTITY_INTERVAL_SECONDS
+        try:
+            roles = _inventory_roles or detect_inventory_roles()
+            if not roles.get("ad"):
+                wait = 6 * 3600  # no es controlador de dominio
+            else:
+                logons = collect_logon_activity()
+                if logons:
+                    headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
+                    r = requests.post(f"{BACKEND_URL}/api/inventory/logons", json={"logons": logons}, headers=headers, timeout=30)
+                    if r.status_code == 404:
+                        wait = 3600  # backend viejo
+                    else:
+                        r.raise_for_status()
+                        logger.debug("Sesiones del dominio enviadas: %d", len(logons))
+        except Exception as exc:
+            logger.warning("Sesiones del dominio: %s", exc)
+        time.sleep(max(30, wait))
 
 
 # --- Barrido de IPs ---------------------------------------------------------
@@ -2908,6 +3065,7 @@ def snmp_printer_info(ip: str) -> dict[str, Any] | None:
             "1.3.6.1.2.1.43.10.2.1.4.1.1",  # prtMarkerLifeCount (contador de paginas)
         ],
     ) or []
+    macs = snmp_request(ip, ["1.3.6.1.2.1.2.2.1.6.1", "1.3.6.1.2.1.2.2.1.6.2"], timeout=1.0) or []
     values = dict(base)
     info["sysDescr"] = _txt(values.get("1.3.6.1.2.1.1.1.0"))
     info["sysName"] = _txt(values.get("1.3.6.1.2.1.1.5.0"))
@@ -2915,6 +3073,10 @@ def snmp_printer_info(ip: str) -> dict[str, Any] | None:
     info["model"] = _txt(values.get(f"1.3.6.1.2.1.25.3.2.1.3.{index}")) or info["sysDescr"]
     info["deviceStatus"] = DEVICE_STATUS.get(values.get(f"1.3.6.1.2.1.25.3.2.1.5.{index}"), "unknown")
     info["serial"] = _txt(values.get("1.3.6.1.2.1.43.5.1.1.17.1"))
+    for _, raw_mac in macs:  # ifPhysAddress: MAC de la placa de red (identifica la impresora aunque cambie de IP)
+        if isinstance(raw_mac, bytes) and len(raw_mac) == 6 and any(raw_mac):
+            info["mac"] = "-".join(f"{b:02x}" for b in raw_mac)
+            break
     pages = values.get("1.3.6.1.2.1.43.10.2.1.4.1.1")
     info["pageCount"] = pages if isinstance(pages, int) else None
 
@@ -2979,6 +3141,50 @@ def inventory_should_run() -> bool:
     return _inventory_roles["dhcp"] or _inventory_roles["ad"] or bool(INVENTORY_EXTRA_SUBNETS)
 
 
+def read_neighbors() -> dict[str, str]:
+    """Tabla de vecinos IPv4 con su estado (Reachable/Stale/...)."""
+    if sys.platform != "win32":
+        return {}
+    try:
+        rows = run_powershell_json(
+            "$n = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -ne 'FF-FF-FF-FF-FF-FF' -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' } | "
+            "ForEach-Object { [pscustomobject]@{ ip = $_.IPAddress; mac = $_.LinkLayerAddress; state = \"$($_.State)\" } }); ConvertTo-Json -InputObject $n -Compress",
+            timeout=30,
+        )
+    except Exception:
+        return {}
+    return {r["ip"]: r.get("state", "") for r in rows if isinstance(r, dict) and r.get("ip")}
+
+
+def _resolve(name: str) -> str | None:
+    try:
+        return socket_module.gethostbyname(name)
+    except OSError:
+        return None
+
+
+def resolve_computer_ips(computers: list[dict[str, Any]], valid: set[str]) -> None:
+    names = [(c, c.get("dns") or c.get("name")) for c in computers if c.get("enabled") is not False and (c.get("dns") or c.get("name"))]
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        for (c, _), ip in zip(names, pool.map(lambda x: _resolve(x[1]), names)):
+            if ip and (not valid or ip in valid):
+                c["ip"] = ip
+
+
+def _reverse(ip: str) -> str | None:
+    try:
+        return socket_module.gethostbyaddr(ip)[0]
+    except OSError:
+        return None
+
+
+def reverse_names(ips: list[str]) -> dict[str, str]:
+    if not ips:
+        return {}
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        return {ip: name for ip, name in zip(ips, pool.map(_reverse, ips)) if name}
+
+
 def build_inventory_payload() -> dict[str, Any]:
     started = time.monotonic()
     roles = _inventory_roles or detect_inventory_roles()
@@ -3008,9 +3214,25 @@ def build_inventory_payload() -> dict[str, Any]:
     targets = ips_to_sweep(scopes)
     alive = sweep_ips(targets)
     arp = read_arp_table()
+    # Equipos con firewall que no contestan ping ni puertos: igual responden
+    # ARP (el barrido acaba de preguntar por su IP). Solo misma subred.
+    target_set = set(targets)
+    for ip, state in read_neighbors().items():
+        if ip in target_set and ip not in alive and state in ("Reachable", "Delay", "Probe"):
+            alive[ip] = "arp"
     payload["sweep"] = {"scanned": len(targets), "alive": {ip: {"via": via, "mac": arp.get(ip)} for ip, via in alive.items()}}
     payload["extraSubnets"] = INVENTORY_EXTRA_SUBNETS
+    # IP de cada equipo del AD segun el DNS del dominio (para los que tienen IP
+    # fija o cuyo DHCP no registra el nombre) y nombre de las IPs activas sin
+    # concesion DHCP (DNS inverso).
+    if payload.get("computers"):
+        resolve_computer_ips(payload["computers"], target_set)
+    leased = {l.get("ip") for sc in scopes for l in (sc.get("leases") or []) if l.get("host")}
+    payload["reverseNames"] = reverse_names([ip for ip in alive if ip not in leased][:600])
     payload["printers"] = collect_printers(alive, queues)
+    for p in payload["printers"]:
+        if not p.get("mac") and arp.get(p.get("ip")):
+            p["mac"] = arp[p["ip"]]
     payload["errors"] = errors
     payload["durationSeconds"] = round(time.monotonic() - started, 1)
     return payload
@@ -3031,13 +3253,12 @@ def send_inventory(payload: dict[str, Any]) -> None:
             logger.info("Inventario de red desactivado para este servidor: %s", body.get("reason", "no es el recolector"))
             return
         logger.info(
-            "Inventario enviado OK: %d ambito(s), %d equipo(s) AD, %d IP(s) activas de %d, %d impresora(s), %d inicio(s) de sesion (%.0fs)",
+            "Inventario enviado OK: %d ambito(s), %d equipo(s) AD, %d IP(s) activas de %d, %d impresora(s) (%.0fs)",
             len(payload.get("scopes", [])),
             len(payload.get("computers", [])),
             len(payload["sweep"]["alive"]),
             payload["sweep"]["scanned"],
             len(payload.get("printers", [])),
-            len(payload.get("logons", [])),
             payload["durationSeconds"],
         )
     except requests.exceptions.RequestException as exc:
@@ -3150,9 +3371,9 @@ def _slim_unifi_device(d: dict[str, Any]) -> dict[str, Any]:
     if isinstance(d.get("port_table"), list):
         out["port_table"] = [{"up": bool(p.get("up")), "poe_power": p.get("poe_power")} for p in d["port_table"][:64]]
     if isinstance(out.get("uplink"), dict):
-        out["uplink"] = {k: out["uplink"].get(k) for k in ("type", "uplink_device_name", "uplink_remote_port", "speed", "full_duplex")}
+        out["uplink"] = {k: out["uplink"].get(k) for k in ("type", "uplink_device_name", "uplink_remote_port", "uplink_mac", "speed", "full_duplex")}
     if isinstance(out.get("last_uplink"), dict):
-        out["last_uplink"] = {k: out["last_uplink"].get(k) for k in ("uplink_device_name", "uplink_remote_port")}
+        out["last_uplink"] = {k: out["last_uplink"].get(k) for k in ("uplink_device_name", "uplink_remote_port", "uplink_mac")}
     if isinstance(out.get("radio_table_stats"), list):
         out["radio_table_stats"] = [
             {k: r.get(k) for k in ("radio", "channel", "num_sta", "satisfaction", "cu_total", "tx_power")} for r in out["radio_table_stats"][:4]
@@ -3183,6 +3404,13 @@ def read_unifi_controller(urls: list[str], creds: tuple[str, str]) -> dict[str, 
                 health = ctl.get(f"/api/s/{key}/stat/health")
             except Exception:
                 health = []
+            try:
+                clients = [
+                    {k: c.get(k) for k in ("mac", "ip", "hostname", "name", "oui", "sw_mac", "sw_port", "ap_mac", "essid", "is_wired", "uptime", "last_seen", "network") if c.get(k) is not None}
+                    for c in ctl.get(f"/api/s/{key}/stat/sta")[:3000]
+                ]
+            except Exception:
+                clients = []
             out_sites.append(
                 {
                     "siteId": site.get("_id"),
@@ -3190,6 +3418,7 @@ def read_unifi_controller(urls: list[str], creds: tuple[str, str]) -> dict[str, 
                     "desc": site.get("desc"),
                     "devices": [_slim_unifi_device(d) for d in devices[:500]],
                     "health": health[:20],
+                    "clients": clients,
                 }
             )
         return {"url": ctl.base, "ok": True, "version": ctl.version, "sites": out_sites}
@@ -3697,6 +3926,333 @@ def inventory_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Guardian de red (todos los agentes): detecta lo que dejo sin internet a la
+# red cuando conectaron el NVR con una IP/servicio DHCP propio.
+#   - MAC del gateway: cada minuto se lee en la tabla ARP. Si otro equipo
+#     toma la IP del gateway (IP duplicada), la MAC cambia o alterna.
+#   - Servidores DHCP: cada 5 min se envia un DHCPDISCOVER y se anotan TODAS
+#     las ofertas. Un DHCP que no es el del dominio (NVR, router hogareño,
+#     camara) reparte IPs y un gateway equivocado.
+# El NOC compara contra lo conocido y arma la alerta con la MAC, el
+# fabricante, la IP y, si hay UniFi, el switch/puerto o AP donde esta.
+# ---------------------------------------------------------------------------
+NETGUARD_ENABLED = os.getenv("NETGUARD_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+NETGUARD_INTERVAL_SECONDS = 60
+DHCP_PROBE_INTERVAL_SECONDS = int(os.getenv("DHCP_PROBE_INTERVAL_SECONDS", "300"))
+_last_dhcp_probe = float("-inf")
+
+
+def _probe_mac() -> bytes:
+    # MAC "administrada localmente" fija por agente: no consume una IP
+    # distinta del DHCP en cada prueba.
+    import hashlib
+
+    seed = (SERVER_ID or socket_module.gethostname()).encode()
+    return bytes([0x02]) + hashlib.sha256(seed).digest()[:5]
+
+
+def _dhcp_options(data: bytes) -> dict[int, bytes]:
+    opts: dict[int, bytes] = {}
+    i = 240
+    while i < len(data):
+        code = data[i]
+        if code == 255:
+            break
+        if code == 0:
+            i += 1
+            continue
+        if i + 1 >= len(data):
+            break
+        ln = data[i + 1]
+        opts[code] = data[i + 2:i + 2 + ln]
+        i += 2 + ln
+    return opts
+
+
+def _ip4(b: bytes | None) -> str | None:
+    return ".".join(str(x) for x in b[:4]) if b and len(b) >= 4 else None
+
+
+def dhcp_discover_probe(timeout: float = 4.0) -> dict[str, Any]:
+    """Manda un DHCPDISCOVER por broadcast y junta todas las ofertas."""
+    xid = int.from_bytes(os.urandom(4), "big")
+    mac = _probe_mac()
+    pkt = struct.pack("!BBBBIHH4s4s4s4s16s64s128s", 1, 1, 6, 0, xid, 0, 0x8000, b"\0" * 4, b"\0" * 4, b"\0" * 4, b"\0" * 4, mac + b"\0" * 10, b"\0" * 64, b"\0" * 128)
+    pkt += b"\x63\x82\x53\x63" + bytes([53, 1, 1, 61, 7, 1]) + mac + bytes([55, 4, 1, 3, 6, 54, 12, 9]) + b"soc-dhcp" + bytes([255])
+    sock = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+        sock.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_BROADCAST, 1)
+        try:
+            sock.bind(("", 68))
+        except OSError as exc:
+            return {"ok": False, "error": f"no se pudo usar el puerto 68: {exc}"[:200]}
+        sock.settimeout(0.5)
+        sock.sendto(pkt, ("255.255.255.255", 67))
+        offers: dict[str, dict[str, Any]] = {}
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            try:
+                data, addr = sock.recvfrom(4096)
+            except socket_module.timeout:
+                continue
+            except OSError:
+                break
+            if len(data) < 240 or data[0] != 2 or int.from_bytes(data[4:8], "big") != xid:
+                continue
+            opts = _dhcp_options(data)
+            if opts.get(53, b"\0")[:1] != b"\x02":  # DHCPOFFER
+                continue
+            server = _ip4(opts.get(54)) or addr[0]
+            dns = opts.get(6) or b""
+            offers[server] = {
+                "server": server,
+                "from": addr[0],
+                "offeredIp": _ip4(data[16:20]),
+                "router": _ip4(opts.get(3)),
+                "dns": [_ip4(dns[i:i + 4]) for i in range(0, min(len(dns), 12), 4)],
+                "mask": _ip4(opts.get(1)),
+                "leaseSeconds": int.from_bytes(opts[51], "big") if len(opts.get(51, b"")) == 4 else None,
+                "domain": (opts.get(15) or b"").decode(errors="replace").strip("\0") or None,
+            }
+        return {"ok": True, "offers": list(offers.values())}
+    finally:
+        sock.close()
+
+
+def netguard_cycle() -> None:
+    global _last_dhcp_probe
+    gw = get_default_gateway()
+    report: dict[str, Any] = {"localIps": [n["ip"] for n in _local_ipv4_networks()], "gateway": None}
+    if gw:
+        icmp_ping(gw, 800)  # refresca la entrada ARP
+        arp = read_arp_table()
+        report["gateway"] = {"ip": gw, "mac": arp.get(gw)}
+        # Otras IPs de la misma subred que responden con la MAC del gateway
+        # (un equipo "respondiendo por todos" o un gateway duplicado).
+        gw_mac = arp.get(gw)
+        if gw_mac:
+            report["gatewayMacOtherIps"] = sorted(ip for ip, m in arp.items() if m == gw_mac and ip != gw)[:20]
+    if time.monotonic() - _last_dhcp_probe >= DHCP_PROBE_INTERVAL_SECONDS:
+        _last_dhcp_probe = time.monotonic()
+        try:
+            report["dhcp"] = dhcp_discover_probe()
+        except Exception as exc:
+            report["dhcp"] = {"ok": False, "error": str(exc)[:200]}
+        if report["dhcp"].get("ok"):
+            arp = read_arp_table()
+            for o in report["dhcp"]["offers"]:
+                o["mac"] = arp.get(o["from"]) or arp.get(o["server"])
+    headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
+    r = requests.post(f"{BACKEND_URL}/api/agent/netguard", json=report, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+    if r.status_code != 404:
+        r.raise_for_status()
+
+
+def netguard_loop() -> None:
+    if not NETGUARD_ENABLED:
+        return
+    time.sleep(40)
+    while True:
+        try:
+            netguard_cycle()
+        except Exception as exc:
+            logger.debug("Guardian de red: %s", exc)
+        time.sleep(NETGUARD_INTERVAL_SECONDS)
+
+
+# ---------------------------------------------------------------------------
+# Tareas pedidas desde el NOC: acciones de remediacion (SIEMPRE aprobadas por
+# una persona con su PIN; el agente nunca decide nada solo) y la prueba de
+# velocidad programada de la sucursal. Solo acciones de esta lista blanca.
+# ---------------------------------------------------------------------------
+TASKS_INTERVAL_SECONDS = 30
+_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$ ]{1,80}$")
+_SAM_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+
+
+def _run(cmd: list[str], timeout: int = 120) -> tuple[bool, str]:
+    proc = subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=_CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    out = _decode_console_bytes((proc.stdout or b"") + (proc.stderr or b"")).strip()
+    return proc.returncode == 0, out[-1500:]
+
+
+def _ps(script: str, timeout: int = 120) -> tuple[bool, str]:
+    return _run([windows_exe("powershell.exe", "WindowsPowerShell", "v1.0"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], timeout)
+
+
+def _cleanup_temp() -> tuple[bool, str]:
+    cutoff = time.time() - 7 * 86400
+    freed = files = 0
+    roots = [Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Temp"]
+    users = Path(os.environ.get("SystemDrive", "C:") + "\\Users")
+    if users.exists():
+        roots += [u / "AppData" / "Local" / "Temp" for u in users.iterdir() if u.is_dir()]
+    for root in roots:
+        if not root.exists():
+            continue
+        for dirpath, _dirs, names in os.walk(root):
+            for name in names:
+                fp = os.path.join(dirpath, name)
+                try:
+                    st = os.stat(fp)
+                    if st.st_mtime < cutoff:
+                        os.remove(fp)
+                        freed += st.st_size
+                        files += 1
+                except OSError:
+                    continue
+    return True, f"{files} archivo(s) temporales de mas de 7 dias eliminados, {round(freed / 1048576)} MB liberados"
+
+
+def run_remediation(action: str, params: dict[str, Any]) -> tuple[bool, str]:
+    name = str(params.get("name") or params.get("service") or "")
+    if action in ("restart_service", "start_service", "stop_service"):
+        if not _SERVICE_NAME_RE.match(name):
+            return False, "nombre de servicio invalido"
+        verb = {"restart_service": "Restart-Service", "start_service": "Start-Service", "stop_service": "Stop-Service"}[action]
+        safe = name.replace("'", "''")
+        return _ps(f"{verb} -Name '{safe}' -Force -ErrorAction Stop; (Get-Service -Name '{safe}').Status")
+    if action == "clear_print_queue":
+        return _ps(
+            "Stop-Service Spooler -Force -ErrorAction Stop; "
+            "Remove-Item \"$env:SystemRoot\\System32\\spool\\PRINTERS\\*\" -Force -ErrorAction SilentlyContinue; "
+            "Start-Service Spooler -ErrorAction Stop; 'Cola de impresion vaciada y Spooler reiniciado'"
+        )
+    if action == "flush_dns":
+        return _run([windows_exe("ipconfig.exe"), "/flushdns"], 30)
+    if action == "gpupdate":
+        return _run([windows_exe("gpupdate.exe"), "/force"], 180)
+    if action == "cleanup_temp":
+        return _cleanup_temp()
+    if action == "windows_update_scan":
+        _updates_cache["lastRun"] = float("-inf")
+        collect_update_status()
+        return True, "Busqueda de actualizaciones iniciada; el resultado llega en el proximo diagnostico"
+    if action == "unlock_ad_user":
+        sam = str(params.get("sam") or "")
+        if not _SAM_RE.match(sam):
+            return False, "usuario invalido"
+        return _ps(f"Import-Module ActiveDirectory; Unlock-ADAccount -Identity '{sam}' -ErrorAction Stop; 'Cuenta {sam} desbloqueada'")
+    if action == "restart_agent":
+        threading.Timer(3, lambda: os._exit(0)).start()
+        return True, "El agente se reinicia en 3 s (lo relanza la tarea programada)"
+    if action == "reboot_server":
+        return _run([windows_exe("shutdown.exe"), "/r", "/t", "120", "/c", "Reinicio aprobado desde el NOC (Enterprise SOC)"], 30)
+    return False, f"accion no permitida: {action}"
+
+
+def _stream_bytes(url: str, deadline: float, counter: list[int]) -> None:
+    try:
+        with requests.get(url, stream=True, timeout=10) as r:
+            for chunk in r.iter_content(65536):
+                counter[0] += len(chunk)
+                if time.monotonic() >= deadline:
+                    break
+    except Exception:
+        pass
+
+
+def _upload(url: str, deadline: float, counter: list[int], size: int) -> None:
+    blob = os.urandom(size)
+    while time.monotonic() < deadline:
+        try:
+            requests.post(url, data=blob, timeout=15)
+            counter[0] += size
+        except Exception:
+            break
+
+
+def run_speedtest(seconds: int = 10) -> dict[str, Any]:
+    """Prueba de velocidad contra la red de Cloudflare (4 conexiones en
+    paralelo, ~10 s de bajada y ~10 s de subida)."""
+    base = "https://speed.cloudflare.com"
+    lat = []
+    for _ in range(6):
+        t0 = time.monotonic()
+        try:
+            requests.get(f"{base}/__down?bytes=0", timeout=5)
+            lat.append((time.monotonic() - t0) * 1000)
+        except Exception:
+            pass
+    counters = [[0] for _ in range(4)]
+    start = time.monotonic()
+    deadline = start + seconds
+    threads = [threading.Thread(target=_stream_bytes, args=(f"{base}/__down?bytes=200000000", deadline, c)) for c in counters]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(seconds + 15)
+    down_secs = max(time.monotonic() - start, 0.1)
+    down = sum(c[0] for c in counters)
+    ucounters = [[0] for _ in range(3)]
+    ustart = time.monotonic()
+    udeadline = ustart + seconds
+    uthreads = [threading.Thread(target=_upload, args=(f"{base}/__up", udeadline, c, 4_000_000)) for c in ucounters]
+    for t in uthreads:
+        t.start()
+    for t in uthreads:
+        t.join(seconds + 20)
+    up_secs = max(time.monotonic() - ustart, 0.1)
+    up = sum(c[0] for c in ucounters)
+    lat.sort()
+    return {
+        "downloadMbps": round(down * 8 / down_secs / 1e6, 1),
+        "uploadMbps": round(up * 8 / up_secs / 1e6, 1),
+        "latencyMs": round(lat[len(lat) // 2], 1) if lat else None,
+        "jitterMs": round(lat[-1] - lat[0], 1) if len(lat) > 1 else None,
+        "publicIp": get_public_ip(),
+        "server": "Cloudflare",
+        "at": _utc_now_iso(),
+    }
+
+
+def tasks_cycle() -> int:
+    headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
+    r = requests.post(f"{BACKEND_URL}/api/agent/tasks", json={"version": AGENT_VERSION}, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+    if r.status_code == 404:
+        return 3600
+    r.raise_for_status()
+    plan = r.json()
+    for task in plan.get("actions") or []:
+        action = str(task.get("action"))
+        logger.warning("Accion aprobada desde el NOC por %s: %s %s", task.get("approvedBy"), action, task.get("params") or {})
+        try:
+            ok, output = run_remediation(action, task.get("params") or {})
+        except subprocess.TimeoutExpired:
+            ok, output = False, "tiempo de espera agotado"
+        except Exception as exc:
+            ok, output = False, str(exc)[:500]
+        requests.post(
+            f"{BACKEND_URL}/api/agent/tasks/{task['id']}/result",
+            json={"ok": ok, "output": output},
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    if plan.get("speedtest"):
+        logger.info("Prueba de velocidad programada: iniciando")
+        try:
+            result = run_speedtest()
+            result["ok"] = True
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc)[:300]}
+        requests.post(f"{BACKEND_URL}/api/agent/speedtest", json=result, headers=headers, timeout=30)
+        logger.info("Prueba de velocidad: %s", result)
+    return int(plan.get("intervalSeconds") or TASKS_INTERVAL_SECONDS)
+
+
+def tasks_loop() -> None:
+    time.sleep(25)
+    while True:
+        try:
+            wait = tasks_cycle()
+        except Exception as exc:
+            logger.debug("Tareas del NOC: %s", exc)
+            wait = 120
+        time.sleep(max(15, wait))
+
+
+# ---------------------------------------------------------------------------
 # Tarea programada: vigilante e instancia unica
 # ---------------------------------------------------------------------------
 TASK_NAME = os.getenv("AGENT_TASK_NAME", "EnterpriseSOCAgent")
@@ -3940,6 +4496,9 @@ def main() -> None:
         threading.Thread(target=backup_loop, args=(args.debug,), daemon=True).start()
         threading.Thread(target=unifi_loop, daemon=True).start()
         threading.Thread(target=appmon_loop, daemon=True).start()
+        threading.Thread(target=identity_loop, daemon=True).start()
+        threading.Thread(target=netguard_loop, daemon=True).start()
+        threading.Thread(target=tasks_loop, daemon=True).start()
 
     while True:
         cycle_start = time.monotonic()

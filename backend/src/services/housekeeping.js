@@ -105,7 +105,14 @@ async function runHousekeeping() {
     // Inventario y monitores: retencion fija, no configurable (historial de
     // sesiones/auditoria del AD 180 dias, resultados de monitores 30 dias).
     {
-      const logons = await prisma.logonEvent.deleteMany({ where: { at: { lt: cutoffDate(180) } } });
+      const logons = await prisma.logonEvent.deleteMany({
+        where: { OR: [{ at: { lt: cutoffDate(180) } }, { kind: 'activity', at: { lt: cutoffDate(30) } }] },
+      });
+      // Guardian de red / remediaciones / velocidad.
+      await prisma.remediationAction.deleteMany({ where: { createdAt: { lt: cutoffDate(365) } } });
+      await prisma.speedTest.deleteMany({ where: { at: { lt: cutoffDate(730) } } });
+      await prisma.dhcpOffer.deleteMany({ where: { lastSeenAt: { lt: cutoffDate(30) } } });
+      await prisma.netDevice.deleteMany({ where: { lastSeenAt: { lt: cutoffDate(365) } } });
       const dirEvents = await prisma.directoryEvent.deleteMany({ where: { at: { lt: cutoffDate(180) } } });
       const checks = await prisma.serviceCheckResult.deleteMany({ where: { at: { lt: cutoffDate(30) } } });
       deleted.logonEvents = logons.count;

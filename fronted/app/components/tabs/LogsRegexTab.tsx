@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, BookOpen, CircleDot, CheckCircle2, Eye, ListFilter, Regex, Sparkles, X } from 'lucide-react';
 import { EVENT_STATUS_STYLES, SEVERITY_STYLES } from '../../lib/health';
 import type { EventStatus, Playbook, SecurityAlert } from '../../types';
+import AlertOpsActions from '../ops/AlertOpsActions';
 import AlertRepeatInfo from '../AlertRepeatInfo';
 import { AlertRecommendation, SnoozeButton } from '../AlertActionsExtra';
 
@@ -264,6 +265,7 @@ export default function LogsRegexTab({
                           </p>
                         )}
                         {a.status !== 'RESOLVED' && <AlertRecommendation alert={a} />}
+                        {a.status !== 'RESOLVED' && <AlertOpsActions alert={a} />}
                       </td>
                       <td className="py-2 pr-4">
                         <div className="flex gap-1">

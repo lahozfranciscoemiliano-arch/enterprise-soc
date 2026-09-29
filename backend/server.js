@@ -59,6 +59,7 @@ const { loadBackupPolicy, backupMode, normalizeBackupReport } = require('./src/s
 const { processAgentExtras, summarizeNetwork } = require('./src/services/preventiveChecks');
 const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
 const registerInventoryRoutes = require('./src/routes/inventory');
+const registerOpsRoutes = require('./src/routes/ops');
 const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
 const { seedMissingPlaybooks } = require('./src/services/recommendations');
 const unifiLocal = require('./src/services/unifiLocal');
@@ -810,10 +811,52 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
 
     const breakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
     const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
+    // Que servidores hay en cada estado (para los graficos separados del panel general).
+    const healthServers = { OK: [], WARNING: [], CRITICAL: [], UNKNOWN: [] };
+    const backupServerList = { SUCCESS: [], WARNING: [], FAILED: [], NOT_CONFIGURED: [], UNKNOWN: [] };
     for (const s of servers) {
-      breakdown[getHealthStatus(s.telemetry[0], s, defaultThresholds)] += 1;
-      if (backupMode(s, backupPolicy) !== 'EXCLUDED') backupBreakdown[s.backups[0]?.result ?? 'UNKNOWN'] += 1;
+      const t = s.telemetry[0];
+      const h = getHealthStatus(t, s, defaultThresholds);
+      breakdown[h] += 1;
+      healthServers[h].push({
+        id: s.id,
+        name: s.name,
+        cpu: t?.cpuUsage ?? null,
+        ram: t?.memoryUsage ?? null,
+        disk: t?.diskUsage ?? null,
+        status: s.status,
+      });
+      if (backupMode(s, backupPolicy) !== 'EXCLUDED') {
+        const b = s.backups[0];
+        const r = b?.result ?? 'UNKNOWN';
+        backupBreakdown[r] += 1;
+        backupServerList[r].push({ id: s.id, name: s.name, lastBackupAt: b?.lastBackupAt ?? null, detail: b?.detail?.slice(0, 140) ?? null });
+      }
     }
+    for (const list of [...Object.values(healthServers), ...Object.values(backupServerList)]) list.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Resumen de las alertas abiertas (desplegable de la tarjeta "Alertas / Criticos").
+    const SEV_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+    const openAlertList = (
+      await prisma.securityEvent.findMany({
+        where: { status: 'OPEN' },
+        orderBy: { createdAt: 'desc' },
+        take: 300,
+        select: { id: true, type: true, severity: true, description: true, createdAt: true, silent: true, occurrences: true, server: { select: { id: true, name: true } } },
+      })
+    )
+      .sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || b.createdAt - a.createdAt)
+      .map((e) => ({
+        id: e.id,
+        type: e.type,
+        severity: e.severity,
+        silent: e.silent,
+        occurrences: e.occurrences,
+        serverId: e.server?.id ?? null,
+        serverName: e.server?.name ?? null,
+        summary: e.description.length > 160 ? `${e.description.slice(0, 157)}...` : e.description,
+        createdAt: e.createdAt,
+      }));
     const backupServers = Object.values(backupBreakdown).reduce((a, b) => a + b, 0);
 
     const reportedServers = servers.length - breakdown.UNKNOWN;
@@ -829,6 +872,9 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
       healthBreakdown: breakdown,
       backupBreakdown,
       backupServers,
+      healthServers,
+      backupServerList,
+      openAlertList,
     });
   } catch (err) {
     console.error('Error calculando resumen del dashboard', err);
@@ -1690,6 +1736,7 @@ app.get('/api/admin/anomaly-detection', authUser, requireRole('ADMIN'), (req, re
 // Inventario de red (equipos, usuarios AD, impresoras, IPs) y monitores de
 // servicios: ver src/routes/inventory.js.
 registerInventoryRoutes(app, { authUser, authServer, requireRole, adminWriteLimiter });
+registerOpsRoutes(app, { authUser, authServer, requireRole });
 
 // Sondeo manual de UniFi (boton "Probar conexion" en Admin -> Configuracion).
 app.post('/api/admin/unifi/sync', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
@@ -2179,6 +2226,7 @@ const unifiReportSchema = z.object({
               desc: z.string().max(200).nullable().optional(),
               devices: z.array(z.record(z.any())).max(500),
               health: z.array(z.record(z.any())).max(20).optional(),
+              clients: z.array(z.record(z.any())).max(3000).optional(),
             })
           )
           .max(50)

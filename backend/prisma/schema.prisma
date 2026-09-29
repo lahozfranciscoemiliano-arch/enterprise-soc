@@ -62,6 +62,13 @@ enum EventType {
   APP_SERVICE_DOWN
   APP_PERFORMANCE
   NETWORK_MICROCUTS
+  // Guardian de red (services/netGuard.js): DHCP no autorizado, gateway
+  // suplantado/IP duplicada, equipo nunca visto en la red.
+  ROGUE_DHCP
+  GATEWAY_CONFLICT
+  UNKNOWN_DEVICE
+  // Prueba de velocidad programada por debajo de lo contratado.
+  SPEEDTEST_LOW
 }
 
 enum BackupResult {
@@ -129,6 +136,11 @@ model User {
   remoteSessions       RemoteSession[]
   assistantLogs        AssistantLog[]
   playbooksUpdated     Playbook[]
+  // PIN de 6 digitos (hash bcrypt) para aprobar acciones sensibles:
+  // remediaciones y cambios de estado de tickets. Bloqueo tras 5 fallos.
+  pinHash              String?
+  pinFailedCount       Int             @default(0)
+  pinLockedUntil       DateTime?
 
   @@map("users")
 }
@@ -301,6 +313,10 @@ model Server {
   ispPrimaryPublicIp   String?
   ispSecondaryPublicIp String?
   publicIp             String?
+  // Velocidad contratada del enlace principal (para comparar la prueba de
+  // velocidad programada).
+  contractedDownMbps   Float?
+  contractedUpMbps     Float?
 
   // Ultimo diagnostico preventivo y ultimo estado de red que mando el agente
   // (>= 1.3.0; ver services/preventiveChecks.js). Se guarda solo el ultimo:
@@ -512,6 +528,9 @@ model Endpoint {
 
 model Printer {
   id               String    @id // IP
+  // MAC de la placa de red: identifica la impresora aunque cambie de IP
+  // (se borra la entrada vieja en vez de quedar duplicada).
+  macAddress       String?
   name             String?
   model            String?
   serial           String?
@@ -555,6 +574,8 @@ model LogonEvent {
   username  String
   ipAddress String
   hostname  String?
+  // logon = inicio de sesion (4768) | activity = sesion en uso (4770/4624)
+  kind      String   @default("logon")
   at        DateTime
 
   @@unique([username, ipAddress, at])
@@ -664,6 +685,8 @@ model UnifiSite {
   localError        String?
   controllerUrl     String?
   health            Json?
+  // Clientes conectados (MAC, IP, switch/puerto o AP): ubicar un equipo.
+  clients           Json?
 
   @@map("unifi_sites")
 }
@@ -745,4 +768,163 @@ model MicroOutage {
   @@index([startedAt])
   @@index([category, startedAt])
   @@map("micro_outages")
+}
+
+// ---------------------------------------------------------------------------
+// Guardian de red (services/netGuard.js)
+// ---------------------------------------------------------------------------
+
+// Cada MAC que aparecio alguna vez en la red (DHCP, ARP del barrido, UniFi).
+model NetDevice {
+  mac         String   @id
+  ip          String?
+  hostname    String?
+  vendor      String?
+  source      String?  // dhcp | arp | unifi
+  randomized  Boolean  @default(false)
+  approved    Boolean  @default(false)
+  note        String?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@index([ip])
+  @@index([firstSeenAt])
+  @@map("net_devices")
+}
+
+// MAC del gateway vista por cada agente (una fila por servidor).
+model NetGatewayState {
+  serverId     String   @id
+  gatewayIp    String
+  baselineMac  String?
+  currentMac   String?
+  history      Json?    // [{mac, at}] ultimos cambios
+  changedAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("net_gateway_state")
+}
+
+// Servidores DHCP que respondieron a la sonda de cada agente.
+model DhcpOffer {
+  id          String   @id @default(uuid())
+  serverId    String
+  dhcpServer  String
+  mac         String?
+  router      String?
+  offeredIp   String?
+  dns         String[] @default([])
+  authorized  Boolean  @default(true)
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@unique([serverId, dhcpServer])
+  @@map("dhcp_offers")
+}
+
+// Prueba de velocidad programada por sede (una IP publica = una sede).
+model SpeedTest {
+  id           String   @id @default(uuid())
+  serverId     String
+  serverName   String
+  publicIp     String?
+  ok           Boolean  @default(true)
+  error        String?
+  downloadMbps Float?
+  uploadMbps   Float?
+  latencyMs    Float?
+  jitterMs     Float?
+  contractedDownMbps Float?
+  contractedUpMbps   Float?
+  manual       Boolean  @default(false)
+  at           DateTime @default(now())
+
+  @@index([serverId, at])
+  @@index([at])
+  @@map("speed_tests")
+}
+
+// ---------------------------------------------------------------------------
+// Tickets, base de conocimiento y remediaciones
+// ---------------------------------------------------------------------------
+model Ticket {
+  id              String          @id @default(uuid())
+  number          Int             @unique @default(autoincrement())
+  title           String
+  description     String?
+  status          String          @default("OPEN") // OPEN | IN_PROGRESS | WAITING | RESOLVED | CLOSED
+  priority        String          @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
+  eventId         String?
+  eventType       String?
+  serverId        String?
+  serverName      String?
+  assigneeId      String?
+  assigneeName    String?
+  createdById     String
+  createdByName   String
+  resolution      String?
+  firstResponseAt DateTime?
+  resolvedAt      DateTime?
+  closedAt        DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  comments        TicketComment[]
+
+  @@index([status, createdAt])
+  @@index([assigneeId, status])
+  @@index([eventId])
+  @@map("tickets")
+}
+
+model TicketComment {
+  id        String   @id @default(uuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId    String?
+  userName  String
+  kind      String   @default("comment") // comment | status | assign | system | action
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_comments")
+}
+
+model KnowledgeArticle {
+  id             String   @id @default(uuid())
+  title          String
+  problem        String
+  solution       String
+  tags           String[] @default([])
+  alertType      String?
+  sourceTicketId String?
+  createdByName  String
+  uses           Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([alertType])
+  @@map("knowledge_articles")
+}
+
+// Accion de remediacion aprobada con PIN; la ejecuta el agente del servidor.
+model RemediationAction {
+  id              String    @id @default(uuid())
+  serverId        String
+  serverName      String
+  eventId         String?
+  ticketId        String?
+  action          String
+  params          Json?
+  status          String    @default("PENDING") // PENDING | SENT | SUCCESS | FAILED | EXPIRED
+  requestedById   String
+  requestedByName String
+  output          String?
+  createdAt       DateTime  @default(now())
+  sentAt          DateTime?
+  finishedAt      DateTime?
+
+  @@index([serverId, status])
+  @@index([createdAt])
+  @@map("remediation_actions")
 }

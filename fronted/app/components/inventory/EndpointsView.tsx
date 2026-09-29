@@ -7,11 +7,12 @@ import { timeAgo } from '../../lib/health';
 import { API_URL, useLiveData } from './useLiveData';
 import type { InventoryEndpoint, LogonRecord } from '../../types';
 
-type Filter = 'all' | 'online' | 'offline' | 'stale' | 'servers';
+type Filter = 'all' | 'online' | 'sessions' | 'offline' | 'stale' | 'servers';
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: 'all', label: 'Todos' },
   { id: 'online', label: 'Encendidos' },
+  { id: 'sessions', label: 'Con sesión activa' },
   { id: 'offline', label: 'Apagados' },
   { id: 'stale', label: 'Inactivos +60 días' },
   { id: 'servers', label: 'Servidores' },
@@ -45,6 +46,7 @@ export default function EndpointsView() {
     () => ({
       all: endpoints.length,
       online: endpoints.filter((e) => e.online).length,
+      sessions: endpoints.filter((e) => e.activeUser).length,
       offline: endpoints.filter((e) => !e.online).length,
       stale: endpoints.filter((e) => e.enabled !== false && isStale(e)).length,
       servers: endpoints.filter(isServer).length,
@@ -57,6 +59,7 @@ export default function EndpointsView() {
     return endpoints
       .filter((e) => {
         if (filter === 'online') return e.online;
+        if (filter === 'sessions') return Boolean(e.activeUser);
         if (filter === 'offline') return !e.online;
         if (filter === 'stale') return e.enabled !== false && isStale(e);
         if (filter === 'servers') return isServer(e);
@@ -137,6 +140,7 @@ export default function EndpointsView() {
                     {e.lastUser ? (
                       <>
                         <b className="font-medium">{e.lastUser}</b>
+                        {e.activeUser && <span className="font-medium text-emerald-600">· sesión activa</span>}
                         <span className="text-slate-400">· {timeAgo(e.lastUserAt)}</span>
                       </>
                     ) : (
@@ -187,7 +191,7 @@ export default function EndpointsView() {
             <tr className="border-b border-slate-200 text-slate-400">
               <th className="py-2 pr-3 font-medium">Equipo</th>
               <th className="py-2 pr-3 font-medium">Estado</th>
-              <th className="py-2 pr-3 font-medium">Último usuario (AD)</th>
+              <th className="py-2 pr-3 font-medium">Usuario del AD (sesión)</th>
               <th className="py-2 pr-3 font-medium">IP / MAC</th>
               <th className="py-2 pr-3 font-medium">Sistema</th>
               <th className="py-2 pr-3 font-medium">Último logon en AD</th>
@@ -233,10 +237,13 @@ export default function EndpointsView() {
                     <td className="py-2 pr-3">
                       {e.lastUser ? (
                         <span className="flex items-center gap-1.5">
-                          <UserRound className="h-3.5 w-3.5 text-slate-400" />
+                          <UserRound className={`h-3.5 w-3.5 ${e.activeUser ? 'text-emerald-500' : 'text-slate-400'}`} />
                           <span>
                             <span className="block font-medium text-slate-700">{e.lastUser}</span>
-                            <span className="block text-[10px] text-slate-400">{timeAgo(e.lastUserAt)}</span>
+                            <span className="block text-[10px] text-slate-400">
+                              {e.activeUser ? <span className="font-medium text-emerald-600">sesión activa · </span> : null}
+                              {timeAgo(e.lastUserAt)}
+                            </span>
                           </span>
                         </span>
                       ) : (
@@ -294,7 +301,10 @@ export default function EndpointsView() {
                                   <ul className="max-h-40 space-y-0.5 overflow-y-auto text-[11px]">
                                     {hist.map((l) => (
                                       <li key={l.id} className="flex justify-between gap-3">
-                                        <span className="font-medium text-slate-700">{l.username}</span>
+                                        <span className="font-medium text-slate-700">
+                                          {l.username}
+                                          {l.kind === 'activity' && <span className="ml-1 font-normal text-slate-400">(actividad)</span>}
+                                        </span>
                                         <span className="text-slate-400">
                                           {new Date(l.at).toLocaleString('es-ES')} · {l.ipAddress}
                                         </span>

@@ -1,9 +1,9 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { AlertTriangle, CheckCircle2, FileStack, Printer } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileStack, Printer, Trash2 } from 'lucide-react';
 import { timeAgo } from '../../lib/health';
-import { useLiveData } from './useLiveData';
+import { API_URL, useLiveData } from './useLiveData';
 import type { PrinterRow } from '../../types';
 
 const ERROR_LABEL: Record<string, string> = {
@@ -45,7 +45,17 @@ function supplyColor(name: string) {
 }
 
 export default function PrintersView() {
-  const { data, error } = useLiveData<PrinterRow[]>('/api/inventory/printers');
+  const { data, error, reload } = useLiveData<PrinterRow[]>('/api/inventory/printers');
+
+  // Quitar a mano una impresora vieja (dada de baja o que cambio de IP sin
+  // poder identificarla). Las que cambian de IP con MAC/serie conocida se
+  // quitan solas; las que no responden hace mas de 3 dias, tambien.
+  const remove = async (p: PrinterRow) => {
+    if (!window.confirm(`¿Quitar ${p.name ?? p.id} (${p.id}) del inventario? Si vuelve a responder, reaparece sola.`)) return;
+    const res = await fetch(`${API_URL}/api/inventory/printers/${encodeURIComponent(p.id)}`, { method: 'DELETE', credentials: 'include' });
+    if (res.ok) reload();
+    else window.alert((await res.json().catch(() => ({}))).error ?? 'No se pudo quitar');
+  };
   const printers = [...(data ?? [])].sort((a, b) => {
     const score = (p: PrinterRow) => (!p.online ? 0 : p.errors.some((e) => !WARNING_ONLY.includes(e)) ? 1 : p.errors.length ? 2 : 3);
     return score(a) - score(b) || (a.name ?? a.id).localeCompare(b.name ?? b.id);
@@ -111,7 +121,20 @@ export default function PrintersView() {
                 {p.pageCount !== null ? `${p.pageCount.toLocaleString('es')} páginas` : 'Contador —'}
               </span>
               <span className="truncate">Ubicación: {p.location || '—'}</span>
+              {p.macAddress && (
+                <span className="col-span-2">
+                  MAC: <span className="font-mono text-slate-700">{p.macAddress}</span>
+                </span>
+              )}
             </div>
+            {!p.online && (
+              <button
+                onClick={() => remove(p)}
+                className="mt-2 inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-0.5 text-[10px] text-slate-500 transition-colors hover:bg-red-50 hover:text-red-700"
+              >
+                <Trash2 className="h-3 w-3" /> Quitar del inventario (IP vieja / dada de baja)
+              </button>
+            )}
 
             {(p.errors.length > 0 || !p.online) && (
               <div className="mt-3 flex flex-wrap gap-1">

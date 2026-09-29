@@ -248,6 +248,44 @@ const RECOMMENDATIONS = {
     ],
     prevention: 'Registrar cambios planificados para que las anomalías tengan contexto.',
   },
+  ROGUE_DHCP: {
+    title: 'Servidor DHCP no autorizado en la red',
+    steps: [
+      'Ubicar el equipo con la MAC/fabricante/switch y puerto que indica la alerta (Inventario → Seguridad de red).',
+      'Desconectarlo de inmediato o apagarle el servicio DHCP (NVR, cámara, router hogareño, repetidor).',
+      'En los equipos afectados: ipconfig /release y /renew (o reiniciar el WiFi/AP) para que tomen IP del DHCP correcto.',
+      'Si es un DHCP legítimo de la sede, aprobarlo para que no vuelva a alertar.',
+    ],
+    prevention: 'Activar DHCP Snooping / Guard en los switches UniFi y en la FortiGate; configurar los NVR y cámaras con IP fija y sin servidor DHCP.',
+  },
+  GATEWAY_CONFLICT: {
+    title: 'IP del gateway duplicada / MAC cambiada',
+    steps: [
+      'Buscar el equipo con la MAC distinta a la del gateway habitual (fabricante y puerto en la alerta).',
+      'Desconectarlo o corregirle la IP fija: tiene configurada la IP del gateway.',
+      'Borrar la caché ARP de los equipos afectados (arp -d *) o reiniciar los AP si el WiFi quedó sin salida.',
+      'Si se cambió el firewall/router, aceptar la nueva MAC en Inventario → Seguridad de red.',
+    ],
+    prevention: 'Reservar el rango de IPs de infraestructura fuera del DHCP y documentar qué IP fija tiene cada NVR/cámara/impresora.',
+  },
+  UNKNOWN_DEVICE: {
+    title: 'Equipo nunca visto en la red',
+    steps: [
+      'Ver fabricante, IP y dónde está conectado (switch/puerto o AP).',
+      'Confirmar con la sede si es un equipo nuevo autorizado; si lo es, aprobarlo.',
+      'Si nadie lo reconoce, desconectarlo y revisar el puerto/red WiFi por la que entró.',
+    ],
+    prevention: 'Red WiFi de invitados separada y puertos de switch sin uso deshabilitados.',
+  },
+  SPEEDTEST_LOW: {
+    title: 'Internet por debajo de lo contratado',
+    steps: [
+      'Ver la evolución en Red → Velocidad de internet (varias noches seguidas confirman el problema).',
+      'Descargar la evidencia (CSV) y abrir un reclamo al proveedor con fechas y valores medidos.',
+      'Si coincide con backups o sincronizaciones nocturnas, cambiar el horario de la prueba.',
+    ],
+    prevention: 'Cargar la velocidad contratada de cada sede y revisar el informe mensual.',
+  },
   CUSTOM: {
     title: 'Alerta',
     steps: ['Revisar el detalle de la alerta y el estado del servidor en el NOC.', 'Consultar al asistente IA con el texto de la alerta si no está claro el paso siguiente.'],

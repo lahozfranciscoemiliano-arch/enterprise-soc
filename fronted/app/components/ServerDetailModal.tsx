@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WsbDetailsPanel from './WsbDetailsPanel';
 import RdpConnectButton from './RdpConnectButton';
+import RemediationModal from './ops/RemediationModal';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
@@ -132,6 +133,7 @@ export default function ServerDetailModal({
   onClose: () => void;
 }) {
   const [section, setSection] = useState<Section>('metricas');
+  const [fixOpen, setFixOpen] = useState(false);
   const [details, setDetails] = useState<ServerDetails | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
 
@@ -245,6 +247,14 @@ export default function ServerDetailModal({
             </div>
             <div className="flex shrink-0 items-center gap-2">
             <RdpConnectButton name={server.name} host={server.ipAddress} />
+            <button
+              onClick={() => setFixOpen(true)}
+              className="flex items-center gap-1 rounded-lg border border-brand-200 px-2.5 py-1.5 text-xs text-brand-700 transition-colors hover:bg-brand-50"
+              title="Acciones de remediación (con PIN)"
+            >
+              <Wrench className="h-3 w-3" /> Acciones
+            </button>
+            {fixOpen && <RemediationModal serverId={server.id} onClose={() => setFixOpen(false)} />}
             <button
               onClick={onClose}
               className="shrink-0 rounded-lg border border-slate-200 p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"

@@ -80,6 +80,15 @@ const SETTING_DEFS = {
   UNIFI_LOCAL_USERNAME: { envFallback: null, type: 'string', sensitive: false },
   UNIFI_LOCAL_PASSWORD: { envFallback: null, type: 'string', sensitive: true },
   UNIFI_LOCAL_CONTROLLERS: { envFallback: null, type: 'string', sensitive: false },
+  // Guardian de red: servidores DHCP autorizados (IPs separadas por coma,
+  // ademas de los servidores con rol DHCP y el gateway de cada sitio) y aviso
+  // de equipos nunca vistos.
+  NETGUARD_DHCP_SERVERS: { envFallback: null, type: 'string', sensitive: false },
+  NETGUARD_UNKNOWN_DEVICE_ALERTS: { envFallback: null, type: 'boolean', sensitive: false },
+  // Prueba de velocidad programada: activada, hora local (0-23) y minuto.
+  SPEEDTEST_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
+  SPEEDTEST_HOUR: { envFallback: null, type: 'number', sensitive: false },
+  SPEEDTEST_THRESHOLD_PCT: { envFallback: null, type: 'number', sensitive: false },
 
   // Acceso remoto
 

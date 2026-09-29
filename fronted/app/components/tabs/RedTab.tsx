@@ -1,5 +1,6 @@
 'use client';
 
+import SpeedTestPanel from '../SpeedTestPanel';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -538,6 +539,8 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
           </ul>
         )}
       </div>
+
+      <SpeedTestPanel isAdmin={isAdmin} canWrite />
     </div>
   );
 }

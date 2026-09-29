@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { AlertTriangle, Bot, CheckCircle2, DatabaseBackup, ServerCrash, Siren } from 'lucide-react';
 import type { SecurityAlert, ServerSummary } from '../../types';
+import AlertOpsActions from '../ops/AlertOpsActions';
 import AlertRepeatInfo from '../AlertRepeatInfo';
 import { AlertRecommendation } from '../AlertActionsExtra';
 
@@ -105,6 +106,7 @@ export default function GuardiaTab({
                 <AlertRepeatInfo alert={a} className="mb-2" />
                 <div className="mb-2">
                   <AlertRecommendation alert={a} defaultOpen />
+                  <AlertOpsActions alert={a} />
                 </div>
                 {a.aiTriage && (
                   <p className="mb-2 flex items-start gap-1.5 text-sm text-sky-700/90">

@@ -750,6 +750,55 @@ Pestaña **Aplicaciones** (agente 1.12.0 o superior). **Solo Monark.** ALOHA, la
 - Los `.bat` de robocopy con código 1 a 7 son exitosos.
 - Si hay un backup exitoso reciente, las advertencias del resto quedan como "Informativo".
 
+## 41. Operaciones, seguridad de red y velocidad (agente 1.14.0)
+
+**Actualizar primero el NOC y después los agentes** (el agente 1.14.0 manda datos
+nuevos que un backend viejo rechaza).
+
+- **PIN de 6 dígitos**: cada usuario lo configura en *Mi cuenta → PIN de
+  aprobación* (pide la contraseña). Se usa para crear tickets, cambiarles estado,
+  responsable o cerrarlos, y para aprobar remediaciones. 5 errores = bloqueo de
+  15 min. Cada uso queda en la auditoría.
+- **Remediación con un clic** (*Remediar* en cada alerta o *Acciones* en el
+  detalle del servidor): el NOC sugiere acciones de una lista blanca (reiniciar o
+  iniciar servicio, vaciar la cola de impresión, limpiar la caché DNS, gpupdate,
+  liberar temporales, buscar parches, desbloquear una cuenta del AD, reiniciar el
+  agente o el servidor). Nunca se ejecuta nada automáticamente: la persona elige
+  y aprueba con su PIN, y el agente la toma en menos de 30 s.
+- **Tickets y base de conocimiento** (*Operaciones*): de una alerta sale un
+  ticket con responsable, estado, comentarios y cierre. Al cerrarlo con la
+  solución, se guarda en la base de conocimiento y se sugiere en las alertas
+  parecidas (*Cómo se resolvió antes*). Hay métricas por técnico.
+- **Seguridad de red** (*Inventario → Seguridad de red*): cada agente prueba el
+  DHCP cada 5 min y la MAC de su gateway cada minuto. Alerta ante un **DHCP no
+  autorizado** (NVR, cámara, router hogareño), un **gateway duplicado** o con
+  otra MAC, una **IP duplicada** (el DHCP dice una MAC y responde otra) y un
+  **equipo nunca visto**. Cada alerta dice fabricante, IP y, si hay UniFi local,
+  el switch y el puerto (o el AP) donde está conectado. Los DHCP legítimos
+  adicionales se aprueban ahí mismo (o en `NETGUARD_DHCP_SERVERS`). La primera
+  vez que corre, todo lo que ya está en la red queda como conocido.
+- **Sesiones del AD en tiempo real**: cada controlador de dominio (no solo el
+  recolector) manda cada minuto los inicios de sesión (4768), las renovaciones
+  (4770) y los inicios de sesión de red (4624). *Inventario → Equipos* muestra la
+  sesión activa y marca como encendidos a los equipos con actividad, aunque su
+  firewall bloquee el ping. También se usan el DNS del dominio y la tabla ARP
+  para detectar las PC con IP fija.
+- **Impresoras**: se identifican por MAC o número de serie. Si cambian de IP se
+  borra la entrada vieja; las que no responden hace más de 3 días se quitan
+  solas, y cualquiera se puede quitar a mano.
+- **Velocidad de internet** (*Red e Internet*): una prueba por sede (un
+  servidor por IP pública) cada madrugada, desde las 04:00 hora de Argentina
+  (`SPEEDTEST_HOUR`). Cargar la velocidad contratada en cada sede; si da menos
+  del 60 % (`SPEEDTEST_THRESHOLD_PCT`) queda una alerta silenciosa. Se puede
+  exportar a CSV como evidencia para el proveedor.
+- **Topología automática** (*Topología → Red por sede*): Internet → gateway →
+  switches → APs → servidores, armada con UniFi y los agentes, con el estado de
+  cada eslabón en vivo.
+- **Parches** (*Operaciones → Parches*): actualizaciones que faltan en cada
+  servidor, por severidad, con el KB y el enlace al boletín de Microsoft.
+- **Backups**: la duración se calcula con los eventos de inicio y fin del Visor
+  de eventos (1 → 4/14), también cuando el canal tiene otro nombre.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real

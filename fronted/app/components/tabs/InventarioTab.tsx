@@ -13,6 +13,7 @@ import {
   Printer,
   ScrollText,
   Server,
+  ShieldAlert,
   Users,
 } from 'lucide-react';
 import StatCard from '../StatCard';
@@ -21,17 +22,19 @@ import UsersView from '../inventory/UsersView';
 import PrintersView from '../inventory/PrintersView';
 import IpMapView from '../inventory/IpMapView';
 import AuditView from '../inventory/AuditView';
+import NetGuardView from '../inventory/NetGuardView';
 import { API_URL, useLiveData } from '../inventory/useLiveData';
 import { timeAgo } from '../../lib/health';
 import type { InventorySummary } from '../../types';
 
-type Section = 'equipos' | 'usuarios' | 'impresoras' | 'ips' | 'auditoria';
+type Section = 'equipos' | 'usuarios' | 'impresoras' | 'ips' | 'seguridad' | 'auditoria';
 
 const SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: 'equipos', label: 'Equipos (PC / laptops)', icon: MonitorSmartphone },
   { id: 'usuarios', label: 'Usuarios del AD', icon: Users },
   { id: 'impresoras', label: 'Impresoras', icon: Printer },
   { id: 'ips', label: 'Mapa de IPs', icon: Network },
+  { id: 'seguridad', label: 'Seguridad de red', icon: ShieldAlert },
   { id: 'auditoria', label: 'Sesiones y auditoría', icon: ScrollText },
 ];
 
@@ -42,7 +45,7 @@ const EXPORTS = [
   { kind: 'ips', label: 'Mapa de IPs' },
 ];
 
-export default function InventarioTab() {
+export default function InventarioTab({ isAdmin = false, canWrite = false }: { isAdmin?: boolean; canWrite?: boolean }) {
   const [section, setSection] = useState<Section>('equipos');
   const { data: summary } = useLiveData<InventorySummary>('/api/inventory/summary');
   const reporter = summary?.reporters[0] ?? null;
@@ -177,6 +180,7 @@ export default function InventarioTab() {
               {section === 'usuarios' && <UsersView />}
               {section === 'impresoras' && <PrintersView />}
               {section === 'ips' && <IpMapView />}
+              {section === 'seguridad' && <NetGuardView isAdmin={isAdmin} canWrite={canWrite} />}
               {section === 'auditoria' && <AuditView />}
             </motion.div>
           </AnimatePresence>
