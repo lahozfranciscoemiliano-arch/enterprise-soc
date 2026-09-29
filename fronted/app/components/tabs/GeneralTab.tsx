@@ -8,7 +8,7 @@ import StatCard from '../StatCard';
 import ResourceUsagePanel from '../ResourceUsagePanel';
 import ServerDetailModal from '../ServerDetailModal';
 import { SEVERITY_STYLES, timeAgo } from '../../lib/health';
-import type { DashboardSummary, SecurityAlert, ServerSummary, Severity } from '../../types';
+import type { BackupResult, DashboardSummary, SecurityAlert, ServerSummary, Severity } from '../../types';
 
 const panel = 'rounded-xl border border-slate-200 bg-white p-4 shadow-card';
 const TRACK = '#eef2f7';
@@ -129,7 +129,7 @@ export default function GeneralTab({
 
   const healthItems = (k: 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN') =>
     (hs?.[k] ?? []).map((s) => ({ id: s.id, name: s.name, hint: k === 'OK' ? null : k === 'UNKNOWN' ? 'sin datos' : worstMetric(s) }));
-  const backupItems = (k: 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN') =>
+  const backupItems = (k: BackupResult) =>
     (bs?.[k] ?? []).map((s) => ({ id: s.id, name: s.name, hint: s.lastBackupAt ? timeAgo(s.lastBackupAt) : null }));
   const backupOther = [...backupItems('NOT_CONFIGURED'), ...backupItems('UNKNOWN')];
 
@@ -260,6 +260,9 @@ export default function GeneralTab({
               <StatusDonut label="Advertencias" count={summary.backupBreakdown.WARNING} total={backupTotal} color="#f59e0b" text="text-amber-600" items={backupItems('WARNING')} onOpen={setModalServerId} />
               <StatusDonut label="Fallidos" count={summary.backupBreakdown.FAILED} total={backupTotal} color="#ef4444" text="text-red-600" items={backupItems('FAILED')} onOpen={setModalServerId} />
             </div>
+          )}
+          {backupItems('RUNNING').length > 0 && (
+            <p className="mt-2 text-[11px] font-medium text-sky-700">En proceso ahora: {backupItems('RUNNING').map((s) => s.name).join(', ')}</p>
           )}
           {backupOther.length > 0 && (
             <p className="mt-2 text-[11px] text-slate-400">Sin backup configurado / sin datos: {backupOther.map((s) => s.name).join(', ')}</p>

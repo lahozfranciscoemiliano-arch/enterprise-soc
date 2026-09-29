@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ExternalLink, RotateCw, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { Download, ExternalLink, RotateCw, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { timeAgo } from '../../lib/health';
 import { useLiveData } from '../inventory/useLiveData';
 import type { PatchItem, ServerPatches } from '../../types';
@@ -23,14 +23,31 @@ export default function PatchesView() {
   const { data } = useLiveData<ServerPatches[]>('/api/patches', { event: 'soc:diagnostics', intervalMs: 300_000 });
   const [open, setOpen] = useState<string | null>(null);
   const [onlyCritical, setOnlyCritical] = useState(false);
+  const [q, setQ] = useState('');
 
   const rows = useMemo(
     () =>
-      [...(data ?? [])].sort(
+      [...(data ?? [])]
+        .filter((s) => !q.trim() || s.name.toLowerCase().includes(q.trim().toLowerCase()) || s.list.some((p) => p.kb.join(' ').toLowerCase().includes(q.trim().toLowerCase())))
+        .sort(
         (a, b) => (b.pendingCritical ?? -1) - (a.pendingCritical ?? -1) || (b.pending ?? -1) - (a.pending ?? -1) || a.name.localeCompare(b.name)
       ),
-    [data]
+    [data, q]
   );
+  const exportCsv = () => {
+    const header = ['servidor', 'severidad', 'kb', 'titulo', 'categorias', 'tamano_mb', 'requiere_reinicio', 'publicada', 'boletin'];
+    const lines = rows.flatMap((s) =>
+      s.list.map((p) => [s.name, p.severity ?? '', p.kb.join(' '), p.title, p.categories.join(' / '), p.sizeMb ?? '', p.reboot ? 'si' : 'no', p.releasedAt ?? '', kbUrl(p) ?? ''])
+    );
+    const esc = (v: unknown) => {
+      const t = String(v ?? '');
+      return /[",\n;]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([`\ufeff${[header, ...lines].map((r) => r.map(esc).join(',')).join('\n')}\n`], { type: 'text/csv;charset=utf-8' }));
+    a.download = `parches-pendientes-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  };
   const totals = useMemo(() => {
     const t = { critical: 0, important: 0, servers: 0 };
     for (const s of rows) {
@@ -52,9 +69,18 @@ export default function PatchesView() {
           <b className="text-red-700">{totals.critical}</b> críticas y <b className="text-orange-700">{totals.important}</b> importantes sin instalar en{' '}
           <b>{totals.servers}</b> servidor(es). Windows Update se consulta cada 12 h (o con la acción “Buscar actualizaciones”).
         </p>
+        <span className="flex flex-wrap items-center gap-2">
+        <span className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Servidor o KB..." className="w-40 rounded-lg border border-slate-300 py-1 pl-7 pr-2" />
+        </span>
+        <button onClick={exportCsv} className="flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 hover:bg-slate-50">
+          <Download className="h-3.5 w-3.5" /> CSV
+        </button>
         <label className="flex items-center gap-1.5 text-slate-600">
           <input type="checkbox" checked={onlyCritical} onChange={(e) => setOnlyCritical(e.target.checked)} /> Solo críticas / importantes
         </label>
+        </span>
       </div>
       <ul className="space-y-1.5">
         {rows.map((s) => {

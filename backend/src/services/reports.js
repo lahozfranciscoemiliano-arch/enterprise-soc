@@ -79,7 +79,7 @@ async function collectReportData(periodDays) {
 
   const backupPolicy = await loadBackupPolicy();
   const healthBreakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
-  const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
+  const backupBreakdown = { SUCCESS: 0, RUNNING: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
   const serverRows = [];
 
   // Alertas por servidor y tipo en el periodo.

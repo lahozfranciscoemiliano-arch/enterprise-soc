@@ -73,6 +73,8 @@ enum EventType {
 
 enum BackupResult {
   SUCCESS
+  // Backup corriendo en este momento (no se evalua hasta que termine).
+  RUNNING
   WARNING
   FAILED
   NOT_CONFIGURED
@@ -493,6 +495,11 @@ model DhcpScope {
   reserved     Int      @default(0)
   percentInUse Float    @default(0)
   addresses    Json     // [{ip, status, host, mac, user, since}]
+  // Gateway de la red (opcion 3 del DHCP o el que informa el agente) y
+  // origen: dhcp (ambito del servidor DHCP) | static (subred fija
+  // configurada) | segment (red local barrida por el agente de esa sede).
+  gateway      String?
+  source       String?
   serverId     String?
   updatedAt    DateTime @updatedAt
 
@@ -834,6 +841,13 @@ model SpeedTest {
   uploadMbps   Float?
   latencyMs    Float?
   jitterMs     Float?
+  packetLoss   Float?
+  // Speedtest by Ookla (o Cloudflare de respaldo): servidor de prueba, ISP
+  // y enlace al resultado publico (evidencia para el reclamo).
+  provider     String?
+  isp          String?
+  testServer   String?
+  resultUrl    String?
   contractedDownMbps Float?
   contractedUpMbps   Float?
   manual       Boolean  @default(false)

@@ -14,7 +14,7 @@
 // cierra sola. Si reaparece al rato (una metrica que oscila justo en el
 // umbral), se reabre la misma alerta en vez de crear una nueva.
 const prisma = require('../prismaClient');
-const { broadcastAlert, broadcastAlertUpdate } = require('../websocket/socketServer');
+const { broadcast, broadcastAlert, broadcastAlertUpdate } = require('../websocket/socketServer');
 const { notifyAlert } = require('./notifications');
 const { triageEvent } = require('./gemini');
 const { getRecommendation } = require('./recommendations');
@@ -174,6 +174,17 @@ async function autoResolveEvents(serverId, keys, serverName) {
 
   for (const e of open) {
     broadcastAlertUpdate(toClientEvent({ ...e, status: 'RESOLVED', resolvedAt, autoResolved: true }, serverName));
+  }
+  // Tickets abiertos de esas alertas: queda anotado que se normalizo sola.
+  const tickets = await prisma.ticket.findMany({
+    where: { eventId: { in: open.map((e) => e.id) }, status: { in: ['OPEN', 'IN_PROGRESS', 'WAITING'] } },
+    select: { id: true },
+  });
+  if (tickets.length) {
+    await prisma.ticketComment.createMany({
+      data: tickets.map((t) => ({ ticketId: t.id, userName: 'Sistema', kind: 'system', body: 'La alerta vinculada se normalizó sola (el NOC dejó de detectar la condición). Revisar si se puede cerrar el ticket.' })),
+    });
+    broadcast({ type: 'TICKET_UPDATE', ticket: { id: tickets[0].id } });
   }
   return open.length;
 }

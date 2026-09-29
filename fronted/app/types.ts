@@ -1,6 +1,6 @@
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
-export type BackupResult = 'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
+export type BackupResult = 'SUCCESS' | 'RUNNING' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 export type TabId = 'general' | 'monitoreo' | 'red' | 'aplicaciones' | 'inventario' | 'operaciones' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
@@ -625,10 +625,10 @@ export type DashboardSummary = {
   openAlerts: number;
   criticalAlerts: number;
   healthBreakdown: { OK: number; WARNING: number; CRITICAL: number; UNKNOWN: number };
-  backupBreakdown: { SUCCESS: number; WARNING: number; FAILED: number; NOT_CONFIGURED: number; UNKNOWN: number };
+  backupBreakdown: { SUCCESS: number; RUNNING?: number; WARNING: number; FAILED: number; NOT_CONFIGURED: number; UNKNOWN: number };
   backupServers?: number;
   healthServers?: Record<'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN', HealthServerRef[]>;
-  backupServerList?: Record<'SUCCESS' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN', BackupServerRef[]>;
+  backupServerList?: Partial<Record<BackupResult, BackupServerRef[]>>;
   openAlertList?: OpenAlertRef[];
 };
 
@@ -737,6 +737,8 @@ export type IpEntry = { ip: string; s: IpStatus; h?: string; m?: string; u?: str
 export type DhcpScopeRow = {
   id: string;
   name: string | null;
+  gateway?: string | null;
+  source?: 'dhcp' | 'static' | 'segment' | null;
   mask: string;
   startRange: string;
   endRange: string;
@@ -885,6 +887,9 @@ export type Ticket = {
   closedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Plazo segun prioridad (critica 4 h, alta 8 h, media 24 h, baja 72 h). */
+  dueAt?: string;
+  overdue?: boolean;
   _count?: { comments: number };
 };
 export type TicketComment = { id: string; userName: string; kind: string; body: string; createdAt: string };
@@ -950,6 +955,11 @@ export type SpeedTestRow = {
   uploadMbps: number | null;
   latencyMs: number | null;
   jitterMs: number | null;
+  packetLoss?: number | null;
+  provider?: string | null;
+  isp?: string | null;
+  testServer?: string | null;
+  resultUrl?: string | null;
   contractedDownMbps: number | null;
   contractedUpMbps: number | null;
   manual: boolean;

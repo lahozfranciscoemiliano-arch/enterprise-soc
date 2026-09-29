@@ -2,7 +2,9 @@
 
 import { motion } from 'framer-motion';
 import { KeyRound, LogIn, type LucideIcon, ShieldAlert, Unlock, UserMinus, UserPlus, Users, Lock } from 'lucide-react';
+import { useMemo } from 'react';
 import { useLiveData } from './useLiveData';
+import { NetworkGroup, networkOf, sortNetKeys, useNetworks } from './networks';
 import type { DirectoryEventRow, LogonRecord } from '../../types';
 
 const PRIVILEGED = /admin|operator|opers\.|schema|esquema|dnsadmins|policy creator/i;
@@ -33,7 +35,19 @@ function describe(e: DirectoryEventRow) {
 
 export default function AuditView() {
   const events = useLiveData<DirectoryEventRow[]>('/api/inventory/directory-events?limit=200');
-  const logons = useLiveData<LogonRecord[]>('/api/inventory/logons?limit=150');
+  const logons = useLiveData<LogonRecord[]>('/api/inventory/logons?limit=600');
+  const nets = useNetworks();
+  // Sesiones agrupadas por la red (gateway) desde la que se conectaron.
+  const logonGroups = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; gateway: string | null; servers: string[]; rows: LogonRecord[] }>();
+    for (const l of logons.data ?? []) {
+      const n = networkOf(l.ipAddress, nets);
+      const g = map.get(n.key) ?? { ...n, rows: [] };
+      g.rows.push(l);
+      map.set(n.key, g);
+    }
+    return [...map.values()].sort((a, b) => sortNetKeys(a.key, b.key));
+  }, [logons.data, nets]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -81,34 +95,41 @@ export default function AuditView() {
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold text-slate-800">
           <LogIn className="h-4 w-4 text-slate-400" />
-          Inicios de sesión en tiempo real
+          Inicios de sesión en tiempo real (por red / gateway)
         </p>
         {logons.data === null ? (
           <p className="text-xs text-slate-400">Cargando...</p>
         ) : logons.data.length === 0 ? (
           <p className="text-xs text-slate-400">Sin inicios de sesión registrados todavía.</p>
         ) : (
-          <div className="max-h-[520px] overflow-y-auto">
-            <table className="w-full min-w-[480px] text-left text-xs sm:min-w-0">
-              <thead className="sticky top-0 bg-white">
-                <tr className="border-b border-slate-200 text-slate-400">
-                  <th className="py-1.5 pr-2 font-medium">Usuario</th>
-                  <th className="py-1.5 pr-2 font-medium">Equipo</th>
-                  <th className="py-1.5 pr-2 font-medium">IP</th>
-                  <th className="py-1.5 font-medium">Cuándo</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logons.data.map((l) => (
-                  <tr key={l.id} className="border-b border-slate-50">
-                    <td className="py-1.5 pr-2 font-medium text-slate-700">{l.username}</td>
-                    <td className="py-1.5 pr-2 text-slate-600">{l.hostname ?? '—'}</td>
-                    <td className="py-1.5 pr-2 font-mono text-[11px] text-slate-500">{l.ipAddress}</td>
-                    <td className="py-1.5 text-[11px] text-slate-400">{new Date(l.at).toLocaleString('es-ES')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="max-h-[620px] space-y-2 overflow-y-auto pr-1">
+            {logonGroups.map((g) => (
+              <NetworkGroup key={g.key} label={g.label} gateway={g.gateway} servers={g.servers} count={g.rows.length} defaultOpen={logonGroups.length <= 2}>
+                <table className="w-full min-w-[420px] text-left text-xs sm:min-w-0">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-400">
+                      <th className="py-1.5 pr-2 font-medium">Usuario</th>
+                      <th className="py-1.5 pr-2 font-medium">Equipo</th>
+                      <th className="py-1.5 pr-2 font-medium">IP</th>
+                      <th className="py-1.5 font-medium">Cuándo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.rows.map((l) => (
+                      <tr key={l.id} className="border-b border-slate-50">
+                        <td className="py-1.5 pr-2 font-medium text-slate-700">
+                          {l.username}
+                          {l.kind === 'activity' && <span className="ml-1 text-[10px] font-normal text-slate-400">(actividad)</span>}
+                        </td>
+                        <td className="py-1.5 pr-2 text-slate-600">{l.hostname ?? '—'}</td>
+                        <td className="py-1.5 pr-2 font-mono text-[11px] text-slate-500">{l.ipAddress}</td>
+                        <td className="py-1.5 text-[11px] text-slate-400">{new Date(l.at).toLocaleString('es-ES')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </NetworkGroup>
+            ))}
           </div>
         )}
       </div>

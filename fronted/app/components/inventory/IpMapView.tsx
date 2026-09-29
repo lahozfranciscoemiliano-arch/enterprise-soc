@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Check, Copy } from 'lucide-react';
 import { useLiveData } from './useLiveData';
+import { networkOf, sortNetKeys, useNetworks } from './networks';
 import type { DhcpScopeRow, IpEntry, IpStatus } from '../../types';
 
 const STATUS: Record<IpStatus, { label: string; cell: string; dot: string; hint: string }> = {
@@ -45,6 +46,20 @@ export default function IpMapView() {
   const [search, setSearch] = useState('');
 
   const scopes = data ?? [];
+  const nets = useNetworks();
+  // Ambitos y redes agrupados por gateway (una fila por gateway / sede).
+  const groups = useMemo(() => {
+    const map = new Map<string, { gateway: string | null; servers: string[]; scopes: DhcpScopeRow[] }>();
+    for (const s of scopes) {
+      const net = networkOf(s.startRange, nets);
+      const key = s.gateway ?? net.gateway ?? net.key;
+      const g = map.get(key) ?? { gateway: s.gateway ?? net.gateway, servers: [], scopes: [] };
+      for (const n of net.servers) if (!g.servers.includes(n)) g.servers.push(n);
+      g.scopes.push(s);
+      map.set(key, g);
+    }
+    return [...map.entries()].sort(([a], [b]) => sortNetKeys(a, b));
+  }, [scopes, nets]);
   const scope = scopes.find((s) => s.id === scopeId) ?? scopes[0] ?? null;
   const q = search.trim().toLowerCase();
   const matchesSearch = (a: IpEntry) => !q || [a.ip, a.h, a.m, a.u].some((v) => v?.toLowerCase().includes(q));
@@ -63,21 +78,31 @@ export default function IpMapView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {scopes.map((s) => (
-          <button
-            key={s.id}
-            onClick={() => setScopeId(s.id)}
-            className={`rounded-lg border px-3 py-1.5 text-left text-xs transition-colors ${
-              s.id === scope.id ? 'border-brand-600 bg-brand-50 text-brand-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            <span className="block font-semibold">{s.name ?? s.id}</span>
-            <span className="block text-[10px] text-slate-400">
-              {s.id} · {s.percentInUse}% en uso
+      <div className="space-y-2">
+        {groups.map(([key, g]) => (
+          <div key={key} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-2">
+            <span className="min-w-[10rem] text-[11px] text-slate-500">
+              <b className="block font-mono text-slate-800">{g.gateway ? `Gateway ${g.gateway}` : 'Gateway sin identificar'}</b>
+              {g.servers.slice(0, 3).join(', ') || '—'}
             </span>
-          </button>
+            {g.scopes.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setScopeId(s.id)}
+                className={`rounded-lg border px-3 py-1.5 text-left text-xs transition-colors ${
+                  s.id === scope.id ? 'border-brand-600 bg-brand-50 text-brand-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <span className="block font-semibold">{s.name ?? s.id}</span>
+                <span className="block text-[10px] text-slate-400">
+                  {s.id} · {s.source === 'segment' ? `${s.inUse} activas (barrido del agente)` : `${s.percentInUse}% en uso`}
+                </span>
+              </button>
+            ))}
+          </div>
         ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -90,7 +115,9 @@ export default function IpMapView() {
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
             <span>
-              Rango DHCP <b className="font-mono text-slate-700">{scope.startRange}</b> → <b className="font-mono text-slate-700">{scope.endRange}</b> · máscara {scope.mask}
+              {scope.source === 'segment' ? 'Red de la sede (sin DHCP del dominio)' : 'Rango DHCP'} <b className="font-mono text-slate-700">{scope.startRange}</b> →{' '}
+              <b className="font-mono text-slate-700">{scope.endRange}</b> · máscara {scope.mask}
+              {scope.gateway ? ` · gateway ${scope.gateway}` : ''}
               {scope.leaseHours ? ` · concesión ${scope.leaseHours} h` : ''}
             </span>
             <span className="h-2 w-40 overflow-hidden rounded-full bg-slate-100" title={`${scope.percentInUse}% del rango DHCP en uso`}>

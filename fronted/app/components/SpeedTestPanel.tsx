@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Download, Gauge, Play } from 'lucide-react';
+import { Download, ExternalLink, Gauge, Play } from 'lucide-react';
 import { useLiveData, API_URL } from './inventory/useLiveData';
 import { useToast } from './Toast';
 import { timeAgo } from '../lib/health';
@@ -17,18 +17,23 @@ function pct(v: number | null, of: number | null) {
 }
 
 function exportCsv(site: Site) {
-  const header = ['fecha', 'servidor', 'ip_publica', 'bajada_mbps', 'subida_mbps', 'latencia_ms', 'jitter_ms', 'contratado_bajada', 'contratado_subida', '%_bajada', 'manual'];
+  const header = ['fecha', 'servidor', 'ip_publica', 'proveedor_internet', 'bajada_mbps', 'subida_mbps', 'latencia_ms', 'jitter_ms', 'perdida_%', 'contratado_bajada', 'contratado_subida', '%_bajada', 'medido_con', 'servidor_de_prueba', 'resultado_speedtest', 'manual'];
   const rows = site.tests.map((t) => [
     new Date(t.at).toLocaleString('es-AR'),
     t.serverName,
     t.publicIp ?? '',
+    (t.isp ?? '').replace(/,/g, ' '),
     t.downloadMbps ?? '',
     t.uploadMbps ?? '',
     t.latencyMs ?? '',
     t.jitterMs ?? '',
+    t.packetLoss ?? '',
     t.contractedDownMbps ?? '',
     t.contractedUpMbps ?? '',
     pct(t.downloadMbps, t.contractedDownMbps) ?? '',
+    (t.provider ?? '').replace(/,/g, ' '),
+    (t.testServer ?? '').replace(/,/g, ' '),
+    t.resultUrl ?? '',
     t.manual ? 'si' : 'no',
   ]);
   const csv = `﻿${[header, ...rows].map((r) => r.join(',')).join('\n')}\n`;
@@ -110,6 +115,19 @@ function SiteCard({ site, isAdmin, canWrite, onSaved }: { site: Site; isAdmin: b
       ) : (
         <p className="mb-2 text-xs text-slate-400">Sin pruebas todavía: la primera corre esta madrugada (o con “Probar ahora”).</p>
       )}
+      {last && (
+        <p className="mb-2 flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500">
+          <span>{last.provider ?? 'Speedtest'}</span>
+          {last.isp && <span>· ISP {last.isp}</span>}
+          {last.testServer && <span>· servidor {last.testServer}</span>}
+          {last.packetLoss !== null && last.packetLoss !== undefined && <span>· pérdida {last.packetLoss}%</span>}
+          {last.resultUrl && (
+            <a href={last.resultUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-brand-700 hover:underline">
+              ver resultado en speedtest.net <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </p>
+      )}
       {lowNights > 0 && <p className="mb-2 text-[11px] font-medium text-red-700">{lowNights} prueba(s) por debajo del 60% de lo contratado en el período.</p>}
       {data.length > 1 && (
         <div className="h-44">
@@ -165,7 +183,7 @@ export default function SpeedTestPanel({ isAdmin, canWrite }: { isAdmin: boolean
       <h2 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-800">
         <Gauge className="h-4 w-4 text-slate-400" /> Velocidad de internet por sede
       </h2>
-      <p className="mb-3 text-[11px] text-slate-500">Una prueba por sede cada madrugada (un servidor por IP pública), comparada con lo contratado. Descargá el CSV como evidencia para el reclamo.</p>
+      <p className="mb-3 text-[11px] text-slate-500">Speedtest by Ookla: una prueba por sede cada madrugada (un servidor por IP pública), comparada con lo contratado. Cada resultado tiene su enlace público en speedtest.net y se puede descargar en CSV como evidencia para el reclamo.</p>
       {!data ? (
         <p className="py-6 text-center text-sm text-slate-400">Cargando...</p>
       ) : sites.length === 0 ? (

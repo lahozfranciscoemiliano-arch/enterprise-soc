@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { Network, Search } from 'lucide-react';
 import ServerDetailModal from '../ServerDetailModal';
 import NetworkTopology from '../NetworkTopology';
+import Collapsible from '../Collapsible';
 import type { SecurityAlert, ServerSummary } from '../../types';
 
 const TopologiaGraph = dynamic(() => import('../TopologiaGraph'), {
@@ -53,7 +54,9 @@ export default function TopologiaTab({ servers, alerts }: { servers: ServerSumma
         ))}
       </div>
       {mode === 'red' && <NetworkTopology onServer={setModalServerId} />}
-      <div className={`rounded-xl border border-slate-200 bg-white p-4 shadow-card ${mode === 'red' ? 'hidden' : ''}`}>
+      {mode === 'servidores' && (
+      <Collapsible id="topo-grafo">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
             <Network className="h-4 w-4 text-slate-400" />
@@ -112,6 +115,8 @@ export default function TopologiaTab({ servers, alerts }: { servers: ServerSumma
           <TopologiaGraph servers={servers} focusServerId={focusServerId} onSelectNode={setModalServerId} />
         )}
       </div>
+      </Collapsible>
+      )}
 
       {modalServer && (
         <ServerDetailModal server={modalServer} alerts={modalAlerts} onClose={() => setModalServerId(null)} />

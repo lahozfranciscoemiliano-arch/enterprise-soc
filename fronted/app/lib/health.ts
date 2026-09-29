@@ -49,6 +49,7 @@ export const HEALTH_STYLES: Record<HealthStatus, { dot: string; text: string; ba
 
 export const BACKUP_STYLES: Record<BackupResult, { badge: string; label: string }> = {
   SUCCESS: { badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'ÉXITO' },
+  RUNNING: { badge: 'bg-sky-50 text-sky-700 border-sky-200', label: 'EN PROCESO' },
   WARNING: { badge: 'bg-amber-50 text-amber-700 border-amber-200', label: 'ADVERTENCIA' },
   FAILED: { badge: 'bg-red-50 text-red-700 border-red-200', label: 'FALLIDO' },
   NOT_CONFIGURED: { badge: 'bg-slate-100 text-slate-500 border-slate-200', label: 'NO CONFIGURADO' },

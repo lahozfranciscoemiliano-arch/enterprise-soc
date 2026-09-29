@@ -67,7 +67,7 @@ function normalizeBackupReport(mode, data) {
 
   return {
     ...data,
-    result: native.result === 'RUNNING' ? 'SUCCESS' : native.result,
+    result: native.result,
     method: native.method,
     lastBackupAt: native.lastSuccessAt ?? native.lastRunAt ?? data.lastBackupAt,
     targetPath: native.targetPath ?? undefined,

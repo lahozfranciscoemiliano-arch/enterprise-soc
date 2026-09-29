@@ -9,6 +9,7 @@ const prisma = require('../prismaClient');
 const ops = require('../services/ops');
 const netGuard = require('../services/netGuard');
 const { buildNetworkTopology } = require('../services/topology');
+const { segmentScanDue, ingestSegments, networksByGateway } = require('../services/inventory');
 const { logAudit } = require('../services/auditLog');
 const { broadcast } = require('../websocket/socketServer');
 
@@ -16,6 +17,21 @@ const pinSchema = z.string().regex(/^\d{6}$/, 'El PIN debe tener 6 dígitos');
 const TICKET_STATUSES = ['OPEN', 'IN_PROGRESS', 'WAITING', 'RESOLVED', 'CLOSED'];
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 const STATUS_LABEL = { OPEN: 'Abierto', IN_PROGRESS: 'En curso', WAITING: 'En espera', RESOLVED: 'Resuelto', CLOSED: 'Cerrado' };
+// Plazo de resolucion por prioridad (horas): marca los tickets vencidos.
+const SLA_HOURS = { CRITICAL: 4, HIGH: 8, MEDIUM: 24, LOW: 72 };
+const ACTIVE_TICKET = ['OPEN', 'IN_PROGRESS', 'WAITING'];
+
+function withSla(t) {
+  const dueAt = new Date(new Date(t.createdAt).getTime() + (SLA_HOURS[t.priority] ?? 24) * 3600000);
+  const doneAt = t.resolvedAt ?? t.closedAt ?? null;
+  const active = ACTIVE_TICKET.includes(t.status);
+  return { ...t, dueAt, overdue: active ? Date.now() > dueAt.getTime() : Boolean(doneAt && new Date(doneAt) > dueAt) };
+}
+
+function csvCell(v) {
+  const s = String(v ?? '');
+  return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
 
 const createTicketSchema = z
   .object({
@@ -65,6 +81,7 @@ const netguardReportSchema = z.object({
   localIps: z.array(z.string().max(64)).max(30).optional(),
   gateway: z.object({ ip: z.string().max(64), mac: z.string().max(40).nullable().optional() }).nullable().optional(),
   gatewayMacOtherIps: z.array(z.string().max(64)).max(30).optional(),
+  localNets: z.array(z.object({ cidr: z.string().max(40), gateway: z.string().max(64).nullable().optional() })).max(10).optional(),
   dhcp: z
     .object({
       ok: z.boolean(),
@@ -82,6 +99,12 @@ const speedtestSchema = z.object({
   latencyMs: z.number().min(0).max(100000).nullable().optional(),
   jitterMs: z.number().min(0).max(100000).nullable().optional(),
   publicIp: z.string().max(64).nullable().optional(),
+  packetLoss: z.number().min(0).max(100).nullable().optional(),
+  provider: z.string().max(60).nullable().optional(),
+  isp: z.string().max(120).nullable().optional(),
+  testServer: z.string().max(160).nullable().optional(),
+  resultUrl: z.string().url().max(300).nullable().optional(),
+  fallbackReason: z.string().max(300).optional(),
   server: z.string().max(60).optional(),
   at: z.string().max(50).optional(),
 });
@@ -158,8 +181,73 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
       else if (TICKET_STATUSES.includes(req.query.status)) where.status = req.query.status;
       if (req.query.mine === '1') where.assigneeId = req.user.sub;
       if (req.query.eventId) where.eventId = String(req.query.eventId);
-      const tickets = await prisma.ticket.findMany({ where, orderBy: [{ updatedAt: 'desc' }], take: 500, include: { _count: { select: { comments: true } } } });
-      return res.json(tickets);
+      if (req.query.status === 'overdue') {
+        where.status = { in: ACTIVE_TICKET };
+      }
+      const tickets = (await prisma.ticket.findMany({ where, orderBy: [{ updatedAt: 'desc' }], take: 500, include: { _count: { select: { comments: true } } } })).map(withSla);
+      return res.json(req.query.status === 'overdue' ? tickets.filter((t) => t.overdue) : tickets);
+    })
+  );
+
+  // Indicadores de Operaciones (tarjetas de arriba).
+  app.get(
+    '/api/ops/kpis',
+    authUser,
+    wrap(async (req, res) => {
+      const since30 = new Date(Date.now() - 30 * 86400000);
+      const since7 = new Date(Date.now() - 7 * 86400000);
+      const [active, resolved30, actions7, kb] = await Promise.all([
+        prisma.ticket.findMany({ where: { status: { in: ACTIVE_TICKET } } }),
+        prisma.ticket.findMany({ where: { resolvedAt: { gte: since30 } }, select: { createdAt: true, resolvedAt: true, priority: true } }),
+        prisma.remediationAction.findMany({ where: { createdAt: { gte: since7 } }, select: { status: true } }),
+        prisma.knowledgeArticle.count(),
+      ]);
+      const act = active.map(withSla);
+      const hours = resolved30.map((t) => (t.resolvedAt - t.createdAt) / 3600000);
+      const inSla = resolved30.filter((t) => (t.resolvedAt - t.createdAt) / 3600000 <= (SLA_HOURS[t.priority] ?? 24)).length;
+      const finished = actions7.filter((a) => ['SUCCESS', 'FAILED', 'EXPIRED'].includes(a.status));
+      return res.json({
+        openTickets: act.length,
+        criticalOpen: act.filter((t) => t.priority === 'CRITICAL' || t.priority === 'HIGH').length,
+        overdue: act.filter((t) => t.overdue).length,
+        unassigned: act.filter((t) => !t.assigneeId).length,
+        mine: act.filter((t) => t.assigneeId === req.user.sub).length,
+        avgResolutionHours: hours.length ? Math.round((hours.reduce((a, b) => a + b, 0) / hours.length) * 10) / 10 : null,
+        slaCompliancePct: resolved30.length ? Math.round((inSla / resolved30.length) * 100) : null,
+        actions7: actions7.length,
+        actionsSuccessPct: finished.length ? Math.round((finished.filter((a) => a.status === 'SUCCESS').length / finished.length) * 100) : null,
+        kbArticles: kb,
+        slaHours: SLA_HOURS,
+      });
+    })
+  );
+
+  app.get(
+    '/api/tickets/export.csv',
+    authUser,
+    wrap(async (req, res) => {
+      const rows = (await prisma.ticket.findMany({ orderBy: { number: 'desc' }, take: 5000 })).map(withSla);
+      const header = ['numero', 'titulo', 'estado', 'prioridad', 'servidor', 'responsable', 'creado_por', 'creado', 'vence', 'vencido', 'primera_respuesta', 'resuelto', 'cerrado', 'horas_resolucion', 'solucion'];
+      const lines = rows.map((t) => [
+        t.number,
+        t.title,
+        STATUS_LABEL[t.status] ?? t.status,
+        t.priority,
+        t.serverName,
+        t.assigneeName,
+        t.createdByName,
+        t.createdAt.toISOString(),
+        t.dueAt.toISOString(),
+        t.overdue ? 'si' : 'no',
+        t.firstResponseAt?.toISOString() ?? '',
+        t.resolvedAt?.toISOString() ?? '',
+        t.closedAt?.toISOString() ?? '',
+        t.resolvedAt ? Math.round(((t.resolvedAt - t.createdAt) / 3600000) * 10) / 10 : '',
+        t.resolution ?? '',
+      ]);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="tickets-${new Date().toISOString().slice(0, 10)}.csv"`);
+      return res.send(`\ufeff${[header, ...lines].map((r) => r.map(csvCell).join(',')).join('\n')}\n`);
     })
   );
 
@@ -194,8 +282,9 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
     '/api/tickets/:id',
     authUser,
     wrap(async (req, res) => {
-      const ticket = await prisma.ticket.findUnique({ where: { id: req.params.id }, include: { comments: { orderBy: { createdAt: 'asc' } } } });
-      if (!ticket) return res.status(404).json({ error: 'Ticket no encontrado' });
+      const found = await prisma.ticket.findUnique({ where: { id: req.params.id }, include: { comments: { orderBy: { createdAt: 'asc' } } } });
+      if (!found) return res.status(404).json({ error: 'Ticket no encontrado' });
+      const ticket = withSla(found);
       const [actions, suggestions] = await Promise.all([
         prisma.remediationAction.findMany({ where: { ticketId: ticket.id }, orderBy: { createdAt: 'desc' } }),
         ops.suggestArticles({ type: ticket.eventType, text: `${ticket.title} ${ticket.description ?? ''}` }),
@@ -513,9 +602,36 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
     wrap(async (req, res) => {
       const parsed = netguardReportSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: 'Reporte inválido' });
-      return res.json({ ok: true, ...(await netGuard.ingestReport(req.server, parsed.data)) });
+      const result = await netGuard.ingestReport(req.server, parsed.data);
+      // Redes de esta sede que le toca barrer a este agente (una por subred).
+      const scanSegments = await segmentScanDue(req.server, parsed.data.localNets);
+      return res.json({ ok: true, ...result, scanSegments });
     })
   );
+
+  const segmentSchema = z.object({
+    networks: z
+      .array(
+        z.object({
+          cidr: z.string().max(40),
+          gateway: z.string().max(64).nullable().optional(),
+          alive: z.record(z.object({ via: z.string().max(20).optional(), mac: z.string().max(40).nullable().optional(), name: z.string().max(255).nullable().optional() })),
+        })
+      )
+      .max(10),
+  });
+  app.post(
+    '/api/agent/segments',
+    agentLimiter,
+    authServer,
+    wrap(async (req, res) => {
+      const parsed = segmentSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'Reporte de red inválido' });
+      return res.json({ ok: true, ...(await ingestSegments(req.server, parsed.data)) });
+    })
+  );
+
+  app.get('/api/inventory/networks', authUser, wrap(async (req, res) => res.json(await networksByGateway())));
 
   // --- Prueba de velocidad ------------------------------------------------------------
   app.get(

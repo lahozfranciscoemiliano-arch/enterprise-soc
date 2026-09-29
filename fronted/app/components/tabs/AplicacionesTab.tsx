@@ -1,5 +1,6 @@
 'use client';
 
+import Collapsible from '../Collapsible';
 import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -204,6 +205,8 @@ function MicrocutsPanel() {
     intervalMs: 120_000,
   });
   const cats = ['APP'] as const;
+  // El detalle corte por corte arranca contraido: es largo.
+  const [detailOpen, setDetailOpen] = useState(false);
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
@@ -295,7 +298,19 @@ function MicrocutsPanel() {
             </div>
           </div>
 
-          <div className="mt-4 overflow-x-auto">
+          <button
+            onClick={() => setDetailOpen((o) => !o)}
+            aria-expanded={detailOpen}
+            className="mt-4 flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100"
+          >
+            <span>
+              Detalle de los {data.total} corte(s): inicio, duración, componente, servidor y causa
+              {data.ongoing ? <span className="ml-1 text-red-700">· {data.ongoing} en curso</span> : null}
+            </span>
+            <ChevronDown className={`h-4 w-4 transition-transform ${detailOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {detailOpen && (
+          <div className="mt-2 overflow-x-auto">
             <table className="w-full min-w-[680px] text-xs">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-slate-400">
@@ -325,6 +340,7 @@ function MicrocutsPanel() {
             </table>
             {data.events.length > 150 && <p className="mt-2 text-[11px] text-slate-400">Mostrando los 150 más recientes de {data.total}.</p>}
           </div>
+          )}
         </>
       )}
     </div>
@@ -380,7 +396,9 @@ export default function AplicacionesTab() {
         instances={instances}
         empty="No se detectó Monark en ningún servidor todavía. El agente (1.12 o superior) lo busca cada 15 minutos en servicios, procesos, programas instalados y bases de SQL Server."
       />
-      <MicrocutsPanel />
+      <Collapsible id="apps-microcuts">
+        <MicrocutsPanel />
+      </Collapsible>
       {!data && !error && (
         <p className="flex items-center gap-1.5 text-xs text-slate-400">
           <AppWindow className="h-3.5 w-3.5" /> Cargando…

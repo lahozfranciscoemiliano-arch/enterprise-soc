@@ -47,6 +47,7 @@ const HEALTH = [
 ];
 const BACKUP = [
   { key: 'SUCCESS', label: 'Exitoso', color: C.good },
+  { key: 'RUNNING', label: 'En proceso', color: '#3b82f6' },
   { key: 'WARNING', label: 'Advertencia', color: C.warning },
   { key: 'FAILED', label: 'Fallido', color: C.critical },
   { key: 'NOT_CONFIGURED', label: 'No configurado', color: C.muted },
@@ -58,8 +59,8 @@ const SEVERITY = [
   { key: 'MEDIUM', label: 'Media', color: C.warning },
   { key: 'LOW', label: 'Baja', color: C.none },
 ];
-const BACKUP_LABEL = { SUCCESS: 'Exitoso', WARNING: 'Advertencia', FAILED: 'Fallido', NOT_CONFIGURED: 'No configurado', UNKNOWN: 'Sin datos', EXCLUDED: 'No aplica' };
-const BACKUP_COLOR = { SUCCESS: C.good, WARNING: C.warning, FAILED: C.critical, NOT_CONFIGURED: C.muted, UNKNOWN: C.none, EXCLUDED: C.none };
+const BACKUP_LABEL = { SUCCESS: 'Exitoso', RUNNING: 'En proceso', WARNING: 'Advertencia', FAILED: 'Fallido', NOT_CONFIGURED: 'No configurado', UNKNOWN: 'Sin datos', EXCLUDED: 'No aplica' };
+const BACKUP_COLOR = { SUCCESS: C.good, RUNNING: '#3b82f6', WARNING: C.warning, FAILED: C.critical, NOT_CONFIGURED: C.muted, UNKNOWN: C.none, EXCLUDED: C.none };
 const HEALTH_LABEL = { OK: 'OK', WARNING: 'Advertencia', CRITICAL: 'Crítico', UNKNOWN: 'Sin datos' };
 const HEALTH_COLOR = { OK: C.good, WARNING: C.warning, CRITICAL: C.critical, UNKNOWN: C.none };
 const PRIORITY_COLOR = { ALTA: C.critical, MEDIA: C.serious, BAJA: C.s1 };

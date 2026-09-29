@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.14.0"
+AGENT_VERSION = "1.15.0"
 
 
 def get_base_dir() -> Path:
@@ -1285,6 +1285,7 @@ def _seconds_between(start_iso: str, end_iso: str) -> float:
     return (datetime.strptime(end_iso, fmt) - datetime.strptime(start_iso, fmt)).total_seconds()
 
 
+_open_backup_start: str | None = None
 BACKUP_EVENT_COMPLETED = {14}  # "la operacion de backup se completo" (sigue al 4 o al error)
 BACKUP_CHANNELS = ("Microsoft-Windows-Backup", "Microsoft-Windows-Backup/Operational")
 
@@ -1367,6 +1368,9 @@ def read_backup_runs(max_runs: int = 30) -> list[dict[str, Any]]:
         )
         started_at = None
 
+    # Evento de inicio sin fin todavia: hay un backup corriendo ahora.
+    global _open_backup_start
+    _open_backup_start = started_at
     runs.reverse()
     return runs[:max_runs]
 
@@ -1957,7 +1961,7 @@ def merge_backup_status(status: dict[str, Any], jobs: list[dict[str, Any]]) -> d
     known = [j for j in all_jobs if j.get("result") != "UNKNOWN" and not j.get("advisory")]
     worst = max(known, key=lambda j: RESULT_RANK.get(j.get("result"), 1)) if known else all_jobs[0]
     overall = worst.get("result") if known else "UNKNOWN"
-    status["result"] = "SUCCESS" if overall == "RUNNING" else overall
+    status["result"] = overall
     status["method"] = worst.get("method") if len(all_jobs) == 1 or not native_configured else status.get("method")
 
     successes = [j["lastSuccessAt"] for j in all_jobs if j.get("lastSuccessAt")]
@@ -2215,6 +2219,26 @@ def apply_wsb_details(status: dict[str, Any]) -> None:
         status["detail"] = (f"Error: {failure['message']} " + (status.get("detail") or ""))[:1000]
 
 
+def _service_running(name: str) -> bool:
+    if not hasattr(psutil, "win_service_get"):
+        return False
+    try:
+        return psutil.win_service_get(name).status() == "running"
+    except Exception:
+        return False
+
+
+def backup_running_since() -> str | None:
+    """Hora de inicio del backup que esta corriendo ahora, o None."""
+    start = _open_backup_start
+    hours = _hours_since(start) if start else None
+    if start and hours is not None and hours <= 20:
+        return start
+    if _service_running("wbengine"):
+        return start or _utc_now_iso()
+    return None
+
+
 def get_backup_status() -> dict[str, Any]:
     """Determina el estado del backup nativo probando varios metodos en orden.
 
@@ -2256,6 +2280,15 @@ def get_backup_status() -> dict[str, Any]:
     except Exception as exc:
         logger.warning("No se pudo leer el historial de backups del Visor de Eventos: %s", exc)
         runs = []
+    # Si la ultima corrida terminada del Visor de eventos salio bien y es la
+    # mas reciente, manda sobre el codigo de WMI (que queda con el HRESULT de
+    # un trabajo en curso o de uno anterior y marcaba "fallido" sin serlo).
+    if runs and status.get("result") == "FAILED" and runs[0]["result"] == "SUCCESS":
+        wmi_at = status.get("lastBackupAt") or ""
+        if not wmi_at or runs[0]["finishedAt"] >= wmi_at[:16]:
+            status["result"] = "SUCCESS"
+            status["lastBackupAt"] = runs[0]["finishedAt"]
+            status["detail"] = f"Ultima corrida exitosa segun el Visor de eventos ({runs[0]['finishedAt']}). " + (status.get("detail") or "")
     if runs:
         status["runs"] = runs
         latest = runs[0]
@@ -2297,6 +2330,24 @@ def get_backup_status() -> dict[str, Any]:
         except Exception as exc:
             logger.warning("No se pudo estimar el tamano del backup en %s: %s", status.get("targetPath"), exc)
 
+    # Backup EN PROCESO: el servicio del motor de backup (wbengine) solo
+    # corre mientras hay un trabajo, o hay un evento de inicio (1) sin fin.
+    # Mientras corre no se informa "fallido" por el codigo del trabajo actual.
+    try:
+        running_since = backup_running_since()
+    except Exception:
+        running_since = None
+    if running_since:
+        last_done = status.get("result")
+        status["runningSince"] = running_since
+        status["result"] = "RUNNING"
+        status["detail"] = (
+            f"Backup EN PROCESO desde {running_since}. Ultimo resultado terminado: {last_done}"
+            + (f" ({status['lastBackupAt']})" if status.get("lastBackupAt") else "")
+            + ". "
+            + (status.get("detail") or "")
+        )[:1000]
+
     # Demas metodos del equipo (scripts, Historial de archivos, SQL,
     # terceros): solo en los servidores ALOHA*. En el resto cuenta
     # unicamente Windows Server Backup (evita avisos falsos por tareas o
@@ -2330,7 +2381,7 @@ def build_backup_payload() -> dict[str, Any]:
         payload["sizeBytes"] = status["sizeBytes"]
 
     metadata: dict[str, Any] = {}
-    for key in ("runs", "versions", "durationSeconds", "jobs", "wsb"):
+    for key in ("runs", "versions", "durationSeconds", "jobs", "wsb", "runningSince"):
         if status.get(key):
             metadata[key] = status[key]
     if metadata:
@@ -2610,6 +2661,7 @@ $scopes = @(Get-DhcpServerv4Scope | ForEach-Object {
     inUse = [int]$st.InUse; free = [int]$st.Free; percentInUse = [math]::Round([double]$st.PercentageInUse, 1); reserved = [int]$st.Reserved
     exclusions = @(Get-DhcpServerv4ExclusionRange -ScopeId $s.ScopeId -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ start = $_.StartRange.IPAddressToString; end = $_.EndRange.IPAddressToString } })
     leases = @(Get-DhcpServerv4Lease -ScopeId $s.ScopeId -AllLeases -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = $_.IPAddress.IPAddressToString; mac = "$($_.ClientId)"; host = $_.HostName; state = "$($_.AddressState)"; expires = (Iso $_.LeaseExpiryTime) } })
+    router = (@((Get-DhcpServerv4OptionValue -ScopeId $s.ScopeId -OptionId 3 -ErrorAction SilentlyContinue).Value) | Select-Object -First 1)
     reservations = @(Get-DhcpServerv4Reservation -ScopeId $s.ScopeId -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ip = $_.IPAddress.IPAddressToString; mac = "$($_.ClientId)"; name = $_.Name; description = $_.Description } })
   }
 })
@@ -4023,7 +4075,19 @@ def dhcp_discover_probe(timeout: float = 4.0) -> dict[str, Any]:
 def netguard_cycle() -> None:
     global _last_dhcp_probe
     gw = get_default_gateway()
-    report: dict[str, Any] = {"localIps": [n["ip"] for n in _local_ipv4_networks()], "gateway": None}
+    nets = _local_ipv4_networks()
+    report: dict[str, Any] = {"localIps": [n["ip"] for n in nets], "gateway": None}
+    local_nets = []
+    for n in nets:
+        try:
+            net = ipaddress.IPv4Network(f"{n['ip']}/{n['prefix']}", strict=False)
+        except ValueError:
+            continue
+        if net.prefixlen < 22 or net.is_loopback or net.is_link_local:
+            continue
+        gw_in = gw if gw and ipaddress.IPv4Address(gw) in net else None
+        local_nets.append({"cidr": str(net), "gateway": gw_in})
+    report["localNets"] = local_nets[:10]
     if gw:
         icmp_ping(gw, 800)  # refresca la entrada ARP
         arp = read_arp_table()
@@ -4045,8 +4109,52 @@ def netguard_cycle() -> None:
                 o["mac"] = arp.get(o["from"]) or arp.get(o["server"])
     headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
     r = requests.post(f"{BACKEND_URL}/api/agent/netguard", json=report, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
-    if r.status_code != 404:
-        r.raise_for_status()
+    if r.status_code == 404:
+        return
+    r.raise_for_status()
+    todo = (r.json() or {}).get("scanSegments") or []
+    global _segment_scan_running
+    if todo and not _segment_scan_running:
+        _segment_scan_running = True
+        gws = {n["cidr"]: n["gateway"] for n in local_nets}
+        threading.Thread(target=scan_segments, args=([c for c in todo if c in gws], gws), daemon=True).start()
+
+
+_segment_scan_running = False
+
+
+def scan_segments(cidrs: list[str], gateways: dict[str, str | None]) -> None:
+    """Barre la red local de la sede (la de su gateway): IPs que responden,
+    su MAC (ARP) y su nombre (DNS inverso). El NOC la muestra en el Mapa de
+    IPs agrupada por gateway."""
+    global _segment_scan_running
+    try:
+        networks = []
+        for cidr in cidrs:
+            try:
+                net = ipaddress.IPv4Network(cidr, strict=False)
+            except ValueError:
+                continue
+            ips = [str(h) for h in net.hosts()][:1022]
+            alive = sweep_ips(ips)
+            arp = read_arp_table()
+            for ip, state in read_neighbors().items():
+                if ip in ips and ip not in alive and state in ("Reachable", "Delay", "Probe"):
+                    alive[ip] = "arp"
+            names = reverse_names(list(alive)[:400])
+            networks.append({
+                "cidr": cidr,
+                "gateway": gateways.get(cidr),
+                "alive": {ip: {"via": via, "mac": arp.get(ip), "name": names.get(ip)} for ip, via in alive.items()},
+            })
+        if networks:
+            headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
+            requests.post(f"{BACKEND_URL}/api/agent/segments", json={"networks": networks}, headers=headers, timeout=60)
+            logger.info("Red local barrida: %s", ", ".join(f"{n['cidr']} ({len(n['alive'])} activas)" for n in networks))
+    except Exception as exc:
+        logger.warning("Barrido de la red local: %s", exc)
+    finally:
+        _segment_scan_running = False
 
 
 def netguard_loop() -> None:
@@ -4163,7 +4271,86 @@ def _upload(url: str, deadline: float, counter: list[int], size: int) -> None:
             break
 
 
+SPEEDTEST_CLI_URL = os.getenv(
+    "SPEEDTEST_CLI_URL", "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
+)
+
+
+def _speedtest_exe() -> Path | None:
+    """Speedtest CLI oficial de Ookla: se descarga la primera vez junto al
+    agente (carpeta speedtest)."""
+    if sys.platform != "win32":
+        return None
+    folder = BASE_DIR / "speedtest"
+    exe = folder / "speedtest.exe"
+    if exe.exists():
+        return exe
+    import io
+    import zipfile
+
+    folder.mkdir(exist_ok=True)
+    r = requests.get(SPEEDTEST_CLI_URL, timeout=60)
+    r.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        for name in z.namelist():
+            if name.lower().endswith("speedtest.exe"):
+                exe.write_bytes(z.read(name))
+                break
+    return exe if exe.exists() else None
+
+
+def run_ookla_speedtest() -> dict[str, Any]:
+    exe = _speedtest_exe()
+    if not exe:
+        raise RuntimeError("Speedtest CLI no disponible")
+    proc = subprocess.run(
+        [str(exe), "--accept-license", "--accept-gdpr", "-f", "json", "-p", "no"],
+        capture_output=True,
+        timeout=180,
+        creationflags=_CREATE_NO_WINDOW,
+    )
+    out = (proc.stdout or b"").decode("utf-8", errors="replace").strip().splitlines()
+    data = None
+    for line in reversed(out):
+        try:
+            candidate = json.loads(line)
+        except ValueError:
+            continue
+        if candidate.get("type") == "result":
+            data = candidate
+            break
+    if not data:
+        raise RuntimeError(_decode_console_bytes(proc.stderr or b"").strip()[-300:] or f"speedtest devolvio {proc.returncode}")
+    srv = data.get("server") or {}
+    ping = data.get("ping") or {}
+    return {
+        "provider": "Speedtest by Ookla",
+        "downloadMbps": round((data.get("download") or {}).get("bandwidth", 0) * 8 / 1e6, 1),
+        "uploadMbps": round((data.get("upload") or {}).get("bandwidth", 0) * 8 / 1e6, 1),
+        "latencyMs": round(ping.get("latency"), 1) if ping.get("latency") is not None else None,
+        "jitterMs": round(ping.get("jitter"), 1) if ping.get("jitter") is not None else None,
+        "packetLoss": data.get("packetLoss"),
+        "isp": data.get("isp"),
+        "testServer": ", ".join(x for x in (srv.get("name"), srv.get("location")) if x) or None,
+        "resultUrl": (data.get("result") or {}).get("url"),
+        "publicIp": (data.get("interface") or {}).get("externalIp") or get_public_ip(),
+        "at": _utc_now_iso(),
+    }
+
+
 def run_speedtest(seconds: int = 10) -> dict[str, Any]:
+    """Speedtest oficial (Ookla). Si no se puede usar (descarga bloqueada,
+    sin servidores), respaldo con la red de Cloudflare."""
+    try:
+        return run_ookla_speedtest()
+    except Exception as exc:
+        logger.warning("Speedtest de Ookla no disponible (%s): se usa el respaldo de Cloudflare", exc)
+        result = run_cloudflare_speedtest(seconds)
+        result["fallbackReason"] = str(exc)[:200]
+        return result
+
+
+def run_cloudflare_speedtest(seconds: int = 10) -> dict[str, Any]:
     """Prueba de velocidad contra la red de Cloudflare (4 conexiones en
     paralelo, ~10 s de bajada y ~10 s de subida)."""
     base = "https://speed.cloudflare.com"
@@ -4202,7 +4389,7 @@ def run_speedtest(seconds: int = 10) -> dict[str, Any]:
         "latencyMs": round(lat[len(lat) // 2], 1) if lat else None,
         "jitterMs": round(lat[-1] - lat[0], 1) if len(lat) > 1 else None,
         "publicIp": get_public_ip(),
-        "server": "Cloudflare",
+        "provider": "Cloudflare (respaldo)",
         "at": _utc_now_iso(),
     }
 

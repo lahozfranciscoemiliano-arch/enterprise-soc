@@ -691,9 +691,15 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
         severity: alert.severity,
         description: alert.description,
         metadata: alert.metadata,
+        // Un "fallido" se confirma en 2 chequeos seguidos (~30 min): evita
+        // alertar por un estado transitorio mientras el backup termina.
+        confirmations: alert.type === 'BACKUP_FAILED' ? 2 : 1,
       });
     }
-    await resolveCleared(server.id, BACKUP_MANAGED_KEYS, alert ? [alert.type] : [], server.name);
+    // Mientras corre un backup no se cierra ni se abre nada: se evalua al terminar.
+    if (data.result !== 'RUNNING') {
+      await resolveCleared(server.id, BACKUP_MANAGED_KEYS, alert ? [alert.type] : [], server.name);
+    }
 
     return res.status(201).json({
       backupStatusId: backup.id,
@@ -810,10 +816,10 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
     ]);
 
     const breakdown = { OK: 0, WARNING: 0, CRITICAL: 0, UNKNOWN: 0 };
-    const backupBreakdown = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
+    const backupBreakdown = { SUCCESS: 0, RUNNING: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
     // Que servidores hay en cada estado (para los graficos separados del panel general).
     const healthServers = { OK: [], WARNING: [], CRITICAL: [], UNKNOWN: [] };
-    const backupServerList = { SUCCESS: [], WARNING: [], FAILED: [], NOT_CONFIGURED: [], UNKNOWN: [] };
+    const backupServerList = { SUCCESS: [], RUNNING: [], WARNING: [], FAILED: [], NOT_CONFIGURED: [], UNKNOWN: [] };
     for (const s of servers) {
       const t = s.telemetry[0];
       const h = getHealthStatus(t, s, defaultThresholds);

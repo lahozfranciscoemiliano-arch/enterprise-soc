@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { MessageSquare, Plus, Search, Ticket as TicketIcon, UserRound, Wrench } from 'lucide-react';
+import { AlarmClock, Download, MessageSquare, Plus, Search, Ticket as TicketIcon, UserRound, Wrench } from 'lucide-react';
 import { SEVERITY_STYLES, timeAgo } from '../../lib/health';
 import { useLiveData, API_URL } from '../inventory/useLiveData';
 import { useToast } from '../Toast';
@@ -18,7 +18,7 @@ export const TICKET_STATUS: Record<TicketStatus, { label: string; badge: string 
   CLOSED: { label: 'Cerrado', badge: 'bg-slate-100 text-slate-500 border-slate-200' },
 };
 const PRIORITY_LABEL = { LOW: 'Baja', MEDIUM: 'Media', HIGH: 'Alta', CRITICAL: 'Crítica' } as const;
-type Filter = 'active' | 'mine' | 'RESOLVED' | 'CLOSED' | 'all';
+type Filter = 'active' | 'mine' | 'overdue' | 'RESOLVED' | 'CLOSED' | 'all';
 
 type Metrics = {
   total: number;
@@ -129,6 +129,11 @@ function TicketDetailPanel({ id, canWrite, onChanged }: { id: string; canWrite: 
           <span className="flex items-center gap-1 text-slate-500">
             <UserRound className="h-3 w-3" /> {t.assigneeName ?? 'sin responsable'}
           </span>
+          {t.dueAt && ['OPEN', 'IN_PROGRESS', 'WAITING'].includes(t.status) && (
+            <span className={`flex items-center gap-1 ${t.overdue ? 'font-semibold text-red-700' : 'text-slate-500'}`}>
+              <AlarmClock className="h-3 w-3" /> {t.overdue ? 'venció' : 'vence'} {new Date(t.dueAt).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })}
+            </span>
+          )}
         </div>
         {t.description && <p className="mt-2 whitespace-pre-wrap rounded-lg bg-slate-50 p-2.5 text-xs text-slate-600">{t.description}</p>}
         {t.resolution && (
@@ -255,19 +260,28 @@ function TicketDetailPanel({ id, canWrite, onChanged }: { id: string; canWrite: 
   );
 }
 
-export default function TicketsView({ canWrite }: { canWrite: boolean }) {
+export default function TicketsView({ canWrite, servers = [] }: { canWrite: boolean; servers?: { id: string; name: string }[] }) {
   const [filter, setFilter] = useState<Filter>('active');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const query = filter === 'active' ? '?status=active' : filter === 'mine' ? '?status=active&mine=1' : filter === 'all' ? '' : `?status=${filter}`;
+  const [priority, setPriority] = useState('');
+  const [assignee, setAssignee] = useState('');
+  const query =
+    filter === 'active' ? '?status=active' : filter === 'mine' ? '?status=active&mine=1' : filter === 'overdue' ? '?status=overdue' : filter === 'all' ? '' : `?status=${filter}`;
   const { data, reload } = useLiveData<Ticket[]>(`/api/tickets${query}`, { event: 'soc:tickets', intervalMs: 60_000 });
   const { data: metrics } = useLiveData<Metrics>('/api/tickets/metrics', { event: 'soc:tickets', intervalMs: 300_000 });
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return (data ?? []).filter((t) => !q || [t.title, t.serverName, t.assigneeName, `#${t.number}`].some((v) => v?.toLowerCase().includes(q)));
-  }, [data, search]);
+    const prio: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+    return (data ?? [])
+      .filter((t) => !q || [t.title, t.serverName, t.assigneeName, `#${t.number}`].some((v) => v?.toLowerCase().includes(q)))
+      .filter((t) => !priority || t.priority === priority)
+      .filter((t) => !assignee || (assignee === '__none' ? !t.assigneeName : t.assigneeName === assignee))
+      .sort((a, b) => Number(Boolean(b.overdue)) - Number(Boolean(a.overdue)) || prio[a.priority] - prio[b.priority] || +new Date(b.updatedAt) - +new Date(a.updatedAt));
+  }, [data, search, priority, assignee]);
+  const assignees = useMemo(() => [...new Set((data ?? []).map((t) => t.assigneeName).filter(Boolean) as string[])].sort(), [data]);
 
   return (
     <div className="space-y-4">
@@ -306,6 +320,7 @@ export default function TicketsView({ canWrite }: { canWrite: boolean }) {
             [
               ['active', 'Activos'],
               ['mine', 'Míos'],
+              ['overdue', 'Vencidos'],
               ['RESOLVED', 'Resueltos'],
               ['CLOSED', 'Cerrados'],
               ['all', 'Todos'],
@@ -320,7 +335,26 @@ export default function TicketsView({ canWrite }: { canWrite: boolean }) {
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={priority} onChange={(e) => setPriority(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs">
+            <option value="">Toda prioridad</option>
+            <option value="CRITICAL">Crítica</option>
+            <option value="HIGH">Alta</option>
+            <option value="MEDIUM">Media</option>
+            <option value="LOW">Baja</option>
+          </select>
+          <select value={assignee} onChange={(e) => setAssignee(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs">
+            <option value="">Todo responsable</option>
+            <option value="__none">Sin asignar</option>
+            {assignees.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+          <a href={`${API_URL}/api/tickets/export.csv`} className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50" title="Exportar todos los tickets a Excel (CSV)">
+            <Download className="h-3.5 w-3.5" /> CSV
+          </a>
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar ticket..." className="w-48 rounded-lg border border-slate-300 py-1.5 pl-8 pr-3 text-xs outline-none focus:border-brand-500" />
@@ -351,6 +385,11 @@ export default function TicketsView({ canWrite }: { canWrite: boolean }) {
                   <span className="font-mono text-slate-400">#{t.number}</span>
                   <span className={`rounded border px-1.5 ${TICKET_STATUS[t.status].badge}`}>{TICKET_STATUS[t.status].label}</span>
                   <span className={`rounded border px-1.5 ${SEVERITY_STYLES[t.priority]}`}>{PRIORITY_LABEL[t.priority]}</span>
+                  {t.overdue && ['OPEN', 'IN_PROGRESS', 'WAITING'].includes(t.status) && (
+                    <span className="flex items-center gap-0.5 rounded bg-red-600 px-1.5 font-semibold text-white">
+                      <AlarmClock className="h-3 w-3" /> vencido
+                    </span>
+                  )}
                   <span className="ml-auto text-slate-400">{timeAgo(t.updatedAt)}</span>
                 </span>
                 <span className="mt-1 block truncate text-xs font-semibold text-slate-800">{t.title}</span>
@@ -373,7 +412,7 @@ export default function TicketsView({ canWrite }: { canWrite: boolean }) {
           )}
         </div>
       </div>
-      {creating && <CreateTicketModal onClose={() => setCreating(false)} onCreated={(id) => setSelected(id)} />}
+      {creating && <CreateTicketModal servers={servers} onClose={() => setCreating(false)} onCreated={(id) => setSelected(id)} />}
     </div>
   );
 }

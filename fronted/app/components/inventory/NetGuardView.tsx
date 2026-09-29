@@ -5,9 +5,9 @@ import { CheckCircle2, Crosshair, Radar, Router, ShieldAlert, ShieldCheck, Smart
 import { timeAgo } from '../../lib/health';
 import { useToast } from '../Toast';
 import { API_URL, useLiveData } from './useLiveData';
+import { NetworkGroup, networkOf, sortNetKeys, useNetworks } from './networks';
 import type { NetGuardOverview, NetLocation } from '../../types';
 
-const card = 'rounded-xl border border-slate-200 bg-white p-4';
 
 function Location({ loc }: { loc: NetLocation }) {
   const where = loc.switchName
@@ -38,6 +38,7 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
   const [macQuery, setMacQuery] = useState('');
   const [located, setLocated] = useState<Record<string, NetLocation | 'loading'>>({});
   const [showRandom, setShowRandom] = useState(false);
+  const nets = useNetworks();
 
   const post = async (path: string, okMsg: string) => {
     const res = await fetch(`${API_URL}${path}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -68,6 +69,35 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
   const devices = data.newDevices.filter((d) => showRandom || !d.randomized);
   const allOk = rogue.length === 0 && badGw.length === 0;
   const queryLoc = located[macQuery.trim().toLowerCase()];
+
+  // Todo agrupado por la red (gateway) de cada sede.
+  type Group = {
+    key: string;
+    label: string;
+    gateway: string | null;
+    servers: string[];
+    gateways: NetGuardOverview['gateways'];
+    dhcp: NetGuardOverview['dhcpServers'];
+    devices: NetGuardOverview['newDevices'];
+  };
+  const byKey = new Map<string, Group>();
+  const groupFor = (ip: string | null | undefined): Group => {
+    const n = networkOf(ip, nets);
+    const g = byKey.get(n.key) ?? { key: n.key, label: n.label, gateway: n.gateway, servers: [...n.servers], gateways: [], dhcp: [], devices: [] };
+    byKey.set(n.key, g);
+    return g;
+  };
+  const serverNet = new Map<string, Group>();
+  for (const x of data.gateways) {
+    const g = groupFor(x.gatewayIp);
+    g.gateway = g.gateway ?? x.gatewayIp;
+    if (!g.servers.includes(x.serverName)) g.servers.push(x.serverName);
+    g.gateways.push(x);
+    serverNet.set(x.serverId, g);
+  }
+  for (const d of data.dhcpServers) (serverNet.get(d.serverId) ?? groupFor(d.dhcpServer)).dhcp.push(d);
+  for (const d of devices) groupFor(d.ip).devices.push(d);
+  const groups = [...byKey.values()].sort((a, b) => sortNetKeys(a.key, b.key));
 
   return (
     <div className="space-y-4">
@@ -102,166 +132,188 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
       </div>
       {queryLoc && queryLoc !== 'loading' && <Location loc={queryLoc} />}
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <div className={card}>
-          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-700">
-            <Radar className="h-4 w-4 text-slate-400" /> Servidores DHCP que respondieron (24 h)
-          </h3>
-          {data.dhcpServers.length === 0 ? (
-            <p className="text-xs text-slate-400">Todavía ningún agente informó la prueba de DHCP (agente 1.14.0 o superior).</p>
-          ) : (
-            <ul className="divide-y divide-slate-100 text-xs">
-              {data.dhcpServers.map((d) => (
-                <li key={d.id} className="py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${d.authorized ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                      {d.authorized ? 'Autorizado' : 'NO AUTORIZADO'}
-                    </span>
-                    <span className="font-mono font-semibold text-slate-800">{d.dhcpServer}</span>
-                    {d.mac && <span className="font-mono text-slate-500">{d.mac}</span>}
-                    {d.vendor && <span className="text-slate-500">{d.vendor}</span>}
-                    <span className="ml-auto text-[10px] text-slate-400">visto por {d.serverName} · {timeAgo(d.lastSeenAt)}</span>
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-slate-500">
-                    Ofrece {d.offeredIp ?? '—'} · gateway {d.router ?? '—'}
-                    {d.dns.length ? ` · DNS ${d.dns.join(', ')}` : ''}
-                  </p>
-                  {!d.authorized && (
-                    <div className="mt-1 flex flex-wrap gap-1.5">
-                      {d.mac && (
-                        <button onClick={() => locate(d.mac!)} className="rounded border border-sky-200 px-2 py-0.5 text-[10px] text-sky-700 hover:bg-sky-50">
-                          Ubicar equipo
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <button
-                          onClick={() => window.confirm(`¿Aprobar ${d.dhcpServer} como DHCP legítimo?`) && post(`/api/netguard/dhcp/${d.dhcpServer}/authorize`, 'DHCP aprobado')}
-                          className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
-                        >
-                          Es legítimo: aprobar
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {d.mac && located[d.mac] && located[d.mac] !== 'loading' && <Location loc={located[d.mac] as NetLocation} />}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className={card}>
-          <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-700">
-            <Router className="h-4 w-4 text-slate-400" /> Gateway de cada servidor (MAC)
-          </h3>
-          {data.gateways.length === 0 ? (
-            <p className="text-xs text-slate-400">Sin datos todavía.</p>
-          ) : (
-            <ul className="divide-y divide-slate-100 text-xs">
-              {data.gateways.map((g) => (
-                <li key={g.serverId} className="py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {g.ok ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : <ShieldAlert className="h-3.5 w-3.5 text-red-600" />}
-                    <span className="font-semibold text-slate-800">{g.serverName}</span>
-                    <span className="font-mono text-slate-500">→ {g.gatewayIp}</span>
-                    <span className="ml-auto text-[10px] text-slate-400">{timeAgo(g.updatedAt)}</span>
-                  </div>
-                  <p className="mt-0.5 font-mono text-[11px] text-slate-500">
-                    habitual {g.baselineMac ?? '—'} {g.baselineVendor ? `(${g.baselineVendor})` : ''}
-                    {!g.ok && (
-                      <span className="text-red-700">
-                        {' '}
-                        · ahora {g.currentMac} {g.currentVendor ? `(${g.currentVendor})` : ''}
-                      </span>
-                    )}
-                  </p>
-                  {!g.ok && (
-                    <div className="mt-1 flex flex-wrap gap-1.5">
-                      {g.currentMac && (
-                        <button onClick={() => locate(g.currentMac!)} className="rounded border border-sky-200 px-2 py-0.5 text-[10px] text-sky-700 hover:bg-sky-50">
-                          Ubicar equipo
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <button
-                          onClick={() => window.confirm('¿Se reemplazó el firewall/router? La nueva MAC pasa a ser la habitual.') && post(`/api/netguard/gateway/${g.serverId}/accept`, 'Nueva MAC aceptada')}
-                          className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
-                        >
-                          Cambio planificado: aceptar
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {g.currentMac && located[g.currentMac] && located[g.currentMac] !== 'loading' && !g.ok && <Location loc={located[g.currentMac] as NetLocation} />}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      {groups.length === 0 && <p className="py-6 text-center text-xs text-slate-400">Todavía ningún agente informó datos de red (agente 1.14.0 o superior).</p>}
+      <div className="flex items-center justify-between text-[11px] text-slate-500">
+        <span>Agrupado por gateway / red de cada sede.</span>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={showRandom} onChange={(e) => setShowRandom(e.target.checked)} />
+          <Smartphone className="h-3 w-3" /> Mostrar celulares (MAC aleatoria)
+        </label>
       </div>
+      {groups.map((g) => {
+        const problems = g.dhcp.filter((d) => !d.authorized).length + g.gateways.filter((x) => !x.ok).length;
+        return (
+          <NetworkGroup
+            key={g.key}
+            label={g.label}
+            gateway={g.gateway}
+            servers={g.servers}
+            count={g.devices.length}
+            defaultOpen={problems > 0 || groups.length <= 3}
+            badge={
+              problems > 0 ? (
+                <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">{problems} problema(s)</span>
+              ) : (
+                <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">OK</span>
+              )
+            }
+          >
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div>
+                <h4 className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                  <Radar className="h-3.5 w-3.5 text-slate-400" /> Servidores DHCP que respondieron (24 h)
+                </h4>
+                {g.dhcp.length === 0 ? (
+                  <p className="text-[11px] text-slate-400">Sin pruebas de DHCP en esta red.</p>
+                ) : (
+                  <ul className="divide-y divide-slate-100 text-xs">
+                    {g.dhcp.map((d) => (
+                      <li key={d.id} className="py-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${d.authorized ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                            {d.authorized ? 'Autorizado' : 'NO AUTORIZADO'}
+                          </span>
+                          <span className="font-mono font-semibold text-slate-800">{d.dhcpServer}</span>
+                          {d.mac && <span className="font-mono text-slate-500">{d.mac}</span>}
+                          {d.vendor && <span className="text-slate-500">{d.vendor}</span>}
+                          <span className="ml-auto text-[10px] text-slate-400">
+                            visto por {d.serverName} · {timeAgo(d.lastSeenAt)}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-slate-500">
+                          Ofrece {d.offeredIp ?? '—'} · gateway {d.router ?? '—'}
+                          {d.dns.length ? ` · DNS ${d.dns.join(', ')}` : ''}
+                        </p>
+                        {!d.authorized && (
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {d.mac && (
+                              <button onClick={() => locate(d.mac!)} className="rounded border border-sky-200 px-2 py-0.5 text-[10px] text-sky-700 hover:bg-sky-50">
+                                Ubicar equipo
+                              </button>
+                            )}
+                            {isAdmin && (
+                              <button
+                                onClick={() => window.confirm(`¿Aprobar ${d.dhcpServer} como DHCP legítimo?`) && post(`/api/netguard/dhcp/${d.dhcpServer}/authorize`, 'DHCP aprobado')}
+                                className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+                              >
+                                Es legítimo: aprobar
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {d.mac && located[d.mac] && located[d.mac] !== 'loading' && <Location loc={located[d.mac] as NetLocation} />}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <h4 className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                  <Router className="h-3.5 w-3.5 text-slate-400" /> MAC del gateway vista por cada servidor
+                </h4>
+                {g.gateways.length === 0 ? (
+                  <p className="text-[11px] text-slate-400">Ningún agente en esta red informa su gateway.</p>
+                ) : (
+                  <ul className="divide-y divide-slate-100 text-xs">
+                    {g.gateways.map((x) => (
+                      <li key={x.serverId} className="py-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {x.ok ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : <ShieldAlert className="h-3.5 w-3.5 text-red-600" />}
+                          <span className="font-semibold text-slate-800">{x.serverName}</span>
+                          <span className="font-mono text-slate-500">→ {x.gatewayIp}</span>
+                          <span className="ml-auto text-[10px] text-slate-400">{timeAgo(x.updatedAt)}</span>
+                        </div>
+                        <p className="mt-0.5 font-mono text-[11px] text-slate-500">
+                          habitual {x.baselineMac ?? '—'} {x.baselineVendor ? `(${x.baselineVendor})` : ''}
+                          {!x.ok && (
+                            <span className="text-red-700">
+                              {' '}
+                              · ahora {x.currentMac} {x.currentVendor ? `(${x.currentVendor})` : ''}
+                            </span>
+                          )}
+                        </p>
+                        {!x.ok && (
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {x.currentMac && (
+                              <button onClick={() => locate(x.currentMac!)} className="rounded border border-sky-200 px-2 py-0.5 text-[10px] text-sky-700 hover:bg-sky-50">
+                                Ubicar equipo
+                              </button>
+                            )}
+                            {isAdmin && (
+                              <button
+                                onClick={() => window.confirm('¿Se reemplazó el firewall/router? La nueva MAC pasa a ser la habitual.') && post(`/api/netguard/gateway/${x.serverId}/accept`, 'Nueva MAC aceptada')}
+                                className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+                              >
+                                Cambio planificado: aceptar
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {!x.ok && x.currentMac && located[x.currentMac] && located[x.currentMac] !== 'loading' && <Location loc={located[x.currentMac] as NetLocation} />}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
 
-      <div className={card}>
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-slate-700">Equipos nuevos en la red (14 días)</h3>
-          <label className="flex items-center gap-1.5 text-[11px] text-slate-500">
-            <input type="checkbox" checked={showRandom} onChange={(e) => setShowRandom(e.target.checked)} />
-            <Smartphone className="h-3 w-3" /> Mostrar celulares (MAC aleatoria)
-          </label>
-        </div>
-        {devices.length === 0 ? (
-          <p className="text-xs text-slate-400">Ningún equipo nuevo.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-400">
-                  <th className="py-1.5 pr-3 font-medium">MAC / fabricante</th>
-                  <th className="py-1.5 pr-3 font-medium">IP / nombre</th>
-                  <th className="py-1.5 pr-3 font-medium">Primera vez</th>
-                  <th className="py-1.5 pr-3 font-medium">Estado</th>
-                  <th className="py-1.5" />
-                </tr>
-              </thead>
-              <tbody>
-                {devices.map((d) => {
-                  const loc = located[d.mac];
-                  return (
-                    <tr key={d.mac} className="border-b border-slate-100 align-top">
-                      <td className="py-1.5 pr-3">
-                        <span className="block font-mono text-slate-800">{d.mac}</span>
-                        <span className="text-[10px] text-slate-400">{d.vendor ?? 'desconocido'}</span>
-                        {loc && loc !== 'loading' && <Location loc={loc} />}
-                      </td>
-                      <td className="py-1.5 pr-3">
-                        <span className="block font-mono">{d.ip ?? '—'}</span>
-                        <span className="text-[10px] text-slate-400">{d.hostname ?? ''}</span>
-                      </td>
-                      <td className="py-1.5 pr-3 text-slate-500">{timeAgo(d.firstSeenAt)}</td>
-                      <td className="py-1.5 pr-3">
-                        {d.approved ? (
-                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">Aprobado</span>
-                        ) : (
-                          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">Sin revisar</span>
-                        )}
-                      </td>
-                      <td className="space-x-1 whitespace-nowrap py-1.5 text-right">
-                        <button onClick={() => locate(d.mac)} className="rounded border border-sky-200 px-2 py-0.5 text-[10px] text-sky-700 hover:bg-sky-50">
-                          Ubicar
-                        </button>
-                        {!d.approved && canWrite && (
-                          <button onClick={() => post(`/api/netguard/devices/${d.mac}/approve`, 'Equipo aprobado')} className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50">
-                            Aprobar
-                          </button>
-                        )}
-                      </td>
+            <h4 className="mb-1.5 mt-4 text-xs font-semibold text-slate-700">Equipos nuevos en esta red (14 días)</h4>
+            {g.devices.length === 0 ? (
+              <p className="text-[11px] text-slate-400">Ningún equipo nuevo.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-400">
+                      <th className="py-1.5 pr-3 font-medium">MAC / fabricante</th>
+                      <th className="py-1.5 pr-3 font-medium">IP / nombre</th>
+                      <th className="py-1.5 pr-3 font-medium">Primera vez</th>
+                      <th className="py-1.5 pr-3 font-medium">Estado</th>
+                      <th className="py-1.5" />
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                  </thead>
+                  <tbody>
+                    {g.devices.map((d) => {
+                      const loc = located[d.mac];
+                      return (
+                        <tr key={d.mac} className="border-b border-slate-100 align-top">
+                          <td className="py-1.5 pr-3">
+                            <span className="block font-mono text-slate-800">{d.mac}</span>
+                            <span className="text-[10px] text-slate-400">{d.vendor ?? 'desconocido'}</span>
+                            {loc && loc !== 'loading' && <Location loc={loc} />}
+                          </td>
+                          <td className="py-1.5 pr-3">
+                            <span className="block font-mono">{d.ip ?? '—'}</span>
+                            <span className="text-[10px] text-slate-400">{d.hostname ?? ''}</span>
+                          </td>
+                          <td className="py-1.5 pr-3 text-slate-500">{timeAgo(d.firstSeenAt)}</td>
+                          <td className="py-1.5 pr-3">
+                            {d.approved ? (
+                              <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">Aprobado</span>
+                            ) : (
+                              <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">Sin revisar</span>
+                            )}
+                          </td>
+                          <td className="space-x-1 whitespace-nowrap py-1.5 text-right">
+                            <button onClick={() => locate(d.mac)} className="rounded border border-sky-200 px-2 py-0.5 text-[10px] text-sky-700 hover:bg-sky-50">
+                              Ubicar
+                            </button>
+                            {!d.approved && canWrite && (
+                              <button onClick={() => post(`/api/netguard/devices/${d.mac}/approve`, 'Equipo aprobado')} className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50">
+                                Aprobar
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </NetworkGroup>
+        );
+      })}
     </div>
   );
 }

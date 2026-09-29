@@ -23,7 +23,7 @@ const loginSchema = z
 
 const backupStatusSchema = z
   .object({
-    result: z.enum(['SUCCESS', 'WARNING', 'FAILED', 'NOT_CONFIGURED', 'UNKNOWN']),
+    result: z.enum(['SUCCESS', 'RUNNING', 'WARNING', 'FAILED', 'NOT_CONFIGURED', 'UNKNOWN']),
     method: z.string().min(1).max(100),
     lastBackupAt: z.string().datetime().optional(),
     targetPath: z.string().max(500).optional(),

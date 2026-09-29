@@ -481,6 +481,8 @@ async function processInventory(server, payload) {
       reserved: scope.reserved ?? 0,
       percentInUse: scope.percentInUse ?? 0,
       addresses,
+      gateway: scope.router ?? null,
+      source: 'dhcp',
       serverId: server.id,
     });
   }
@@ -506,6 +508,7 @@ async function processInventory(server, payload) {
       reserved: 0,
       percentInUse: Math.round((used / addresses.length) * 1000) / 10,
       addresses,
+      source: 'static',
       serverId: server.id,
     });
   }
@@ -514,7 +517,7 @@ async function processInventory(server, payload) {
     await prisma.dhcpScope.upsert({ where: { id: row.id }, create: row, update: row });
   }
   if (roles.dhcp && scopes.length > 0) {
-    await prisma.dhcpScope.deleteMany({ where: { serverId: server.id, id: { notIn: scopeRows.map((r) => r.id) } } });
+    await prisma.dhcpScope.deleteMany({ where: { serverId: server.id, source: { not: 'segment' }, id: { notIn: scopeRows.map((r) => r.id) } } });
   }
 
   // 7. Estado del inventario en el servidor que lo reporta.
@@ -720,6 +723,128 @@ async function evaluateInventoryAlerts(server, ctx) {
   );
 }
 
+// --- Redes de cada sede (barridas por el agente local) ----------------------
+// Cada agente barre la subred de su placa de red (la de su gateway) cada
+// ~15 min. Si esa red ya es un ambito DHCP del recolector, no se pisa; si no,
+// queda como "segment" y aparece en el Mapa de IPs agrupada por gateway.
+const SEGMENT_STALE_MS = 24 * 3600000;
+const SEGMENT_MIN_INTERVAL_MS = 10 * 60000;
+
+async function segmentScanDue(server, localNets) {
+  const out = [];
+  for (const n of localNets ?? []) {
+    const [net, bits] = String(n.cidr ?? '').split('/');
+    const prefix = Number(bits);
+    const hosts = subnetHosts(net, prefix);
+    if (hosts.length === 0 || hosts.length > 1022) continue;
+    const id = intToIp(hosts[0] - 1);
+    // eslint-disable-next-line no-await-in-loop
+    const row = await prisma.dhcpScope.findUnique({ where: { id }, select: { source: true, serverId: true, updatedAt: true } });
+    if (row && row.source !== 'segment') continue; // ya lo cubre el DHCP del recolector
+    if (row && row.serverId !== server.id && Date.now() - row.updatedAt < SEGMENT_MIN_INTERVAL_MS * 2) continue; // lo barre otro agente
+    if (row && row.serverId === server.id && Date.now() - row.updatedAt < SEGMENT_MIN_INTERVAL_MS) continue;
+    out.push(n.cidr);
+  }
+  return out;
+}
+
+async function ingestSegments(server, report) {
+  const lastByHost = await lastUserByHost();
+  const hostUsers = new Map(lastByHost.map((r) => [r.hostname, r.username]));
+  const stored = [];
+  for (const seg of report.networks ?? []) {
+    const [net, bits] = String(seg.cidr ?? '').split('/');
+    const prefix = Number(bits);
+    const hosts = subnetHosts(net, prefix);
+    if (hosts.length === 0 || hosts.length > 1022) continue;
+    const id = intToIp(hosts[0] - 1);
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await prisma.dhcpScope.findUnique({ where: { id }, select: { source: true } });
+    if (existing && existing.source !== 'segment') continue;
+    const mask = intToIp((0xffffffff << (32 - prefix)) >>> 0);
+    const alive = seg.alive ?? {};
+    const addresses = buildAddressMap({ scopeId: id, mask, start: '0.0.0.0', end: '0.0.0.0' }, alive, hostUsers);
+    for (const a of addresses) {
+      const name = alive[a.ip]?.name;
+      if (name && !a.h) a.h = shortHost(name);
+    }
+    const used = addresses.filter((a) => a.a).length;
+    const row = {
+      id,
+      name: `Red ${seg.cidr} · ${server.name}`,
+      mask,
+      startRange: intToIp(hosts[0]),
+      endRange: intToIp(hosts[hosts.length - 1]),
+      state: 'Segment',
+      leaseHours: null,
+      inUse: used,
+      free: addresses.length - used,
+      reserved: 0,
+      percentInUse: Math.round((used / addresses.length) * 1000) / 10,
+      addresses,
+      gateway: seg.gateway ?? null,
+      source: 'segment',
+      serverId: server.id,
+    };
+    // eslint-disable-next-line no-await-in-loop
+    await prisma.dhcpScope.upsert({ where: { id }, create: row, update: row });
+    stored.push(id);
+    // Equipos nunca vistos tambien en las redes de las sedes.
+    const devices = Object.entries(alive)
+      .filter(([, v]) => v?.mac)
+      .map(([ip, v]) => ({ mac: v.mac, ip, hostname: v.name ? shortHost(v.name) : null, source: 'arp' }));
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await netGuard.observeDevices(server, devices);
+    } catch (err) {
+      console.error('Guardian de red: error registrando equipos de la sede', err.message);
+    }
+  }
+  await prisma.dhcpScope.deleteMany({ where: { source: 'segment', updatedAt: { lt: new Date(Date.now() - SEGMENT_STALE_MS) } } });
+  if (stored.length) broadcast({ type: 'INVENTORY_UPDATE', at: new Date().toISOString(), partial: 'segments' });
+  return { stored };
+}
+
+// Redes conocidas agrupadas por gateway (para agrupar Mapa de IPs, Seguridad
+// de red y Sesiones): ambitos DHCP, redes de sedes y gateways de los agentes.
+async function networksByGateway() {
+  const [scopes, gateways, servers] = await Promise.all([
+    prisma.dhcpScope.findMany({ select: { id: true, name: true, mask: true, gateway: true, source: true, serverId: true } }),
+    prisma.netGatewayState.findMany({ select: { serverId: true, gatewayIp: true } }),
+    prisma.server.findMany({ select: { id: true, name: true, ipAddress: true } }),
+  ]);
+  const serverName = new Map(servers.map((s) => [s.id, s.name]));
+  const nets = new Map();
+  const add = (net, mask, patch) => {
+    const key = `${net}/${maskToPrefix(mask) ?? 24}`;
+    const cur = nets.get(key) ?? { cidr: key, network: net, mask, gateway: null, servers: [], scopes: [], sources: [] };
+    if (patch.gateway && !cur.gateway) cur.gateway = patch.gateway;
+    if (patch.server && !cur.servers.includes(patch.server)) cur.servers.push(patch.server);
+    if (patch.scope) cur.scopes.push(patch.scope);
+    if (patch.source && !cur.sources.includes(patch.source)) cur.sources.push(patch.source);
+    nets.set(key, cur);
+  };
+  for (const s of scopes) add(s.id, s.mask, { gateway: s.gateway, scope: s.id, source: s.source ?? 'dhcp', server: s.source === 'segment' ? serverName.get(s.serverId) : null });
+  for (const g of gateways) {
+    const net = intToIp((ipToInt(g.gatewayIp) & 0xffffff00) >>> 0);
+    add(net, '255.255.255.0', { gateway: g.gatewayIp, server: serverName.get(g.serverId), source: 'agent' });
+  }
+  for (const s of servers) {
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(s.ipAddress ?? '')) continue;
+    const net = intToIp((ipToInt(s.ipAddress) & 0xffffff00) >>> 0);
+    const key = [...nets.keys()].find((k) => {
+      const [n, b] = k.split('/');
+      const size = 2 ** (32 - Number(b));
+      const base = ipToInt(n);
+      const ip = ipToInt(s.ipAddress);
+      return ip >= base && ip < base + size;
+    });
+    if (key) add(nets.get(key).network, nets.get(key).mask, { server: s.name });
+    else add(net, '255.255.255.0', { server: s.name, source: 'agent' });
+  }
+  return [...nets.values()].sort((a, b) => (ipToInt(a.network) ?? 0) - (ipToInt(b.network) ?? 0));
+}
+
 // --- Un solo recolector ------------------------------------------------------
 // Varios servidores pueden tener el rol de AD (controladores de dominio
 // secundarios) o de impresion; si todos hicieran inventario, cada impresora,
@@ -749,7 +874,8 @@ async function purgeNonCollectorData(collectorId) {
         OR: [{ type: { in: INVENTORY_ALERT_TYPES } }, { dedupKey: { startsWith: 'LOGIN_FAILURE:ad:' } }],
       },
     }),
-    prisma.dhcpScope.deleteMany({ where: { serverId: { not: collectorId } } }),
+    // Las redes que barre cada agente en su sede (source = segment) no se tocan.
+    prisma.dhcpScope.deleteMany({ where: { serverId: { not: collectorId }, OR: [{ source: null }, { source: { not: 'segment' } }] } }),
     prisma.server.updateMany({
       where: { id: { not: collectorId }, inventoryAt: { not: null } },
       data: { inventoryAt: null, inventorySummary: Prisma.DbNull },
@@ -764,6 +890,9 @@ async function purgeNonCollectorData(collectorId) {
 
 module.exports = {
   ingestLogons,
+  ingestSegments,
+  segmentScanDue,
+  networksByGateway,
   activeSessionOf,
   normalizeMac,
   shortHost,

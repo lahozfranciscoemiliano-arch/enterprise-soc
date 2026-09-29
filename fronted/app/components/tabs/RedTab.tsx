@@ -1,6 +1,7 @@
 'use client';
 
 import SpeedTestPanel from '../SpeedTestPanel';
+import Collapsible from '../Collapsible';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -193,6 +194,7 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
 
       {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
 
+      <Collapsible id="red-internet">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
@@ -282,9 +284,13 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
           })}
         </div>
       </div>
+      </Collapsible>
 
+      <Collapsible id="red-monitores">
       <ServiceMonitorsPanel isAdmin={isAdmin} />
+      </Collapsible>
 
+      <Collapsible id="red-unifi">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
@@ -511,9 +517,11 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
           </>
         )}
       </div>
+      </Collapsible>
 
       {openSite && <UnifiSiteModal site={openSite} devices={devicesBySite.get(openSite.id) ?? []} onClose={() => setOpenSiteId(null)} />}
 
+      <Collapsible id="red-incidentes">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-slate-800">
           <AlertTriangle className="h-4 w-4 text-slate-400" />
@@ -539,8 +547,11 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
           </ul>
         )}
       </div>
+      </Collapsible>
 
+      <Collapsible id="red-velocidad">
       <SpeedTestPanel isAdmin={isAdmin} canWrite />
+      </Collapsible>
     </div>
   );
 }

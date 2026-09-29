@@ -11,11 +11,12 @@ import type { BackupHistoryEntry, BackupResult, ServerSummary } from '../../type
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
-const RESULT_ORDER: Record<BackupResult, number> = { FAILED: 0, WARNING: 1, UNKNOWN: 2, NOT_CONFIGURED: 3, SUCCESS: 4 };
+const RESULT_ORDER: Record<BackupResult, number> = { FAILED: 0, WARNING: 1, RUNNING: 2, UNKNOWN: 3, NOT_CONFIGURED: 4, SUCCESS: 5 };
 
 const RESULT_FILTERS: { id: BackupResult | 'ALL'; label: string }[] = [
   { id: 'ALL', label: 'Todos' },
   { id: 'SUCCESS', label: 'Éxito' },
+  { id: 'RUNNING', label: 'En proceso' },
   { id: 'WARNING', label: 'Advertencia' },
   { id: 'FAILED', label: 'Fallido' },
   { id: 'NOT_CONFIGURED', label: 'No configurado' },
@@ -49,7 +50,7 @@ export default function BackupsTab({ servers: allServers }: { servers: ServerSum
   const [onlySuccess, setOnlySuccess] = useState(true);
 
   const resultCounts = useMemo(() => {
-    const counts: Record<BackupResult, number> = { SUCCESS: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
+    const counts: Record<BackupResult, number> = { SUCCESS: 0, RUNNING: 0, WARNING: 0, FAILED: 0, NOT_CONFIGURED: 0, UNKNOWN: 0 };
     for (const s of servers) counts[effectiveResult(s)]++;
     return counts;
   }, [servers]);

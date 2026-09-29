@@ -799,6 +799,31 @@ nuevos que un backend viejo rechaza).
 - **Backups**: la duración se calcula con los eventos de inicio y fin del Visor
   de eventos (1 → 4/14), también cuando el canal tiene otro nombre.
 
+## 42. Backups "En proceso", redes por gateway y paneles contraíbles (agente 1.15.0)
+
+- **Backup en proceso**: si el backup está corriendo (servicio `wbengine`
+  activo o evento de inicio sin fin), se informa **En proceso** en vez de un
+  resultado y no se abren ni se cierran alertas hasta que termine. Si WMI
+  informa un error pero el Visor de eventos muestra la última corrida exitosa
+  más reciente, manda el Visor de eventos. Un "fallido" se confirma en 2
+  chequeos seguidos (~30 min) antes de alertar.
+- **Velocidad de internet**: se mide con **Speedtest by Ookla** (el agente
+  descarga el CLI oficial la primera vez en la carpeta `speedtest`). Cada
+  resultado guarda el ISP, el servidor de prueba, la pérdida de paquetes y el
+  enlace público en speedtest.net. Si el CLI no se puede usar, respaldo con
+  Cloudflare.
+- **Redes por gateway**: cada agente barre la red de su placa (la de su
+  gateway) cada ~15 min, una sola vez por red. El Mapa de IPs, Seguridad de red
+  y Sesiones quedan agrupados por gateway / red de cada sede. Los ámbitos DHCP
+  del dominio ahora incluyen su gateway (opción 3).
+- **Paneles contraíbles**: Red e Internet, Aplicaciones (el detalle de cortes
+  arranca contraído) y Topología (cada sede y cada rama). El estado se recuerda
+  por navegador.
+- **Operaciones**: indicadores (abiertos, vencidos, sin responsable, SLA
+  cumplido, remediaciones OK), plazos por prioridad (crítica 4 h, alta 8 h,
+  media 24 h, baja 72 h), filtros, exportación a CSV, servidor al crear un
+  ticket y nota automática cuando la alerta vinculada se normaliza sola.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real
