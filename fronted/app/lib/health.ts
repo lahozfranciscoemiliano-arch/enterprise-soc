@@ -1,25 +1,36 @@
-import type { BackupResult, EventStatus, HealthStatus, Severity } from '../types';
+import type { BackupResult, DataVolume, EffectiveThresholds, EventStatus, HealthStatus, Severity } from '../types';
 
-// Debe reflejar los mismos umbrales que enterprise-soc/backend/src/services/alertEngine.js
-export const RESOURCE_THRESHOLDS = {
+// Valores de fabrica de enterprise-soc/backend/src/services/alertEngine.js.
+// Solo de respaldo: /api/servers manda en effectiveThresholds los que rigen de
+// verdad para cada servidor (cambiados en Admin -> Configuracion o en el
+// propio servidor), y son los que hay que usar para no contradecir al backend.
+export const RESOURCE_THRESHOLDS: EffectiveThresholds = {
   cpuUsage: { high: 90, medium: 75 },
   memoryUsage: { high: 90, medium: 80 },
   diskUsage: { high: 95, medium: 85 },
-} as const;
+};
 
+/** Respaldo local; la salud "oficial" la calcula el backend (tambien en vivo, por WebSocket). */
 export function getHealthStatus(
   cpuUsage: number | null,
   memoryUsage: number | null,
-  diskUsage: number | null
+  diskUsage: number | null,
+  thresholds: EffectiveThresholds = RESOURCE_THRESHOLDS,
+  volumes: DataVolume[] = []
 ): HealthStatus {
   if (cpuUsage === null || memoryUsage === null || diskUsage === null) return 'UNKNOWN';
 
   let status: HealthStatus = 'OK';
 
-  for (const [field, rule] of Object.entries(RESOURCE_THRESHOLDS)) {
-    const value = { cpuUsage, memoryUsage, diskUsage }[field as keyof typeof RESOURCE_THRESHOLDS];
-    if (value >= rule.high) return 'CRITICAL';
-    if (value >= rule.medium) status = 'WARNING';
+  const values = { cpuUsage, memoryUsage, diskUsage };
+  for (const field of Object.keys(values) as (keyof EffectiveThresholds)[]) {
+    const rule = thresholds[field];
+    if (values[field] >= rule.high) return 'CRITICAL';
+    if (values[field] >= rule.medium) status = 'WARNING';
+  }
+  for (const v of volumes) {
+    if (v.percent >= thresholds.diskUsage.high) return 'CRITICAL';
+    if (v.percent >= thresholds.diskUsage.medium) status = 'WARNING';
   }
 
   return status;
@@ -27,11 +38,20 @@ export function getHealthStatus(
 
 export type ResourceLevel = 'ok' | 'warning' | 'critical';
 
-export function resourceLevel(value: number, kind: keyof typeof RESOURCE_THRESHOLDS): ResourceLevel {
-  const t = RESOURCE_THRESHOLDS[kind];
+export function resourceLevel(
+  value: number,
+  kind: keyof EffectiveThresholds,
+  thresholds: EffectiveThresholds = RESOURCE_THRESHOLDS
+): ResourceLevel {
+  const t = thresholds[kind];
   if (value >= t.high) return 'critical';
   if (value >= t.medium) return 'warning';
   return 'ok';
+}
+
+/** La unidad de datos mas llena (o null). */
+export function worstVolume(volumes: DataVolume[] | null | undefined): DataVolume | null {
+  return (volumes ?? []).reduce<DataVolume | null>((w, v) => (!w || v.percent > w.percent ? v : w), null);
 }
 
 export const RESOURCE_LEVEL_COLOR: Record<ResourceLevel, { bar: string; track: string; text: string }> = {

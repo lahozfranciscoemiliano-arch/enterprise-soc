@@ -4,18 +4,19 @@ import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, Cpu, Gauge, HardDrive, MemoryStick } from 'lucide-react';
 import ServerDetailModal from './ServerDetailModal';
-import { HEALTH_STYLES, resourceLevel, RESOURCE_LEVEL_COLOR } from '../lib/health';
-import type { SecurityAlert, ServerSummary } from '../types';
+import { HEALTH_STYLES, resourceLevel, RESOURCE_LEVEL_COLOR, worstVolume } from '../lib/health';
+import type { EffectiveThresholds, SecurityAlert, ServerSummary } from '../types';
 
 const COLLAPSED_ROWS = 8;
 
-function MetricBar({ label, value, kind, icon: Icon }: {
+function MetricBar({ label, value, kind, icon: Icon, thresholds }: {
   label: string;
   value: number;
   kind: 'cpuUsage' | 'memoryUsage' | 'diskUsage';
   icon: React.ComponentType<{ className?: string }>;
+  thresholds?: EffectiveThresholds;
 }) {
-  const level = resourceLevel(value, kind);
+  const level = resourceLevel(value, kind, thresholds);
   const color = RESOURCE_LEVEL_COLOR[level];
 
   return (
@@ -39,6 +40,13 @@ function MetricBar({ label, value, kind, icon: Icon }: {
   );
 }
 
+// Disco mas lleno entre C: y las unidades de datos (D:, E:...): un servidor de
+// archivos con E: al 99% no puede verse "verde" por tener C: holgado.
+function diskView(s: ServerSummary & { diskUsage: number }): { value: number; label: string } {
+  const w = worstVolume(s.volumes);
+  return w && w.percent > s.diskUsage ? { value: w.percent, label: `Disco ${w.mount}` } : { value: s.diskUsage, label: 'Disco' };
+}
+
 function FleetStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline gap-1.5">
@@ -58,7 +66,10 @@ export default function ResourceUsagePanel({ servers, alerts }: { servers: Serve
         .filter((s): s is ServerSummary & { cpuUsage: number; memoryUsage: number; diskUsage: number } =>
           s.cpuUsage !== null && s.memoryUsage !== null && s.diskUsage !== null
         )
-        .sort((a, b) => Math.max(b.cpuUsage, b.memoryUsage, b.diskUsage) - Math.max(a.cpuUsage, a.memoryUsage, a.diskUsage)),
+        .sort(
+          (a, b) =>
+            Math.max(b.cpuUsage, b.memoryUsage, diskView(b).value) - Math.max(a.cpuUsage, a.memoryUsage, diskView(a).value)
+        ),
     [servers]
   );
 
@@ -107,6 +118,7 @@ export default function ResourceUsagePanel({ servers, alerts }: { servers: Serve
           <div className="space-y-1.5">
             {visible.map((s, i) => {
               const health = HEALTH_STYLES[s.healthStatus];
+              const disk = diskView(s);
               return (
                 <motion.button
                   key={s.id}
@@ -122,9 +134,9 @@ export default function ResourceUsagePanel({ servers, alerts }: { servers: Serve
                     <span className={`h-2 w-2 shrink-0 rounded-full ${health.dot}`} />
                     <span className="truncate text-sm font-medium text-slate-800">{s.name}</span>
                   </span>
-                  <MetricBar label="CPU" value={s.cpuUsage} kind="cpuUsage" icon={Cpu} />
-                  <MetricBar label="RAM" value={s.memoryUsage} kind="memoryUsage" icon={MemoryStick} />
-                  <MetricBar label="Disco" value={s.diskUsage} kind="diskUsage" icon={HardDrive} />
+                  <MetricBar label="CPU" value={s.cpuUsage} kind="cpuUsage" icon={Cpu} thresholds={s.effectiveThresholds} />
+                  <MetricBar label="RAM" value={s.memoryUsage} kind="memoryUsage" icon={MemoryStick} thresholds={s.effectiveThresholds} />
+                  <MetricBar label={disk.label} value={disk.value} kind="diskUsage" icon={HardDrive} thresholds={s.effectiveThresholds} />
                 </motion.button>
               );
             })}

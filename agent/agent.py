@@ -39,7 +39,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.16.0"
+AGENT_VERSION = "1.16.1"
 
 
 def get_base_dir() -> Path:
@@ -1135,6 +1135,16 @@ def _decode_console_bytes(data: bytes) -> str:
     return data.decode("latin-1", errors="replace")
 
 
+def _tail_lines(text: str, limit: int = 600) -> str:
+    """Ultimos ~limit caracteres de un texto, empezando en un comienzo de
+    linea (output[-600:] cortaba a mitad de palabra: "e(s), Application(s)...")."""
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    cut = tail.find("\n")
+    return tail[cut + 1 :] if 0 <= cut < limit - 80 else tail
+
+
 def check_wbadmin() -> dict[str, Any]:
     """Fallback via 'wbadmin get versions', disponible en Server y en 10/11
     con Backup and Restore (Windows 7) configurado.
@@ -1173,7 +1183,7 @@ def check_wbadmin() -> dict[str, Any]:
         return {
             "result": "UNKNOWN",
             "method": "WBADMIN",
-            "detail": output[-600:] or f"wbadmin devolvio el codigo {proc.returncode}",
+            "detail": _tail_lines(output) or f"wbadmin devolvio el codigo {proc.returncode}",
         }
 
     # Heuristico agnostico al idioma: busca patrones de fecha+hora en la
@@ -1184,13 +1194,13 @@ def check_wbadmin() -> dict[str, Any]:
         return {
             "result": "NOT_CONFIGURED",
             "method": "WBADMIN",
-            "detail": output[-600:] or "No se encontraron versiones de backup.",
+            "detail": _tail_lines(output) or "No se encontraron versiones de backup.",
         }
 
     status: dict[str, Any] = {
         "result": "SUCCESS",
         "method": "WBADMIN",
-        "detail": output[-600:],
+        "detail": _tail_lines(output),
     }
     versions = _parse_wbadmin_versions(output)
     if versions:
@@ -1300,6 +1310,19 @@ def _evt_query(channel: str, xpath: str, max_events: int = 500) -> list[str]:
     return results[:max_events]
 
 
+# Eventos con fecha en el futuro (registros corruptos o de cuando el reloj
+# del equipo estuvo mal puesto): se descartan. En KSFS2 aparecieron eventos
+# de Microsoft-Windows-Backup "del 2098-01-01": pasaban a ser la "ultima
+# corrida" del backup (FALLIDO aunque el de anoche salio bien). En el
+# registro de Seguridad un evento asi dejaria el cursor incremental en el
+# futuro para siempre (ningun evento nuevo seria "posterior").
+EVT_FUTURE_TOLERANCE = timedelta(hours=1)
+
+
+def _is_future(dt: datetime) -> bool:
+    return dt - datetime.now(timezone.utc) > EVT_FUTURE_TOLERANCE
+
+
 def _evt_time_iso(xml: str) -> str | None:
     match = _EVT_TIME_RE.search(xml)
     if not match:
@@ -1310,9 +1333,33 @@ def _evt_time_iso(xml: str) -> str | None:
         base, _, frac = raw.rstrip("Z").partition(".")
         dt = datetime.strptime(base, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
         micro = int((frac + "000000")[:6]) if frac else 0
-        return dt.replace(microsecond=micro).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        dt = dt.replace(microsecond=micro)
+        if _is_future(dt):
+            return None
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     except ValueError:
         return None
+
+
+def _evt_xpath_time(iso: str) -> str:
+    """Hora ISO -> literal para TimeCreated[@SystemTime>'...'] con
+    milisegundos (3 decimales, el formato que arma el propio Visor de
+    eventos y el de la primera consulta, la unica que devolvia eventos).
+    Desde que el cursor pasaba a tener los 6 decimales de _evt_time_iso los
+    DC informaban "lee OK · 0 eventos" para siempre. Se redondea hacia arriba
+    al ms siguiente (para no volver a leer el ultimo evento ya procesado) y
+    nunca queda en el futuro."""
+    now = datetime.now(timezone.utc)
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        dt = now - timedelta(hours=1)
+    if dt.microsecond % 1000:
+        dt = dt.replace(microsecond=dt.microsecond // 1000 * 1000) + timedelta(milliseconds=1)
+    dt = min(dt, now)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
 def _seconds_between(start_iso: str, end_iso: str) -> float:
@@ -1352,6 +1399,11 @@ def _backup_events(max_events: int) -> list[tuple[str, int]]:
         for item in run_powershell_json(PS_BACKUP_EVENTS, timeout=60):
             if isinstance(item, dict) and item.get("id") in ids and item.get("at"):
                 base, _, frac = str(item["at"]).rstrip("Z").partition(".")
+                try:
+                    if _is_future(datetime.strptime(base, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)):
+                        continue
+                except ValueError:
+                    continue
                 events.append((f"{base}.{(frac + '000000')[:6]}Z", int(item["id"])))
     except Exception as exc:
         logger.debug("Get-WinEvent de Microsoft-Windows-Backup no disponible: %s", exc)
@@ -2797,19 +2849,23 @@ def collect_security_events() -> dict[str, Any]:
     anterior (la primera mira las ultimas 24 h). Los inicios de sesion van
     aparte, cada minuto (collect_logon_activity / identity_loop)."""
     global _last_security_query
-    since = _last_security_query or datetime.fromtimestamp(time.time() - 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    time_filter = f"TimeCreated[@SystemTime>'{since}']"
+    since = _last_security_query or datetime.fromtimestamp(time.time() - 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    time_filter = f"TimeCreated[@SystemTime>'{_evt_xpath_time(since)}']"
 
     failures: dict[tuple[str, str | None], int] = {}
     newest = since
 
     for xml in _evt_query_any("Security", f"*[System[(EventID=4771 or EventID=4625) and {time_filter}]]", max_events=5000):
         when = _evt_time_iso(xml)
+        if not when:
+            continue
+        # El cursor avanza tambien con los eventos que se descartan (cuentas
+        # de equipo): si no, se vuelven a leer en cada corrida.
+        newest = max(newest, when)
         data = _evt_data(xml)
         user = data.get("TargetUserName", "")
-        if not when or not user or user.endswith("$"):
+        if not user or user.endswith("$"):
             continue
-        newest = max(newest, when)
         key = (user.lower(), _clean_ip(data.get("IpAddress")))
         failures[key] = failures.get(key, 0) + 1
 
@@ -2865,8 +2921,8 @@ def _local_ips() -> set[str]:
 
 def collect_logon_activity() -> list[dict[str, Any]]:
     global _last_logon_query
-    since = _last_logon_query or datetime.fromtimestamp(time.time() - 12 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    time_filter = f"TimeCreated[@SystemTime>'{since}']"
+    since = _last_logon_query or datetime.fromtimestamp(time.time() - 12 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    time_filter = f"TimeCreated[@SystemTime>'{_evt_xpath_time(since)}']"
     own = _local_ips()
     out: list[dict[str, Any]] = []
     newest = since
@@ -2875,11 +2931,16 @@ def collect_logon_activity() -> list[dict[str, Any]]:
     def accept(xml: str, kind: str) -> None:
         nonlocal newest
         when = _evt_time_iso(xml)
+        if not when:
+            return
+        # El cursor avanza tambien con los eventos descartados (cuentas de
+        # equipo, locales): si no, de noche quedaba horas atras y cada minuto
+        # se releian miles de eventos de las PCs.
+        newest = max(newest, when)
         data = _evt_data(xml)
         user = (data.get("TargetUserName") or "").strip()
-        if not when or user.endswith("$") or user.lower() in _IGNORED_ACCOUNTS:
+        if user.endswith("$") or user.lower() in _IGNORED_ACCOUNTS:
             return
-        newest = max(newest, when)
         ip = _clean_ip(data.get("IpAddress"))
         if not ip or ip in own or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
             return
@@ -3145,7 +3206,13 @@ def snmp_walk(host: str, base: str, limit: int = 24) -> list[tuple[str, Any]]:
 
 def _txt(value: Any) -> str | None:
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace").strip("\x00 ").strip() or None
+        # Muchas impresoras (Lexmark, HP) mandan los textos SNMP en Latin-1 /
+        # cp1252: decodificados como UTF-8 el NOC mostraba "T\ufffdner negro".
+        try:
+            text = value.decode("utf-8")
+        except UnicodeDecodeError:
+            text = value.decode("cp1252", errors="replace")
+        return text.strip("\x00 ").strip() or None
     return None if value is None else str(value)
 
 
@@ -4315,14 +4382,18 @@ def run_remediation(action: str, params: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _stream_bytes(url: str, deadline: float, counter: list[int]) -> None:
-    try:
-        with requests.get(url, stream=True, timeout=10) as r:
-            for chunk in r.iter_content(65536):
-                counter[0] += len(chunk)
-                if time.monotonic() >= deadline:
-                    break
-    except Exception:
-        pass
+    """Descarga repetida de url hasta el deadline. Se valida el codigo HTTP:
+    antes se contaba el cuerpo de un 403 como si fuera la descarga."""
+    while time.monotonic() < deadline:
+        try:
+            with requests.get(url, stream=True, timeout=10) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(65536):
+                    counter[0] += len(chunk)
+                    if time.monotonic() >= deadline:
+                        return
+        except Exception:
+            return
 
 
 def _upload(url: str, deadline: float, counter: list[int], size: int) -> None:
@@ -4429,7 +4500,10 @@ def run_cloudflare_speedtest(seconds: int = 10) -> dict[str, Any]:
     counters = [[0] for _ in range(4)]
     start = time.monotonic()
     deadline = start + seconds
-    threads = [threading.Thread(target=_stream_bytes, args=(f"{base}/__down?bytes=200000000", deadline, c)) for c in counters]
+    # speed.cloudflare.com responde 403 a partir de 100 MB por pedido (con
+    # 200 MB la bajada del respaldo daba siempre 0 Mbps): bloques de 25 MB
+    # repetidos hasta completar el tiempo de la prueba.
+    threads = [threading.Thread(target=_stream_bytes, args=(f"{base}/__down?bytes=25000000", deadline, c)) for c in counters]
     for t in threads:
         t.start()
     for t in threads:
@@ -4447,6 +4521,17 @@ def run_cloudflare_speedtest(seconds: int = 10) -> dict[str, Any]:
     up_secs = max(time.monotonic() - ustart, 0.1)
     up = sum(c[0] for c in ucounters)
     lat.sort()
+    if down == 0 or up == 0:
+        # Sin datos no hay medicion: informarla como 0 Mbps era una "prueba"
+        # que el NOC graficaba y que podia terminar en un reclamo al proveedor.
+        return {
+            "ok": False,
+            "error": f"El respaldo de Cloudflare no pudo medir la {'bajada' if down == 0 else 'subida'}.",
+            "latencyMs": round(lat[len(lat) // 2], 1) if lat else None,
+            "publicIp": get_public_ip(),
+            "provider": "Cloudflare (respaldo)",
+            "at": _utc_now_iso(),
+        }
     return {
         "downloadMbps": round(down * 8 / down_secs / 1e6, 1),
         "uploadMbps": round(up * 8 / up_secs / 1e6, 1),

@@ -95,12 +95,13 @@ function broadcastAlert(event) {
   broadcast({ type: 'SECURITY_ALERT', event });
 }
 
-function broadcastTelemetry(server, telemetry) {
+function broadcastTelemetry(server, telemetry, healthStatus = null) {
   broadcast({
     type: 'TELEMETRY',
     data: {
       serverId: server.id,
       serverName: server.name,
+      healthStatus,
       cpuUsage: telemetry.cpuUsage,
       memoryUsage: telemetry.memoryUsage,
       diskUsage: telemetry.diskUsage,

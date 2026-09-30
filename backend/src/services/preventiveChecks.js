@@ -9,7 +9,7 @@
 // desaparece del siguiente diagnostico.
 const prisma = require('../prismaClient');
 const { getSettings } = require('./settings');
-const { isInMaintenance, resolveThresholds } = require('./alertEngine');
+const { isInMaintenance, resolveThresholds, getEffectiveDefaultThresholds } = require('./alertEngine');
 const { createAndDispatchEvent, autoResolveEvents, resolveCleared } = require('./eventPipeline');
 const { broadcast } = require('../websocket/socketServer');
 
@@ -68,10 +68,12 @@ function activeIsp(server, publicIp) {
 // ---------------------------------------------------------------------------
 // Diagnostico (cada ~5 min)
 // ---------------------------------------------------------------------------
-function evaluateDiagnostics(server, diag, cfg) {
+function evaluateDiagnostics(server, diag, cfg, defaults) {
   const alerts = [];
   const managed = [];
-  const thresholds = resolveThresholds(server).diskUsage;
+  // Con los umbrales globales de Admin -> Configuracion (no los de fabrica):
+  // los mismos que usa la salud del servidor para C:.
+  const thresholds = resolveThresholds(server, defaults).diskUsage;
 
   // Volumenes distintos de C: (C: ya lo cubre el umbral de diskUsage de la
   // telemetria). Mismos umbrales de disco del servidor.
@@ -343,8 +345,8 @@ async function processAgentExtras(server, metadata) {
   }
 
   if (diagnostics) {
-    const cfg = await getSettings(['CRITICAL_SERVICES', 'PATCH_MAX_AGE_DAYS']);
-    const { alerts, managed } = evaluateDiagnostics(server, diagnostics, cfg);
+    const [cfg, defaults] = await Promise.all([getSettings(['CRITICAL_SERVICES', 'PATCH_MAX_AGE_DAYS']), getEffectiveDefaultThresholds()]);
+    const { alerts, managed } = evaluateDiagnostics(server, diagnostics, cfg, defaults);
     await Promise.all(alerts.map((a) => createAndDispatchEvent({ serverId: server.id, serverName: server.name, ...a })));
 
     // Servicios: los SERVICE_DOWN abiertos cuyo servicio ya no figura

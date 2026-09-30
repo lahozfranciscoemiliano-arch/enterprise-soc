@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { DatabaseBackup, RefreshCw, Search, Server, Wrench } from 'lucide-react';
 import ServerDetailModal from '../ServerDetailModal';
 import MetricsPanel from '../MetricsPanel';
-import { BACKUP_STYLES, HEALTH_STYLES, MAINTENANCE_BADGE } from '../../lib/health';
+import { BACKUP_STYLES, HEALTH_STYLES, MAINTENANCE_BADGE, RESOURCE_LEVEL_COLOR, resourceLevel, worstVolume } from '../../lib/health';
 import type { HealthStatus, SecurityAlert, ServerSummary } from '../../types';
 
 type HealthFilter = HealthStatus | 'ALL';
@@ -155,6 +155,10 @@ export default function MonitoreoTab({
             {filteredServers.map((s) => {
               const health = HEALTH_STYLES[s.healthStatus];
               const backup = BACKUP_STYLES[s.backup?.result ?? 'UNKNOWN'];
+              // Unidad de datos (D:, E:...) que ya pasa el umbral de disco: se
+              // muestra junto a C: porque es la que explica el estado.
+              const vol = worstVolume(s.volumes);
+              const volLevel = vol ? resourceLevel(vol.percent, 'diskUsage', s.effectiveThresholds) : 'ok';
               return (
                 <motion.button
                   key={s.id}
@@ -164,28 +168,35 @@ export default function MonitoreoTab({
                   exit={{ opacity: 0, height: 0 }}
                   transition={{ duration: 0.18 }}
                   onClick={() => setModalServerId(s.id)}
-                  className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-left text-xs transition-colors hover:border-slate-300 hover:bg-slate-50"
+                  className="grid w-full grid-cols-2 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-left text-xs transition-colors hover:border-slate-300 hover:bg-slate-50 sm:grid-cols-[minmax(0,1.2fr)_7rem_minmax(0,1.2fr)_minmax(0,1.6fr)]"
                 >
-                  <span className="flex items-center gap-2 font-medium text-slate-800">
-                    <Server className="h-3.5 w-3.5 text-slate-400" />
-                    {s.name}
-                    <span className={`h-2 w-2 rounded-full ${health.dot}`} />
+                  <span className="flex min-w-0 items-center gap-2 font-medium text-slate-800">
+                    <Server className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                    <span className="truncate">{s.name}</span>
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${health.dot}`} />
                   </span>
-                  <span className={`rounded-full border px-2 py-0.5 ${health.badge}`}>{health.label}</span>
-                  {s.backupMode !== 'EXCLUDED' && (
-                    <span className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${backup.badge}`}>
-                      <DatabaseBackup className="h-3 w-3" />
-                      {backup.label}
-                    </span>
-                  )}
-                  {s.inMaintenance && (
-                    <span className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${MAINTENANCE_BADGE}`}>
-                      <Wrench className="h-3 w-3" />
-                      EN MANTENIMIENTO
-                    </span>
-                  )}
-                  <span className="text-slate-500">
+                  <span className={`justify-self-end rounded-full border px-2 py-0.5 sm:justify-self-start ${health.badge}`}>{health.label}</span>
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    {s.backupMode !== 'EXCLUDED' && (
+                      <span className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${backup.badge}`}>
+                        <DatabaseBackup className="h-3 w-3" />
+                        {backup.label}
+                      </span>
+                    )}
+                    {s.inMaintenance && (
+                      <span className={`flex items-center gap-1 rounded-full border px-2 py-0.5 ${MAINTENANCE_BADGE}`}>
+                        <Wrench className="h-3 w-3" />
+                        EN MANTENIMIENTO
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-right text-slate-500">
                     {s.cpuUsage !== null ? `CPU ${s.cpuUsage.toFixed(0)}% · RAM ${s.memoryUsage!.toFixed(0)}% · Disco ${s.diskUsage!.toFixed(0)}%` : 'Sin telemetría'}
+                    {vol && volLevel !== 'ok' && (
+                      <b className={`ml-1 ${RESOURCE_LEVEL_COLOR[volLevel].text}`}>
+                        · {vol.mount} {vol.percent.toFixed(0)}%
+                      </b>
+                    )}
                   </span>
                 </motion.button>
               );

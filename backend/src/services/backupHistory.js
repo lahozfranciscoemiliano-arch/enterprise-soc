@@ -12,6 +12,8 @@
 //   3. Las filas guardadas en backup_status (una por corrida desde este
 //      cambio; agentes viejos incluidos) -- aportan tamaño y destino.
 
+const { isFutureIso } = require('./backupPolicy');
+
 const MINUTE = 60 * 1000;
 
 function minuteKey(iso) {
@@ -22,14 +24,24 @@ function minuteKey(iso) {
 
 function buildBackupHistory(rows, { onlySuccess = false, limit = 30 } = {}) {
   const entries = new Map(); // minuteKey -> entry
+  // Inicio de cada corrida del Visor de eventos -> clave de su entrada. El
+  // identificador de version de wbadmin (y lastBackupAt de cada chequeo) es
+  // la hora de INICIO del backup, no la de fin: sin esto cada corrida
+  // aparecia dos veces (7:05 "fin" y 4:00 "version").
+  const startAliases = new Map();
   const latest = rows[0];
   const meta = latest?.metadata ?? {};
 
+  const near = (key) => [key, key - 1, key + 1, key - 2, key + 2];
   const add = (key, entry) => {
     if (key === null) return;
     // La misma corrida puede llegar de dos fuentes con 1-2 min de diferencia
     // (evento de fin vs. identificador de version de wbadmin).
-    const existingKey = [key, key - 1, key + 1, key - 2, key + 2].find((k) => entries.has(k));
+    let existingKey = near(key).find((k) => entries.has(k));
+    if (existingKey === undefined) {
+      const alias = near(key).find((k) => startAliases.has(k));
+      if (alias !== undefined) existingKey = startAliases.get(alias);
+    }
     if (existingKey === undefined) {
       entries.set(key, entry);
       return;
@@ -40,8 +52,13 @@ function buildBackupHistory(rows, { onlySuccess = false, limit = 30 } = {}) {
     }
   };
 
-  for (const run of Array.isArray(meta.runs) ? meta.runs : []) {
-    add(minuteKey(run.finishedAt), {
+  // Eventos con fecha futura (agente <= 1.16.0): no son corridas reales.
+  const runs = (Array.isArray(meta.runs) ? meta.runs : []).filter((r) => !isFutureIso(r?.finishedAt) && !isFutureIso(r?.startedAt));
+  for (const run of runs) {
+    const key = minuteKey(run.finishedAt);
+    const startKey = minuteKey(run.startedAt);
+    if (key !== null && startKey !== null && !startAliases.has(startKey)) startAliases.set(startKey, key);
+    add(key, {
       result: run.result === 'SUCCESS' ? 'SUCCESS' : 'FAILED',
       startedAt: run.startedAt ?? null,
       finishedAt: run.finishedAt,

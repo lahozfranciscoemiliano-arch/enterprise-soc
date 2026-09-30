@@ -38,7 +38,16 @@ export default function AuditView() {
   const logons = useLiveData<LogonRecord[]>('/api/inventory/logons?limit=600');
   const nets = useNetworks();
   const identity = useLiveData<{
-    dcs: { serverId: string; serverName: string; at: string; readable: boolean | null; error: string | null; received: number; stored: number }[];
+    dcs: {
+      serverId: string;
+      serverName: string;
+      at: string;
+      readable: boolean | null;
+      error: string | null;
+      since?: string | null;
+      received: number;
+      stored: number;
+    }[];
     lastLogonAt: string | null;
     lastHour: number;
   }>('/api/inventory/identity-status', { intervalMs: 60_000 });
@@ -116,6 +125,13 @@ export default function AuditView() {
               {identity.data.dcs.map((d) => {
                 const stale = Date.now() - new Date(d.at).getTime() > 5 * 60000;
                 const bad = d.readable === false || Boolean(d.error);
+                // Cursor del agente: lee los eventos posteriores a "since". Un DC
+                // con PCs encendidas genera eventos Kerberos cada pocos minutos
+                // (agente >= 1.16.1 avanza el cursor tambien con ellos): si quedo
+                // horas atras (o en el futuro) sin traer nada, esta trabado.
+                const sinceMs = d.since ? new Date(d.since).getTime() : NaN;
+                const stuck =
+                  !bad && d.received === 0 && Number.isFinite(sinceMs) && (Date.now() - sinceMs > 2 * 3600000 || sinceMs - Date.now() > 3600000);
                 return (
                   <li key={d.serverId} className="flex flex-wrap items-center gap-2">
                     <span className={`h-2 w-2 rounded-full ${bad ? 'bg-red-500' : stale ? 'bg-amber-500' : 'bg-emerald-500'}`} />
@@ -124,6 +140,12 @@ export default function AuditView() {
                       {bad ? 'no puede leer el registro de Seguridad' : `lee OK · ${d.received} evento(s) en el último envío`} · {new Date(d.at).toLocaleTimeString('es-AR')}
                     </span>
                     {d.error && <span className="w-full pl-4 text-red-700">{d.error}</span>}
+                    {stuck && (
+                      <span className="w-full pl-4 text-amber-700">
+                        Lee solo eventos posteriores a {new Date(sinceMs).toLocaleString('es-AR')}: la lectura quedó trabada. Se corrige con el
+                        agente 1.16.1 o superior.
+                      </span>
+                    )}
                   </li>
                 );
               })}

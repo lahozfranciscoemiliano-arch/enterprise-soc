@@ -83,11 +83,17 @@ function StatusDonut({
 
 const pctHint = (v: number | null) => (v === null ? null : `${Math.round(v)}%`);
 
-function worstMetric(s: { cpu: number | null; ram: number | null; disk: number | null }): string | null {
+function worstMetric(s: {
+  cpu: number | null;
+  ram: number | null;
+  disk: number | null;
+  volume?: { mount: string; percent: number } | null;
+}): string | null {
   const m = [
     ['CPU', s.cpu],
     ['RAM', s.ram],
     ['Disco', s.disk],
+    [s.volume ? `Disco ${s.volume.mount}` : 'Disco', s.volume?.percent ?? null],
   ].filter(([, v]) => v !== null) as [string, number][];
   if (m.length === 0) return null;
   const [k, v] = m.sort((a, b) => b[1] - a[1])[0];

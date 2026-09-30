@@ -245,13 +245,20 @@ function requestManualSpeedtest(serverId) {
 
 async function storeSpeedtest(server, result) {
   const manual = manualInFlight.delete(server.id);
+  // Una bajada o subida de 0 Mbps no es una medicion: el respaldo de
+  // Cloudflare del agente <= 1.16.0 pedia bloques de 200 MB, Cloudflare
+  // respondia 403 y la bajada salia siempre 0. Se guarda como prueba fallida
+  // (no se grafica ni alerta "velocidad baja").
+  const noData = result.ok !== false && (!(result.downloadMbps > 0) || !(result.uploadMbps > 0));
   const row = await prisma.speedTest.create({
     data: {
       serverId: server.id,
       serverName: server.name,
       publicIp: result.publicIp ?? server.publicIp ?? null,
-      ok: result.ok !== false,
-      error: result.error ?? null,
+      ok: result.ok !== false && !noData,
+      error: noData
+        ? `La prueba no pudo medir la ${!(result.downloadMbps > 0) ? 'bajada' : 'subida'} (${result.provider ?? 'speedtest'}): resultado descartado.`
+        : (result.error ?? null),
       downloadMbps: result.downloadMbps ?? null,
       uploadMbps: result.uploadMbps ?? null,
       latencyMs: result.latencyMs ?? null,

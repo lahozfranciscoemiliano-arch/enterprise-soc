@@ -173,6 +173,13 @@ export type ServerThresholds = {
   diskThresholdMedium: number | null;
 };
 
+/** Umbral de un recurso ya resuelto (servidor > Admin -> Configuracion > fabrica). */
+export type ThresholdPair = { high: number; medium: number };
+export type EffectiveThresholds = Record<'cpuUsage' | 'memoryUsage' | 'diskUsage', ThresholdPair>;
+
+/** Unidad de datos distinta de C: (del ultimo diagnostico del agente). */
+export type DataVolume = { mount: string; percent: number; freeBytes: number | null; totalBytes: number | null };
+
 export type ServerSummary = {
   id: string;
   name: string;
@@ -189,6 +196,10 @@ export type ServerSummary = {
   perf?: PerfDetail | null;
   recordedAt: string | null;
   thresholds: ServerThresholds;
+  /** Umbrales que usa el backend para este servidor (los mismos de la salud). */
+  effectiveThresholds?: EffectiveThresholds;
+  /** D:, E:... cuentan para la salud igual que C:. */
+  volumes?: DataVolume[];
   maintenanceUntil: string | null;
   inMaintenance: boolean;
   // EXCLUDED = sin lectura de backups (VPS); MULTI = todos los metodos (ALOHA*); NATIVE = solo Windows Server Backup.
@@ -632,7 +643,15 @@ export type DashboardSummary = {
   openAlertList?: OpenAlertRef[];
 };
 
-export type HealthServerRef = { id: string; name: string; cpu: number | null; ram: number | null; disk: number | null; status: string };
+export type HealthServerRef = {
+  id: string;
+  name: string;
+  cpu: number | null;
+  ram: number | null;
+  disk: number | null;
+  volume?: { mount: string; percent: number } | null;
+  status: string;
+};
 export type BackupServerRef = { id: string; name: string; lastBackupAt: string | null; detail: string | null };
 export type OpenAlertRef = {
   id: string;
