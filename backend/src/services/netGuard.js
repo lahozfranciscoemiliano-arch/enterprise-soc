@@ -14,7 +14,6 @@
 //
 // Cada alerta dice QUE equipo es (MAC, fabricante, IP, nombre) y DONDE esta
 // conectado (switch + puerto o AP de UniFi) para poder actuar enseguida.
-const https = require('https');
 const prisma = require('../prismaClient');
 const { getSetting, setSettings } = require('./settings');
 const { createAndDispatchEvent, autoResolveEvents } = require('./eventPipeline');
@@ -45,49 +44,11 @@ const BUILTIN_OUI = {
   '48:4d:7e': 'Dell', '8c:ec:4b': 'Dell', '40:8d:5c': 'Giga-Byte', '50:9a:4c': 'Dell', '04:7c:16': 'Micro-Star (MSI)', 'f4:b5:20': 'Biostar',
 };
 const ouiMap = new Map(Object.entries(BUILTIN_OUI));
-let ouiLoadedAt = 0;
-let ouiLoading = false;
+const macLookup = require('./macLookup');
 
+// Compatibilidad: la carga de la IEEE ahora la hace macLookup.js.
 function loadIeeeOui() {
-  if (ouiLoading || Date.now() - ouiLoadedAt < 86400000) return;
-  ouiLoading = true;
-  const req = https.get('https://standards-oui.ieee.org/oui/oui.txt', { timeout: 30000 }, (res) => {
-    if (res.statusCode !== 200) {
-      res.resume();
-      ouiLoading = false;
-      ouiLoadedAt = Date.now();
-      return;
-    }
-    let buf = '';
-    let count = 0;
-    res.setEncoding('utf8');
-    res.on('data', (chunk) => {
-      buf += chunk;
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        const m = line.match(/^([0-9A-F]{2})-([0-9A-F]{2})-([0-9A-F]{2})\s+\(hex\)\s+(.+)$/);
-        if (m) {
-          ouiMap.set(`${m[1]}:${m[2]}:${m[3]}`.toLowerCase(), m[4].trim());
-          count += 1;
-        }
-      }
-    });
-    res.on('end', () => {
-      ouiLoading = false;
-      ouiLoadedAt = Date.now();
-      console.log(`Guardian de red: ${count} fabricantes (OUI IEEE) cargados`);
-    });
-    res.on('error', () => {
-      ouiLoading = false;
-      ouiLoadedAt = Date.now();
-    });
-  });
-  req.on('timeout', () => req.destroy());
-  req.on('error', () => {
-    ouiLoading = false;
-    ouiLoadedAt = Date.now();
-  });
+  macLookup.loadRegistries();
 }
 
 function normMac(mac) {
@@ -104,11 +65,10 @@ function isRandomized(mac) {
 }
 
 function vendorOf(mac) {
-  loadIeeeOui();
   const m = normMac(mac);
   if (!m) return null;
   if (isRandomized(m)) return 'MAC aleatoria (celular / privacidad)';
-  return ouiMap.get(m.slice(0, 8)) ?? null;
+  return macLookup.quickLookup(m)?.vendor ?? ouiMap.get(m.slice(0, 8)) ?? null;
 }
 
 // --- Donde esta conectado un equipo --------------------------------------------
@@ -442,6 +402,31 @@ async function approveDevice(mac, note) {
   return d;
 }
 
+// Aprobar muchos equipos juntos: una lista de MAC, todos los nuevos de una
+// red (cidr) o todos los nuevos.
+async function approveDevicesBulk({ macs, cidr, all }) {
+  const where = { approved: false };
+  if (Array.isArray(macs) && macs.length) where.mac = { in: macs.map(normMac).filter(Boolean) };
+  else if (!all && !cidr) return { approved: 0 };
+  let rows = await prisma.netDevice.findMany({ where, select: { mac: true, ip: true } });
+  if (cidr) {
+    const [net, bits] = String(cidr).split('/');
+    const toInt = (ip) => String(ip ?? '').split('.').reduce((a, o) => (a << 8) + (Number(o) & 255), 0) >>> 0;
+    const size = 2 ** (32 - Number(bits));
+    const base = toInt(net);
+    rows = rows.filter((d) => d.ip && toInt(d.ip) >= base && toInt(d.ip) < base + size);
+  }
+  const list = rows.map((d) => d.mac);
+  if (!list.length) return { approved: 0 };
+  await prisma.netDevice.updateMany({ where: { mac: { in: list } }, data: { approved: true } });
+  const keys = list.map((m) => `UNKNOWN_DEVICE:${m}`);
+  const events = await prisma.securityEvent.findMany({ where: { dedupKey: { in: keys }, status: { in: ACTIVE } }, select: { serverId: true, dedupKey: true } });
+  const byServer = new Map();
+  for (const e of events) byServer.set(e.serverId, [...(byServer.get(e.serverId) ?? []), e.dedupKey]);
+  for (const [serverId, k] of byServer) await autoResolveEvents(serverId, k, null);
+  return { approved: list.length, alertsResolved: events.length };
+}
+
 async function authorizeDhcp(ip) {
   const current = String((await getSetting('NETGUARD_DHCP_SERVERS')) ?? '')
     .split(/[,\s]+/)
@@ -466,6 +451,7 @@ module.exports = {
   duplicateIpAlerts,
   overview,
   approveDevice,
+  approveDevicesBulk,
   authorizeDhcp,
   acceptGateway,
   locateMac,

@@ -1,14 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckCircle2, Crosshair, Radar, Router, ShieldAlert, ShieldCheck, Smartphone } from 'lucide-react';
+import { CheckCheck, CheckCircle2, Radar, Router, Search, ShieldAlert, ShieldCheck, Smartphone } from 'lucide-react';
+import MacInfoCard, { type MacInfo } from './MacInfoCard';
 import { timeAgo } from '../../lib/health';
 import { useToast } from '../Toast';
 import { API_URL, useLiveData } from './useLiveData';
 import { NetworkGroup, networkOf, sortNetKeys, useNetworks } from './networks';
 import type { NetGuardOverview, NetLocation } from '../../types';
 
-type NetDeviceRow = NetGuardOverview['newDevices'][number] & { online: boolean; isNew: boolean; user: string | null };
+type NetDeviceRow = NetGuardOverview['newDevices'][number] & { online: boolean; isNew: boolean; user: string | null; kind: string | null };
 
 function ipNum(ip: string | null | undefined) {
   const p = String(ip ?? '').split('.').map(Number);
@@ -43,18 +44,71 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
   const toast = useToast();
   const { data, error, reload } = useLiveData<NetGuardOverview>('/api/netguard/overview', { event: 'soc:netguard', intervalMs: 60_000 });
   const [macQuery, setMacQuery] = useState('');
+  const [lookups, setLookups] = useState<Record<string, MacInfo | 'loading'>>({});
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [located, setLocated] = useState<Record<string, NetLocation | 'loading'>>({});
   const [showRandom, setShowRandom] = useState(false);
   const [onlyNew, setOnlyNew] = useState(false);
   const [devQuery, setDevQuery] = useState('');
-  const { data: allDevices } = useLiveData<NetDeviceRow[]>('/api/netguard/devices', { intervalMs: 120_000 });
+  const { data: allDevices, reload: reloadDevices } = useLiveData<NetDeviceRow[]>('/api/netguard/devices', { intervalMs: 120_000 });
   const nets = useNetworks();
+
+  // MAC Lookup: fabricante (IEEE / en linea), bloque, pais y donde esta.
+  const lookup = async (mac: string) => {
+    const key = mac.trim().toLowerCase();
+    if (lookups[key] && lookups[key] !== 'loading') {
+      setLookups((l) => {
+        const next = { ...l };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    setLookups((l) => ({ ...l, [key]: 'loading' }));
+    const res = await fetch(`${API_URL}/api/netguard/mac/${encodeURIComponent(key)}`, { credentials: 'include' });
+    const body = await res.json().catch(() => ({}));
+    setLookups((l) => {
+      const next = { ...l };
+      if (res.ok) next[key] = body;
+      else delete next[key];
+      return next;
+    });
+    if (!res.ok) toast.error(body.error ?? 'No se pudo consultar la MAC');
+  };
+
+  const approveBulk = async (body: { macs?: string[]; cidr?: string; all?: boolean }, label: string) => {
+    if (!window.confirm(`¿Aprobar ${label}? Pasan a "conocidos" y se cierran sus alertas de equipo desconocido.`)) return;
+    const res = await fetch(`${API_URL}/api/netguard/devices/approve-bulk`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast.error(r.error ?? 'No se pudo aprobar');
+      return;
+    }
+    toast.success(`${r.approved} equipo(s) aprobados${r.alertsResolved ? ` · ${r.alertsResolved} alerta(s) cerradas` : ''}`);
+    setSelected(new Set());
+    reloadDevices();
+    reload();
+  };
+
+  const toggleSel = (mac: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(mac)) next.delete(mac);
+      else next.add(mac);
+      return next;
+    });
 
   const post = async (path: string, okMsg: string) => {
     const res = await fetch(`${API_URL}${path}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     if (res.ok) {
       toast.success(okMsg);
       reload();
+      reloadDevices();
     } else toast.error((await res.json().catch(() => ({}))).error ?? 'No se pudo completar');
   };
 
@@ -83,7 +137,8 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
     .filter((d) => !dq || [d.mac, d.ip, d.hostname, d.vendor, d.user].some((v) => v?.toLowerCase().includes(dq)))
     .sort((a, b) => ipNum(a.ip) - ipNum(b.ip));
   const allOk = rogue.length === 0 && badGw.length === 0;
-  const queryLoc = located[macQuery.trim().toLowerCase()];
+  const queryInfo = lookups[macQuery.trim().toLowerCase()];
+  const newCount = (allDevices ?? []).filter((d) => d.isNew && (showRandom || !d.randomized)).length;
 
   // Todo agrupado por la red (gateway) de cada sede.
   type Group = {
@@ -130,22 +185,45 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (macQuery.trim()) locate(macQuery.trim().toLowerCase());
+            if (macQuery.trim()) lookup(macQuery.trim().toLowerCase());
           }}
           className="flex items-center gap-1.5"
         >
           <input
             value={macQuery}
             onChange={(e) => setMacQuery(e.target.value)}
-            placeholder="Ubicar MAC (aa:bb:cc:...)"
-            className="w-48 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs outline-none focus:border-brand-500"
+            placeholder="MAC Lookup (aa:bb:cc:dd:ee:ff)"
+            className="w-56 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs outline-none focus:border-brand-500"
           />
           <button className="flex items-center gap-1 rounded-lg bg-brand-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-brand-700">
-            <Crosshair className="h-3.5 w-3.5" /> Ubicar
+            <Search className="h-3.5 w-3.5" /> Buscar
           </button>
         </form>
       </div>
-      {queryLoc && queryLoc !== 'loading' && <Location loc={queryLoc} />}
+      {queryInfo === 'loading' && <p className="text-xs text-slate-400">Consultando fabricante...</p>}
+      {queryInfo && queryInfo !== 'loading' && <MacInfoCard info={queryInfo} onClose={() => lookup(macQuery)} />}
+      {canWrite && (newCount > 0 || selected.size > 0) && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
+          <span className="text-amber-800">
+            {newCount} equipo(s) nuevos sin revisar{selected.size ? ` · ${selected.size} seleccionado(s)` : ''}
+          </span>
+          {selected.size > 0 && (
+            <button onClick={() => approveBulk({ macs: [...selected] }, `${selected.size} equipo(s) seleccionados`)} className="flex items-center gap-1 rounded-lg bg-brand-600 px-2.5 py-1 font-medium text-white hover:bg-brand-700">
+              <CheckCheck className="h-3.5 w-3.5" /> Aprobar seleccionados ({selected.size})
+            </button>
+          )}
+          {newCount > 0 && (
+            <button onClick={() => approveBulk({ all: true }, `los ${newCount} equipos nuevos de todas las redes`)} className="flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2.5 py-1 font-medium text-amber-800 hover:bg-amber-100">
+              <CheckCheck className="h-3.5 w-3.5" /> Aprobar todos los nuevos ({newCount})
+            </button>
+          )}
+          {selected.size > 0 && (
+            <button onClick={() => setSelected(new Set())} className="text-amber-700 underline">
+              Quitar selección
+            </button>
+          )}
+        </div>
+      )}
 
       {groups.length === 0 && <p className="py-6 text-center text-xs text-slate-400">Todavía ningún agente informó datos de red (agente 1.14.0 o superior).</p>}
       <div className="flex items-center justify-between text-[11px] text-slate-500">
@@ -283,10 +361,34 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
               </div>
             </div>
 
-            <h4 className="mb-1.5 mt-4 text-xs font-semibold text-slate-700">
-              Equipos en esta red ({g.devices.length} · {g.devices.filter((d) => d.online).length} en línea
-              {g.devices.some((d) => d.isNew) ? ` · ${g.devices.filter((d) => d.isNew).length} nuevos sin revisar` : ''})
-            </h4>
+            <div className="mb-1.5 mt-4 flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-xs font-semibold text-slate-700">
+                Equipos en esta red ({g.devices.length} · {g.devices.filter((d) => d.online).length} en línea
+                {g.devices.some((d) => d.isNew) ? ` · ${g.devices.filter((d) => d.isNew).length} nuevos sin revisar` : ''})
+              </h4>
+              {canWrite && g.devices.some((d) => d.isNew) && (
+                <span className="flex gap-1.5">
+                  <button
+                    onClick={() =>
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        for (const d of g.devices) if (d.isNew) next.add(d.mac);
+                        return next;
+                      })
+                    }
+                    className="rounded border border-slate-200 px-2 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+                  >
+                    Seleccionar nuevos
+                  </button>
+                  <button
+                    onClick={() => approveBulk({ cidr: g.key.includes('/') ? g.key : undefined, macs: g.key.includes('/') ? undefined : g.devices.filter((d) => d.isNew).map((d) => d.mac) }, `los ${g.devices.filter((d) => d.isNew).length} equipos nuevos de ${g.label}`)}
+                    className="flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 hover:bg-amber-100"
+                  >
+                    <CheckCheck className="h-3 w-3" /> Aprobar nuevos de esta red ({g.devices.filter((d) => d.isNew).length})
+                  </button>
+                </span>
+              )}
+            </div>
             {g.devices.length === 0 ? (
               <p className="text-[11px] text-slate-400">{allDevices === null ? 'Cargando...' : 'Sin equipos registrados en esta red todavía.'}</p>
             ) : (
@@ -294,7 +396,8 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 text-slate-400">
-                      <th className="py-1.5 pr-3 font-medium">MAC / fabricante</th>
+                      {canWrite && <th className="w-6 py-1.5" />}
+                      <th className="py-1.5 pr-3 font-medium">MAC / fabricante / tipo</th>
                       <th className="py-1.5 pr-3 font-medium">IP / nombre</th>
                       <th className="py-1.5 pr-3 font-medium">Usuario</th>
                       <th className="py-1.5 pr-3 font-medium">Visto</th>
@@ -306,10 +409,20 @@ export default function NetGuardView({ isAdmin = false, canWrite = false }: { is
                     {g.devices.map((d) => {
                       const loc = located[d.mac];
                       return (
-                        <tr key={d.mac} className="border-b border-slate-100 align-top">
+                        <tr key={d.mac} className={`border-b border-slate-100 align-top ${selected.has(d.mac) ? 'bg-amber-50/60' : ''}`}>
+                          {canWrite && (
+                            <td className="py-1.5">
+                              {d.isNew && <input type="checkbox" checked={selected.has(d.mac)} onChange={() => toggleSel(d.mac)} aria-label={`Seleccionar ${d.mac}`} />}
+                            </td>
+                          )}
                           <td className="py-1.5 pr-3">
                             <span className="block font-mono text-slate-800">{d.mac}</span>
-                            <span className="text-[10px] text-slate-400">{d.vendor ?? 'desconocido'}</span>
+                            <button onClick={() => lookup(d.mac)} className="text-left text-[10px] text-sky-700 hover:underline" title="Ver detalle del fabricante (MAC Lookup)">
+                              {d.vendor ?? 'buscar fabricante...'}
+                            </button>
+                            {d.kind && <span className="block text-[10px] text-slate-400">{d.kind}</span>}
+                            {lookups[d.mac] === 'loading' && <span className="block text-[10px] text-slate-400">Consultando...</span>}
+                            {lookups[d.mac] && lookups[d.mac] !== 'loading' && <MacInfoCard info={lookups[d.mac] as MacInfo} onClose={() => lookup(d.mac)} />}
                             {loc && loc !== 'loading' && <Location loc={loc} />}
                           </td>
                           <td className="py-1.5 pr-3">

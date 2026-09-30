@@ -942,3 +942,17 @@ model RemediationAction {
   @@index([createdAt])
   @@map("remediation_actions")
 }
+
+// Fabricantes resueltos en linea (maclookup.app) para prefijos que la IEEE
+// no publica; prefijo hexadecimal de 6, 7, 9 o 12 caracteres.
+model MacVendorCache {
+  prefix    String   @id
+  vendor    String?
+  address   String?
+  country   String?
+  block     String?
+  source    String?
+  updatedAt DateTime @default(now())
+
+  @@map("mac_vendor_cache")
+}

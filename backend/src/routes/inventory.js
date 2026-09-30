@@ -6,6 +6,7 @@ const { inventorySchema, logonBatchSchema, serviceCheckSchema } = require('../va
 const { processInventory, compressRanges, countStatuses, isInventoryCollector, purgeNonCollectorData, ingestLogons, activeSessionOf } = require('../services/inventory');
 const { listServiceChecks } = require('../services/serviceMonitor');
 const { logAudit } = require('../services/auditLog');
+const macLookup = require('../services/macLookup');
 
 const inventoryLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -133,8 +134,11 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
       return res.json(
         rows.map((d) => {
           const ep = byMac.get(d.mac);
+          const vendor = d.vendor ?? macLookup.quickLookup(d.mac)?.vendor ?? null;
           return {
             ...d,
+            vendor,
+            kind: macLookup.guessKind(vendor, d.hostname ?? ep?.hostname),
             hostname: d.hostname ?? ep?.hostname ?? null,
             user: ep?.lastUser ?? null,
             online: now - d.lastSeenAt.getTime() < 25 * 60000,

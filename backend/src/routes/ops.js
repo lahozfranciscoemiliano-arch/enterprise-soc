@@ -8,6 +8,7 @@ const { z } = require('zod');
 const prisma = require('../prismaClient');
 const ops = require('../services/ops');
 const netGuard = require('../services/netGuard');
+const macLookup = require('../services/macLookup');
 const { buildNetworkTopology } = require('../services/topology');
 const { segmentScanDue, ingestSegments, networksByGateway } = require('../services/inventory');
 const { logAudit } = require('../services/auditLog');
@@ -707,6 +708,39 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
       const d = await netGuard.approveDevice(req.params.mac, typeof req.body?.note === 'string' ? req.body.note.slice(0, 200) : null);
       logAudit({ userId: req.user.sub, action: 'NETGUARD_DEVICE_APPROVE', targetType: 'NetDevice', targetId: d.mac });
       return res.json(d);
+    })
+  );
+
+  app.post(
+    '/api/netguard/devices/approve-bulk',
+    authUser,
+    writer,
+    wrap(async (req, res) => {
+      const parsed = z
+        .object({
+          macs: z.array(z.string().max(40)).max(5000).optional(),
+          cidr: z.string().regex(/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/).optional(),
+          all: z.boolean().optional(),
+        })
+        .strict()
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'Selección inválida' });
+      const result = await netGuard.approveDevicesBulk(parsed.data);
+      logAudit({ userId: req.user.sub, action: 'NETGUARD_DEVICE_APPROVE_BULK', targetType: 'NetDevice', targetId: parsed.data.cidr ?? (parsed.data.all ? 'todos' : 'seleccion'), metadata: result });
+      return res.json(result);
+    })
+  );
+
+  // Busqueda de fabricante por MAC (IEEE + consulta en linea) y lo que el NOC
+  // sabe de ese equipo (IP, nombre, switch/puerto).
+  app.get(
+    '/api/netguard/mac/:mac',
+    authUser,
+    wrap(async (req, res) => {
+      const info = await macLookup.lookupMac(req.params.mac);
+      if (!info) return res.status(400).json({ error: 'MAC inválida: usar 12 dígitos hexadecimales (ej. 4C:BD:8F:11:22:33)' });
+      const loc = await netGuard.locateMac(req.params.mac);
+      return res.json({ ...info, location: loc });
     })
   );
 

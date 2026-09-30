@@ -2352,6 +2352,7 @@ scheduleSyntheticMonitor();
 scheduleDiskForecast();
 scheduleUnifiPoll();
 scheduleServiceMonitor();
+require('./src/services/macLookup').scheduleMacEnrichment();
 seedMissingPlaybooks();
 appMonitor.purgeRemovedMonitoring();
 
