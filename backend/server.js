@@ -47,6 +47,9 @@ const {
   evaluateTelemetry,
   evaluateBackup,
   getHealthStatus,
+  effectiveThresholds,
+  dataVolumes,
+  worstDataVolume,
   isInMaintenance,
   getEffectiveDefaultThresholds,
   TELEMETRY_MANAGED_KEYS,
@@ -55,7 +58,7 @@ const {
 const { logAudit } = require('./src/services/auditLog');
 const { notifyGeneric, sendReportEmail } = require('./src/services/notifications');
 const { buildBackupHistory } = require('./src/services/backupHistory');
-const { loadBackupPolicy, backupMode, normalizeBackupReport } = require('./src/services/backupPolicy');
+const { loadBackupPolicy, backupMode, normalizeBackupReport, sanitizeBackupReport } = require('./src/services/backupPolicy');
 const { processAgentExtras, summarizeNetwork } = require('./src/services/preventiveChecks');
 const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
 const registerInventoryRoutes = require('./src/routes/inventory');
@@ -555,7 +558,10 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
       },
     });
 
-    broadcastTelemetry(server, telemetry);
+    // La salud va calculada por el backend (umbrales de Admin/servidor y
+    // volumenes de datos): el dashboard ya no la recalcula con valores fijos.
+    const defaultThresholds = await getEffectiveDefaultThresholds();
+    broadcastTelemetry(server, telemetry, getHealthStatus(telemetry, { ...server, status: 'ONLINE' }, defaultThresholds));
 
     // Diagnostico preventivo y estado de red (agente >= 1.3.0): se guarda el
     // ultimo en el servidor y se evaluan sus reglas. Nunca rompe la ingesta.
@@ -563,7 +569,6 @@ app.post('/api/telemetry', telemetryLimiter, authServer, async (req, res) => {
       console.error(`Error procesando diagnóstico/red de ${server.name}`, err)
     );
 
-    const defaultThresholds = await getEffectiveDefaultThresholds();
     const triggeredAlerts = evaluateTelemetry(server, data, defaultThresholds);
 
     // Anomalias estadisticas (services/anomalyDetection.js): se evaluan
@@ -646,7 +651,7 @@ app.post('/api/backup-status', backupLimiter, authServer, async (req, res) => {
       await resolveCleared(server.id, BACKUP_MANAGED_KEYS, [], server.name);
       return res.status(200).json({ ignored: true, backupMode: mode, alertTriggered: false });
     }
-    const data = normalizeBackupReport(mode, parsed.data);
+    const data = normalizeBackupReport(mode, sanitizeBackupReport(parsed.data));
 
     // El agente chequea el backup cada 30 min, pero el backup en si corre una
     // vez por dia: si el resultado y la fecha del ultimo backup son los mismos
@@ -742,6 +747,10 @@ app.get('/api/servers', authUser, async (req, res) => {
           diskUsage: latest?.diskUsage ?? null,
           perf: latest?.metadata?.perf ?? null,
           recordedAt: latest?.recordedAt ?? null,
+          // Unidades de datos (D:, E:...) del ultimo diagnostico: cuentan para
+          // la salud igual que C:.
+          volumes: dataVolumes(s),
+          effectiveThresholds: effectiveThresholds(s, defaultThresholds),
           thresholds: {
             cpuThresholdHigh: s.cpuThresholdHigh,
             cpuThresholdMedium: s.cpuThresholdMedium,
@@ -824,12 +833,14 @@ app.get('/api/dashboard/summary', authUser, async (req, res) => {
       const t = s.telemetry[0];
       const h = getHealthStatus(t, s, defaultThresholds);
       breakdown[h] += 1;
+      const volume = worstDataVolume(s);
       healthServers[h].push({
         id: s.id,
         name: s.name,
         cpu: t?.cpuUsage ?? null,
         ram: t?.memoryUsage ?? null,
         disk: t?.diskUsage ?? null,
+        volume: volume ? { mount: volume.mount, percent: volume.percent } : null,
         status: s.status,
       });
       if (backupMode(s, backupPolicy) !== 'EXCLUDED') {

@@ -330,7 +330,7 @@ export default function ServerDetailModal({
                       <Card title="Almacenamiento" icon={HardDrive}>
                         <div className="space-y-2.5">
                           {(diag.volumes ?? []).map((v) => {
-                            const level = RESOURCE_LEVEL_COLOR[resourceLevel(v.percent, 'diskUsage')];
+                            const level = RESOURCE_LEVEL_COLOR[resourceLevel(v.percent, 'diskUsage', server.effectiveThresholds)];
                             return (
                               <div key={v.mount}>
                                 <div className="mb-1 flex items-center justify-between text-xs">

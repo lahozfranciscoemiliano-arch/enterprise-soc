@@ -159,6 +159,47 @@ const TELEMETRY_MANAGED_KEYS = [
 ];
 const BACKUP_MANAGED_KEYS = ['BACKUP_FAILED', 'BACKUP_WARNING'];
 
+// Umbrales que rigen para un servidor, en la forma {cpuUsage: {high, medium}, ...}.
+// El frontend los recibe con /api/servers para colorear barras y calcular la
+// salud con los MISMOS valores que el backend (antes usaba los de fabrica
+// fijos en el codigo y, con umbrales cambiados en Admin, la salud "saltaba"
+// entre OK y ADVERTENCIA/CRITICO con cada telemetria en vivo).
+function effectiveThresholds(server, defaults = DEFAULT_THRESHOLDS) {
+  const out = {};
+  for (const [field, rule] of Object.entries(resolveThresholds(server, defaults))) {
+    out[field] = { high: rule.high, medium: rule.medium };
+  }
+  return out;
+}
+
+// Volumenes de datos (D:, E:, ...) del ultimo diagnostico del agente. La
+// telemetria solo trae la unidad del sistema (C:): sin esto un servidor con
+// E: al 99.9% figuraba "saludable" en General/Monitoreo aunque tuviera una
+// alerta CRITICA abierta por ese disco.
+const VOLUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function dataVolumes(server) {
+  const volumes = server?.diagnostics?.volumes;
+  if (!Array.isArray(volumes)) return [];
+  const at = server.diagnosticsAt ? new Date(server.diagnosticsAt).getTime() : NaN;
+  if (!Number.isFinite(at) || Date.now() - at > VOLUME_MAX_AGE_MS) return [];
+  return volumes
+    .filter((v) => {
+      const mount = String(v?.mount || '').toUpperCase();
+      return mount && mount !== 'C:' && mount !== '/' && typeof v.percent === 'number';
+    })
+    .map((v) => ({
+      mount: String(v.mount).toUpperCase(),
+      percent: v.percent,
+      freeBytes: v.freeBytes ?? null,
+      totalBytes: v.totalBytes ?? null,
+    }));
+}
+
+function worstDataVolume(server) {
+  return dataVolumes(server).reduce((worst, v) => (!worst || v.percent > worst.percent ? v : worst), null);
+}
+
 function getHealthStatus(telemetry, server, defaults = DEFAULT_THRESHOLDS) {
   // El heartbeat (services/heartbeat.js) mantiene server.status al dia: si
   // dice OFFLINE es porque dejo de reportar telemetria hace rato, sin
@@ -179,6 +220,13 @@ function getHealthStatus(telemetry, server, defaults = DEFAULT_THRESHOLDS) {
     if (value >= rule.medium) status = 'WARNING';
   }
 
+  // Mismos umbrales de disco para los volumenes de datos.
+  const volume = worstDataVolume(server);
+  if (volume) {
+    if (volume.percent >= thresholds.diskUsage.high) return 'CRITICAL';
+    if (volume.percent >= thresholds.diskUsage.medium) status = 'WARNING';
+  }
+
   return status;
 }
 
@@ -186,6 +234,9 @@ module.exports = {
   evaluateTelemetry,
   evaluateBackup,
   getHealthStatus,
+  effectiveThresholds,
+  dataVolumes,
+  worstDataVolume,
   resolveThresholds,
   isInMaintenance,
   getEffectiveDefaultThresholds,

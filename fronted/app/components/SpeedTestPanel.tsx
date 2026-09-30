@@ -16,8 +16,18 @@ function pct(v: number | null, of: number | null) {
   return v !== null && of ? Math.round((v / of) * 100) : null;
 }
 
+// Prueba con medicion real. Las de 0 Mbps (respaldo de Cloudflare de los
+// agentes <= 1.16.0, que siempre daba 0 de bajada) no son una medicion: se
+// muestran como fallidas y no entran al grafico ni al conteo de "lentas".
+function measured(t: SpeedTestRow) {
+  return t.ok && (t.downloadMbps ?? 0) > 0 && (t.uploadMbps ?? 0) > 0;
+}
+
+const shortDateTime = (iso: string) =>
+  new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
 function exportCsv(site: Site) {
-  const header = ['fecha', 'servidor', 'ip_publica', 'proveedor_internet', 'bajada_mbps', 'subida_mbps', 'latencia_ms', 'jitter_ms', 'perdida_%', 'contratado_bajada', 'contratado_subida', '%_bajada', 'medido_con', 'servidor_de_prueba', 'resultado_speedtest', 'manual'];
+  const header = ['fecha', 'servidor', 'ip_publica', 'proveedor_internet', 'bajada_mbps', 'subida_mbps', 'latencia_ms', 'jitter_ms', 'perdida_%', 'contratado_bajada', 'contratado_subida', '%_bajada', 'medido_con', 'servidor_de_prueba', 'resultado_speedtest', 'manual', 'estado'];
   const rows = site.tests.map((t) => [
     new Date(t.at).toLocaleString('es-AR'),
     t.serverName,
@@ -35,6 +45,7 @@ function exportCsv(site: Site) {
     (t.testServer ?? '').replace(/,/g, ' '),
     t.resultUrl ?? '',
     t.manual ? 'si' : 'no',
+    measured(t) ? 'valida' : `fallida${t.error ? `: ${t.error.replace(/,/g, ' ')}` : ''}`,
   ]);
   const csv = `﻿${[header, ...rows].map((r) => r.join(',')).join('\n')}\n`;
   const a = document.createElement('a');
@@ -48,11 +59,16 @@ function SiteCard({ site, isAdmin, canWrite, onSaved }: { site: Site; isAdmin: b
   const main = site.servers[0];
   const [down, setDown] = useState(main.contractedDownMbps?.toString() ?? '');
   const [up, setUp] = useState(main.contractedUpMbps?.toString() ?? '');
-  const last = site.tests[site.tests.length - 1];
+  const valid = site.tests.filter(measured);
+  const latestTest = site.tests[site.tests.length - 1];
+  // Las tarjetas muestran la ultima medicion valida; si la ultima prueba
+  // fallo se avisa aparte en vez de mostrar "0 Mbps".
+  const last = valid[valid.length - 1] ?? null;
+  const lastFailed = latestTest && !measured(latestTest) ? latestTest : null;
   const contractedDown = main.contractedDownMbps;
   const contractedUp = main.contractedUpMbps;
-  const data = site.tests.filter((t) => t.ok).map((t) => ({ at: new Date(t.at).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' }), bajada: t.downloadMbps, subida: t.uploadMbps }));
-  const lowNights = site.tests.filter((t) => t.ok && t.contractedDownMbps && t.downloadMbps !== null && t.downloadMbps < t.contractedDownMbps * 0.6).length;
+  const data = valid.map((t) => ({ at: shortDateTime(t.at), bajada: t.downloadMbps, subida: t.uploadMbps }));
+  const lowNights = valid.filter((t) => t.contractedDownMbps && t.downloadMbps !== null && t.downloadMbps < t.contractedDownMbps * 0.6).length;
 
   const run = async () => {
     const res = await fetch(`${API_URL}/api/speedtests/run`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serverId: main.id }) });
@@ -113,7 +129,17 @@ function SiteCard({ site, isAdmin, canWrite, onSaved }: { site: Site; isAdmin: b
           </div>
         </div>
       ) : (
-        <p className="mb-2 text-xs text-slate-400">Sin pruebas todavía: la primera corre esta madrugada (o con “Probar ahora”).</p>
+        <p className="mb-2 text-xs text-slate-400">
+          {site.tests.length > 0
+            ? 'Ninguna prueba pudo medir la velocidad todavía (ver el motivo abajo).'
+            : 'Sin pruebas todavía: la primera corre esta madrugada (o con “Probar ahora”).'}
+        </p>
+      )}
+      {lastFailed && (
+        <p className="mb-2 rounded-lg bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+          La última prueba ({shortDateTime(lastFailed.at)}, {lastFailed.provider ?? 'speedtest'}) no pudo medir:{' '}
+          {lastFailed.error ?? 'devolvió 0 Mbps'}. Se descarta del gráfico.
+        </p>
       )}
       {last && (
         <p className="mb-2 flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500">
@@ -134,14 +160,14 @@ function SiteCard({ site, isAdmin, canWrite, onSaved }: { site: Site; isAdmin: b
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 5, right: 8, left: -18, bottom: 0 }}>
               <CartesianGrid stroke="#f1f5f9" />
-              <XAxis dataKey="at" tick={{ fontSize: 10 }} />
+              <XAxis dataKey="at" tick={{ fontSize: 10 }} minTickGap={24} />
               <YAxis tick={{ fontSize: 10 }} unit="" />
               <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => `${v} Mbps`} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               {contractedDown && <ReferenceLine y={contractedDown} stroke="#2563eb" strokeDasharray="4 4" />}
               {contractedUp && <ReferenceLine y={contractedUp} stroke="#10b981" strokeDasharray="4 4" />}
-              <Line type="monotone" dataKey="bajada" stroke="#2563eb" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="subida" stroke="#10b981" strokeWidth={2} dot={false} />
+              <Line type="linear" dataKey="bajada" stroke="#2563eb" strokeWidth={2} dot={{ r: 2.5 }} />
+              <Line type="linear" dataKey="subida" stroke="#10b981" strokeWidth={2} dot={{ r: 2.5 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>

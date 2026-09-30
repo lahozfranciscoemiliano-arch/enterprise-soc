@@ -16,7 +16,7 @@ import {
   YAxis,
 } from 'recharts';
 import { Activity, ArrowDownToLine, ArrowUpFromLine, Cpu, Globe, HardDrive, MemoryStick, Network } from 'lucide-react';
-import { formatRate, internetLevel, RESOURCE_LEVEL_COLOR, RESOURCE_THRESHOLDS, resourceLevel } from '../lib/health';
+import { formatBytes, formatRate, internetLevel, RESOURCE_LEVEL_COLOR, RESOURCE_THRESHOLDS, resourceLevel, worstVolume } from '../lib/health';
 import { onTelemetry } from '../lib/liveBus';
 import type { MetricPoint, MetricRange, PerfDetail, ServerSummary } from '../types';
 
@@ -219,8 +219,13 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
   const hasNetwork = points.some((p) => p.netIn !== null || p.netOut !== null);
   const hasLatency = points.some((p) => p.latency !== null);
 
-  const cpuHigh = server.thresholds.cpuThresholdHigh ?? RESOURCE_THRESHOLDS.cpuUsage.high;
-  const cpuMedium = server.thresholds.cpuThresholdMedium ?? RESOURCE_THRESHOLDS.cpuUsage.medium;
+  const cpuHigh = server.effectiveThresholds?.cpuUsage.high ?? server.thresholds.cpuThresholdHigh ?? RESOURCE_THRESHOLDS.cpuUsage.high;
+  const cpuMedium = server.effectiveThresholds?.cpuUsage.medium ?? server.thresholds.cpuThresholdMedium ?? RESOURCE_THRESHOLDS.cpuUsage.medium;
+  // Unidad de datos (D:, E:...) por encima del umbral de disco: la tarjeta es
+  // de C:, pero sin este aviso un E: al 99% pasaba desapercibido aca.
+  const worstVol = worstVolume(server.volumes);
+  const fullVolume =
+    worstVol && resourceLevel(worstVol.percent, 'diskUsage', server.effectiveThresholds) !== 'ok' ? worstVol : null;
   const net = server.network;
   const netLevel = internetLevel(
     net ? { internetUp: net.internetUp, latencyMs: last?.latency ?? net.latencyMs, lossPct: last?.loss ?? net.lossPct } : null
@@ -289,7 +294,7 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
         <KpiTile
           icon={<Cpu className="h-3.5 w-3.5" />}
           label="CPU"
-          level={cpu === null ? 'none' : resourceLevel(cpu, 'cpuUsage')}
+          level={cpu === null ? 'none' : resourceLevel(cpu, 'cpuUsage', server.effectiveThresholds)}
           percent={cpu}
           sub={
             perf?.cpuSteal !== undefined && perf?.cpuSteal !== null
@@ -311,7 +316,7 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
         <KpiTile
           icon={<MemoryStick className="h-3.5 w-3.5" />}
           label="RAM"
-          level={mem === null ? 'none' : resourceLevel(mem, 'memoryUsage')}
+          level={mem === null ? 'none' : resourceLevel(mem, 'memoryUsage', server.effectiveThresholds)}
           percent={mem}
           sub={
             perf?.memAvailableMb && perf?.memTotalMb
@@ -326,10 +331,12 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
         <KpiTile
           icon={<HardDrive className="h-3.5 w-3.5" />}
           label="Disco C: (espacio)"
-          level={disk === null ? 'none' : resourceLevel(disk, 'diskUsage')}
+          level={disk === null ? 'none' : resourceLevel(disk, 'diskUsage', server.effectiveThresholds)}
           percent={disk}
           sub={
-            perf?.diskBusyAvg !== undefined && perf?.diskBusyAvg !== null
+            fullVolume
+              ? `¡${fullVolume.mount} al ${fullVolume.percent.toFixed(1)}%! (${formatBytes(fullVolume.freeBytes)} libres) · C: ${perf?.diskFreeGb ?? '—'} GB libres`
+              : perf?.diskBusyAvg !== undefined && perf?.diskBusyAvg !== null
               ? `Actividad ${perf.diskBusyAvg.toFixed(0)}% (pico ${(perf.diskBusyMax ?? 0).toFixed(0)}%)${perf.diskFreeGb !== null && perf.diskFreeGb !== undefined ? ` · ${perf.diskFreeGb} GB libres` : ''}`
               : 'Espacio usado de la unidad del sistema'
           }
@@ -381,12 +388,22 @@ export default function MetricsPanel({ server, chartHeight = 220 }: { server: Se
         title="CPU, memoria y disco"
         icon={<Activity className="h-3.5 w-3.5 text-slate-400" />}
         right={
-          <span className="flex items-center gap-3 text-[10px] text-slate-400">
+          <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-[10px] text-slate-400">
+            {/* Series: sin esto la linea punteada del disco se confundia con los umbrales. */}
             <span className="flex items-center gap-1">
-              <span className="h-0.5 w-3 bg-amber-400" /> Umbral {cpuMedium}%
+              <span className="h-0.5 w-3" style={{ background: COLORS.cpu }} /> CPU
             </span>
             <span className="flex items-center gap-1">
-              <span className="h-0.5 w-3 bg-red-400" /> Crítico {cpuHigh}%
+              <span className="h-0.5 w-3" style={{ background: COLORS.mem }} /> RAM
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 border-t-2 border-dashed" style={{ borderColor: COLORS.disk }} /> Disco C:
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-0.5 w-3 bg-amber-400" /> Umbral CPU {cpuMedium}%
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-0.5 w-3 bg-red-400" /> Crítico CPU {cpuHigh}%
             </span>
           </span>
         }

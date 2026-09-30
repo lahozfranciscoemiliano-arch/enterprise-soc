@@ -101,6 +101,9 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
         network: s.network ?? null,
       }));
     return base
+      // La VPS del propio NOC (tag infra-vps) no es una sucursal: no corre el
+      // agente de Windows y figuraba "Sin datos — el agente todavía no es 1.3.0".
+      .filter((site) => !byId.get(site.serverId)?.tags?.includes('infra-vps'))
       .map((site) => {
         const live = byId.get(site.serverId);
         const network = live?.network ?? site.network;
@@ -537,7 +540,7 @@ export default function RedTab({ servers, isAdmin }: { servers: ServerSummary[];
             {(overview?.recentEvents ?? []).map((e) => (
               <li key={e.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs">
                 <span className="min-w-0 flex-1 text-slate-700">{e.description}</span>
-                <span className="flex shrink-0 items-center gap-2">
+                <span className="flex flex-wrap items-center gap-2 sm:shrink-0">
                   <AlertRepeatInfo alert={e} />
                   <span className={`rounded-full border px-2 py-0.5 text-[10px] ${SEVERITY_STYLES[e.severity]}`}>{e.severity}</span>
                   <span className="text-[10px] text-slate-400">{new Date(e.createdAt).toLocaleString('es-ES')}</span>

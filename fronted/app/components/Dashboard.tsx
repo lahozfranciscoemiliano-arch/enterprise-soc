@@ -220,11 +220,15 @@ export default function Dashboard({
 
           if (message.type === 'TELEMETRY') {
             const d = message.data;
-            const healthStatus = getHealthStatus(d.cpuUsage, d.memoryUsage, d.diskUsage);
             const recordedAt = d.recordedAt ?? new Date().toISOString();
 
             setServers((prev) => {
               const existing = prev[d.serverId];
+              // El backend manda la salud ya calculada (umbrales configurados y
+              // unidades de datos); el calculo local queda para backends viejos.
+              const healthStatus =
+                d.healthStatus ??
+                getHealthStatus(d.cpuUsage, d.memoryUsage, d.diskUsage, existing?.effectiveThresholds, existing?.volumes);
               return {
                 ...prev,
                 [d.serverId]: {

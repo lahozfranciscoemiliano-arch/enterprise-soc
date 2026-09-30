@@ -96,6 +96,9 @@ module.exports = function registerInventoryRoutes(app, { authUser, authServer, r
         at: new Date(),
         readable: parsed.data.status?.readable ?? null,
         error: parsed.data.status?.error ?? null,
+        // Desde cuando lee el DC (cursor incremental del agente): si queda
+        // clavado en el pasado o en el futuro, el DC deja de informar sesiones.
+        since: parsed.data.status?.since ?? null,
         received: parsed.data.logons.length,
         stored: result.stored,
       });

@@ -77,4 +77,36 @@ function normalizeBackupReport(mode, data) {
   };
 }
 
-module.exports = { loadBackupPolicy, backupMode, normalizeBackupReport, NATIVE_METHODS };
+// Corridas del Visor de eventos con fecha en el futuro (registros corruptos o
+// de cuando el reloj estuvo mal). El agente <= 1.16.0 las tomaba como la
+// "ultima corrida": KSFS2 figuraba FALLIDO por eventos "del 2098-01-01"
+// aunque el backup de anoche habia salido bien. Se descartan y, si el
+// FALLIDO salia de una de ellas y la corrida real mas nueva fue exitosa, se
+// informa el resultado real (misma regla que aplica el agente con el WMI).
+const FUTURE_TOLERANCE_MS = 60 * 60 * 1000;
+const FUTURE_RUN_DETAIL_RE = /^La ultima corrida de backup \(([^)]+)\) fallo \(evento \d+ de Microsoft-Windows-Backup\)\.\s*/;
+
+function isFutureIso(iso, now = Date.now()) {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return !Number.isNaN(t) && t > now + FUTURE_TOLERANCE_MS;
+}
+
+function sanitizeBackupReport(data, now = Date.now()) {
+  const runs = data.metadata?.runs;
+  if (!Array.isArray(runs)) return data;
+  const kept = runs.filter((r) => !isFutureIso(r?.finishedAt, now) && !isFutureIso(r?.startedAt, now));
+  if (kept.length === runs.length) return data;
+
+  const out = { ...data, metadata: { ...data.metadata, runs: kept } };
+  const futureFailure = runs.some((r) => r?.result !== 'SUCCESS' && isFutureIso(r?.finishedAt, now));
+  const latest = kept[0];
+  if (data.result === 'FAILED' && futureFailure && latest?.result === 'SUCCESS') {
+    out.result = 'SUCCESS';
+    const rest = String(data.detail ?? '').replace(FUTURE_RUN_DETAIL_RE, '');
+    out.detail = `Ultima corrida exitosa segun el Visor de eventos (${latest.finishedAt}); se descartaron eventos con fecha futura. ${rest}`.slice(0, 1000);
+  }
+  return out;
+}
+
+module.exports = { loadBackupPolicy, backupMode, normalizeBackupReport, sanitizeBackupReport, isFutureIso, NATIVE_METHODS };

@@ -128,7 +128,7 @@ export default function LogsRegexTab({
             Historial de Logs Críticos{' '}
             <span className="font-normal text-slate-400">(búsqueda por expresiones regulares)</span>
           </h2>
-          <div className="flex gap-1">
+          <div className="flex flex-wrap gap-1">
             {STATUS_FILTERS.map((f) => (
               <motion.button
                 key={f.id}
