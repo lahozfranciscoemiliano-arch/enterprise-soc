@@ -13,6 +13,7 @@ const { buildNetworkTopology } = require('../services/topology');
 const { segmentScanDue, ingestSegments, networksByGateway } = require('../services/inventory');
 const { logAudit } = require('../services/auditLog');
 const { broadcast } = require('../websocket/socketServer');
+const agentMove = require('../services/agentMove');
 
 const pinSchema = z.string().regex(/^\d{6}$/, 'El PIN debe tener 6 dígitos');
 const TICKET_STATUSES = ['OPEN', 'IN_PROGRESS', 'WAITING', 'RESOLVED', 'CLOSED'];
@@ -576,7 +577,11 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
     '/api/agent/tasks',
     agentLimiter,
     authServer,
-    wrap(async (req, res) => res.json(await ops.agentTasks(req.server)))
+    wrap(async (req, res) => {
+      // Estado de la mudanza que informa el agente + direccion nueva, si hay una programada.
+      agentMove.recordReport(req.server, req.body);
+      return res.json({ ...(await ops.agentTasks(req.server)), ...(await agentMove.planFor()) });
+    })
   );
 
   app.post(

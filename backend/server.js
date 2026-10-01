@@ -64,6 +64,7 @@ const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskFo
 const registerInventoryRoutes = require('./src/routes/inventory');
 const registerOpsRoutes = require('./src/routes/ops');
 const registerAssetRoutes = require('./src/routes/assets');
+const registerAgentMoveRoutes = require('./src/routes/agentMove');
 const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
 const { seedMissingPlaybooks } = require('./src/services/recommendations');
 const unifiLocal = require('./src/services/unifiLocal');
@@ -1757,6 +1758,7 @@ app.get('/api/admin/anomaly-detection', authUser, requireRole('ADMIN'), (req, re
 registerInventoryRoutes(app, { authUser, authServer, requireRole, adminWriteLimiter });
 registerOpsRoutes(app, { authUser, authServer, requireRole });
 registerAssetRoutes(app, { authUser, requireRole });
+registerAgentMoveRoutes(app, { authUser, authServer, requireRole });
 
 // Sondeo manual de UniFi (boton "Probar conexion" en Admin -> Configuracion).
 app.post('/api/admin/unifi/sync', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {

@@ -22,6 +22,7 @@ import RdpConnectButton from '../RdpConnectButton';
 import PlaybooksAdmin from '../PlaybooksAdmin';
 import ReportsPanel from '../ReportsPanel';
 import ServerFleet from '../assets/ServerFleet';
+import AgentMovePanel from '../AgentMovePanel';
 import { useToast } from '../Toast';
 import type { AdminUser, Role, ServerSummary } from '../../types';
 
@@ -285,7 +286,7 @@ export default function AdminTab({
       )}
 
       <AnimatePresence mode="wait">
-      <motion.div key={section} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
+      <motion.div key={section} className="space-y-4" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
       {section === 'usuarios' && (
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <h2 className="mb-4 flex items-center gap-1.5 text-sm font-semibold text-slate-800">
@@ -388,6 +389,8 @@ export default function AdminTab({
         {userFormError && <p className="mt-2 text-xs text-red-700">{userFormError}</p>}
       </div>
       )}
+
+      {section === 'servidores' && <AgentMovePanel />}
 
       {section === 'servidores' && (
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">

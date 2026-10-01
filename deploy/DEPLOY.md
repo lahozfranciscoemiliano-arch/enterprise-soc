@@ -824,6 +824,51 @@ nuevos que un backend viejo rechaza).
   media 24 h, baja 72 h), filtros, exportación a CSV, servidor al crear un
   ticket y nota automática cuando la alerta vinculada se normaliza sola.
 
+## 43. Mudar el NOC a otra VPS (agente 1.19.0)
+
+**Admin → Servidores → "Mudar el NOC a otra VPS"** cambia la dirección del NOC en
+todos los agentes sin entrar a cada servidor. Cada agente guarda la dirección
+nueva en su `.env` (`MOVE_TO_URL`), la prueba desde su propia red cada 2 min y
+se muda (reescribe `BACKEND_URL` y se reinicia) **solo** si la VPS nueva es el
+NOC y ya lo reconoce con sus credenciales (base restaurada), y además:
+
+- la VPS actual dejó de responder 3 veces seguidas (el corte), o
+- las dos direcciones llegan al mismo backend (puente Nginx o DNS ya cambiado).
+
+Si la nueva no está lista no cambia nada, y el panel muestra el estado de cada
+agente: *no llega a la VPS nueva* (firewall / FortiGate), *falta restaurar la
+base*, *listo: se muda solo en el corte*, *ya usa la dirección nueva*.
+Programarla pide rol ADMIN + PIN, queda en la auditoría, avisa por todos los
+canales (CRÍTICA) y vence sola a los 7 días.
+
+Pasos:
+
+1. **Antes (días u horas):** actualizar la VPS actual (`bash deploy/vps-update.sh`)
+   para que los agentes pasen a 1.19.0. El panel muestra "Agentes compatibles: N/N".
+2. **Preparar la VPS nueva:** `deploy/setup-server.sh`, clonar el repo, copiar el
+   `.env` de la vieja (mismo `JWT_SECRET`, `POSTGRES_*` y secreto de
+   enrolamiento) cambiando la IP en `CORS_ORIGIN` / `NEXT_PUBLIC_*`, copiar el
+   sitio de Nginx y `/etc/enterprise-soc/host-monitor.env`, y
+   `docker compose up -d --build` (arranca con la base vacía).
+3. **Programar la mudanza** en el panel de la VPS actual con la dirección nueva.
+   En un par de minutos cada agente informa si llega: corregir el firewall de
+   las sedes que digan "No llega a la VPS nueva" **antes** del corte. Lo normal
+   es "La VPS nueva responde; falta restaurar la base".
+4. **Corte.** En la vieja:
+   `docker compose stop backend frontend` y
+   `docker exec enterprise-soc-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > /root/nocsoc.dump`.
+   En la nueva, con el dump copiado:
+   `docker compose stop backend frontend`,
+   `docker exec -i enterprise-soc-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean --if-exists' < nocsoc.dump`
+   y `bash deploy/vps-update.sh`. Unos 6 minutos después los agentes se mudan
+   solos; el panel de la VPS nueva los muestra como "Ya usa la dirección nueva".
+5. Los servidores apagados durante el corte se mudan cuando vuelven (tienen la
+   dirección guardada). Para agentes que no llegaron a 1.19.0, dejar en la VPS
+   vieja un Nginx que reenvíe todo a la nueva (puente) hasta cambiarlos a mano.
+6. Cuando están todos, **Cancelar mudanza** en el panel nuevo para limpiar (o
+   vence sola). Aparte quedan el poller de Fortinet (`SOC_BACKEND_URL`), el
+   syslog del FortiGate y la dirección en la app del celular.
+
 ## Checklist de seguridad antes de anunciar la URL
 
 - [ ] `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL` apuntan a tu dominio real
