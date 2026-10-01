@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.17.0"
+AGENT_VERSION = "1.18.0"
 
 
 def get_base_dir() -> Path:
@@ -668,6 +668,98 @@ def collect_physical_disks() -> list[dict[str, Any]]:
     return disks
 
 
+# Ficha de hardware (marca, modelo, serie, CPU, RAM, discos, BIOS, chasis):
+# alimenta el "Parque de servidores" del NOC. Cambia muy poco: se lee cada 6 h.
+CHASSIS_TYPES = {
+    3: "Escritorio", 4: "Escritorio bajo perfil", 6: "Mini torre", 7: "Torre", 8: "Portátil", 9: "Notebook", 10: "Notebook",
+    13: "Todo en uno", 14: "Notebook", 15: "Compacto", 17: "Servidor de rack (chasis principal)", 23: "Servidor de rack",
+    24: "Chasis sellado", 28: "Blade", 30: "Tablet", 31: "Convertible", 34: "PC embebida", 35: "Mini PC", 36: "Stick PC",
+}
+_hardware_cache: dict[str, Any] = {"data": None, "at": float("-inf")}
+
+
+def collect_hardware_info() -> dict[str, Any]:
+    if _hardware_cache["data"] and time.monotonic() - _hardware_cache["at"] < 6 * 3600:
+        return _hardware_cache["data"]
+    hw: dict[str, Any] = {}
+    cs = _wmi_query(r"root\cimv2", "SELECT Manufacturer, Model, SystemFamily, TotalPhysicalMemory, NumberOfProcessors, Domain FROM Win32_ComputerSystem")
+    if cs:
+        c = cs[0]
+        hw["manufacturer"] = str(_safe_attr(c, "Manufacturer") or "").strip() or None
+        hw["model"] = str(_safe_attr(c, "Model") or "").strip() or None
+        hw["family"] = str(_safe_attr(c, "SystemFamily") or "").strip() or None
+        hw["sockets"] = _safe_attr(c, "NumberOfProcessors")
+        hw["domain"] = str(_safe_attr(c, "Domain") or "") or None
+        try:
+            hw["ramBytes"] = int(_safe_attr(c, "TotalPhysicalMemory") or 0) or None
+        except (TypeError, ValueError):
+            pass
+    prod = _wmi_query(r"root\cimv2", "SELECT IdentifyingNumber, Vendor, Name, Version FROM Win32_ComputerSystemProduct")
+    if prod:
+        hw["serial"] = str(_safe_attr(prod[0], "IdentifyingNumber") or "").strip() or None
+    bios = _wmi_query(r"root\cimv2", "SELECT SerialNumber, SMBIOSBIOSVersion, ReleaseDate, Manufacturer FROM Win32_BIOS")
+    if bios:
+        b = bios[0]
+        hw["serial"] = hw.get("serial") or str(_safe_attr(b, "SerialNumber") or "").strip() or None
+        hw["biosVersion"] = str(_safe_attr(b, "SMBIOSBIOSVersion") or "").strip() or None
+        hw["biosDate"] = _wmi_datetime_to_iso(_safe_attr(b, "ReleaseDate"))
+    enc = _wmi_query(r"root\cimv2", "SELECT ChassisTypes, SMBIOSAssetTag FROM Win32_SystemEnclosure")
+    if enc:
+        types = _safe_attr(enc[0], "ChassisTypes") or []
+        try:
+            code = int(list(types)[0]) if types else None
+        except (TypeError, ValueError):
+            code = None
+        hw["chassisCode"] = code
+        hw["chassis"] = CHASSIS_TYPES.get(code) if code else None
+        tag = str(_safe_attr(enc[0], "SMBIOSAssetTag") or "").strip()
+        hw["assetTag"] = tag if tag and tag.lower() not in ("no asset tag", "default string", "none") else None
+    cpus = _wmi_query(r"root\cimv2", "SELECT Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed FROM Win32_Processor")
+    if cpus:
+        hw["cpu"] = " ".join(str(_safe_attr(cpus[0], "Name") or "").split()) or None
+        hw["cpuCount"] = len(cpus)
+        hw["cores"] = sum(int(_safe_attr(c, "NumberOfCores") or 0) for c in cpus) or None
+        hw["threads"] = sum(int(_safe_attr(c, "NumberOfLogicalProcessors") or 0) for c in cpus) or None
+        hw["cpuMhz"] = _safe_attr(cpus[0], "MaxClockSpeed")
+    mem = _wmi_query(r"root\cimv2", "SELECT Capacity, Speed, Manufacturer, PartNumber FROM Win32_PhysicalMemory")
+    if mem:
+        hw["memoryModules"] = [
+            {
+                "sizeBytes": int(_safe_attr(m, "Capacity") or 0) or None,
+                "speedMhz": _safe_attr(m, "Speed"),
+                "maker": str(_safe_attr(m, "Manufacturer") or "").strip() or None,
+                "part": str(_safe_attr(m, "PartNumber") or "").strip() or None,
+            }
+            for m in mem[:32]
+        ]
+    disks = _wmi_query(r"root\cimv2", "SELECT Model, Size, InterfaceType, MediaType, SerialNumber FROM Win32_DiskDrive")
+    hw["disks"] = [
+        {
+            "model": str(_safe_attr(d, "Model") or "").strip() or None,
+            "sizeBytes": int(_safe_attr(d, "Size") or 0) or None,
+            "interface": str(_safe_attr(d, "InterfaceType") or "") or None,
+        }
+        for d in disks[:24]
+    ]
+    oses = _wmi_query(r"root\cimv2", "SELECT Caption, Version, BuildNumber, InstallDate, OSArchitecture FROM Win32_OperatingSystem")
+    if oses:
+        o = oses[0]
+        hw["os"] = str(_safe_attr(o, "Caption") or "").strip() or None
+        hw["osVersion"] = str(_safe_attr(o, "Version") or "") or None
+        hw["osBuild"] = str(_safe_attr(o, "BuildNumber") or "") or None
+        hw["osInstalledAt"] = _wmi_datetime_to_iso(_safe_attr(o, "InstallDate"))
+        hw["osArch"] = str(_safe_attr(o, "OSArchitecture") or "") or None
+    nics = _wmi_query(r"root\cimv2", "SELECT Name, MACAddress, Speed FROM Win32_NetworkAdapter WHERE PhysicalAdapter=TRUE AND NetEnabled=TRUE")
+    hw["nics"] = [
+        {"name": str(_safe_attr(n, "Name") or ""), "mac": str(_safe_attr(n, "MACAddress") or "") or None, "speedMbps": round(int(_safe_attr(n, "Speed") or 0) / 1e6) or None}
+        for n in nics[:8]
+    ]
+    text = f"{hw.get('manufacturer', '')} {hw.get('model', '')}".lower()
+    hw["virtual"] = any(k in text for k in ("vmware", "virtual machine", "virtualbox", "kvm", "qemu", "xen", "hyper-v", "proxmox"))
+    _hardware_cache.update(data=hw, at=time.monotonic())
+    return hw
+
+
 def check_reboot_pending() -> bool:
     try:
         import winreg
@@ -1027,6 +1119,7 @@ def collect_diagnostics() -> dict[str, Any]:
     collectors = {
         "volumes": collect_volumes,
         "physicalDisks": collect_physical_disks,
+        "hardware": collect_hardware_info,
         "rebootPending": check_reboot_pending,
         "updates": collect_update_status,
         "stoppedServices": collect_stopped_services,
@@ -3077,6 +3170,7 @@ def collect_logon_activity() -> list[dict[str, Any]]:
 
 
 def identity_loop() -> None:
+    _com_init_thread()
     time.sleep(30)
     while True:
         wait = IDENTITY_INTERVAL_SECONDS
@@ -3764,6 +3858,7 @@ def unifi_cycle() -> int:
 
 
 def unifi_loop() -> None:
+    _com_init_thread()
     try:
         import urllib3
 
@@ -4161,6 +4256,7 @@ def build_apps_report() -> dict[str, Any]:
 
 def appmon_loop() -> None:
     """Hilo del monitoreo de aplicaciones y micro-cortes."""
+    _com_init_thread()
     time.sleep(60)
     last_discovery = last_sample = last_sql = last_report = float("-inf")
     headers = {"Content-Type": "application/json", "X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}
@@ -4195,6 +4291,7 @@ def appmon_loop() -> None:
 
 
 def inventory_loop() -> None:
+    _com_init_thread()
     while True:
         try:
             if time.monotonic() >= _inventory_paused_until and inventory_should_run():
@@ -4385,6 +4482,7 @@ def scan_segments(cidrs: list[str], gateways: dict[str, str | None]) -> None:
 
 
 def netguard_loop() -> None:
+    _com_init_thread()
     if not NETGUARD_ENABLED:
         return
     time.sleep(40)
@@ -4674,6 +4772,7 @@ def tasks_cycle() -> int:
 
 
 def tasks_loop() -> None:
+    _com_init_thread()
     time.sleep(25)
     while True:
         try:
@@ -4826,7 +4925,21 @@ def run_cycle(debug: bool) -> None:
     check_and_apply_update(latest_version)
 
 
+def _com_init_thread() -> None:
+    """WMI/COM en un hilo secundario necesita CoInitialize en ESE hilo: sin
+    esto las consultas WMI fallan en silencio (devolvian listas vacias)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import pythoncom
+
+        pythoncom.CoInitialize()
+    except Exception:
+        pass
+
+
 def diagnostics_loop() -> None:
+    _com_init_thread()
     global _pending_diagnostics
     time.sleep(5)
     while True:
@@ -4843,6 +4956,7 @@ def backup_loop(debug: bool) -> None:
     """Chequeo de backups en su propio hilo: leer scripts, logs de robocopy o
     SQL puede tardar, y no debe demorar la telemetria (el NOC marcaria el
     servidor como caido)."""
+    _com_init_thread()
     time.sleep(20)
     while True:
         try:

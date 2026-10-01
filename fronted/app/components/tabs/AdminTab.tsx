@@ -11,6 +11,7 @@ import {
   UserRound,
   Server,
   Wrench,
+  HardDrive,
   type LucideIcon,
 } from 'lucide-react';
 import ServerConfigPanel from '../ServerConfigPanel';
@@ -20,17 +21,19 @@ import FortiDeviceAdmin from '../FortiDeviceAdmin';
 import RdpConnectButton from '../RdpConnectButton';
 import PlaybooksAdmin from '../PlaybooksAdmin';
 import ReportsPanel from '../ReportsPanel';
+import ServerFleet from '../assets/ServerFleet';
 import { useToast } from '../Toast';
 import type { AdminUser, Role, ServerSummary } from '../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 type RevealedCredential = { label: string; serverId: string; apiKey: string };
-type AdminSection = 'usuarios' | 'servidores' | 'fortinet' | 'configuracion' | 'playbooks' | 'reportes' | 'auditoria';
+type AdminSection = 'usuarios' | 'servidores' | 'fichas' | 'fortinet' | 'configuracion' | 'playbooks' | 'reportes' | 'auditoria';
 
 const SECTIONS: { id: AdminSection; label: string; icon: LucideIcon }[] = [
   { id: 'usuarios', label: 'Usuarios', icon: UserRound },
   { id: 'servidores', label: 'Servidores', icon: Server },
+  { id: 'fichas', label: 'Fichas de servidores', icon: HardDrive },
   { id: 'fortinet', label: 'Fortinet', icon: ShieldHalf },
   { id: 'configuracion', label: 'Configuración', icon: Settings },
   { id: 'playbooks', label: 'Playbooks', icon: BookOpen },
@@ -478,6 +481,16 @@ export default function AdminTab({
           para que un servidor nuevo se registre solo, sin pasar por este formulario.
         </p>
       </div>
+      )}
+
+      {section === 'fichas' && (
+        <div className="space-y-3">
+          <p className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-card">
+            Los servidores aparecen solos cuando su agente se conecta. Completá la ficha de cada uno (marca, modelo, serie, ubicación, garantía, proveedor...):
+            lo que detecta el agente se muestra en gris y la imagen se actualiza sola según marca y modelo. Se ve en la pestaña <b>Servidores</b>.
+          </p>
+          <ServerFleet isAdmin adminList />
+        </div>
       )}
 
       {section === 'fortinet' && <FortiDeviceAdmin />}

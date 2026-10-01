@@ -23,6 +23,7 @@ import { emitTelemetry } from '../lib/liveBus';
 import RedTab from './tabs/RedTab';
 import InventarioTab from './tabs/InventarioTab';
 import AplicacionesTab from './tabs/AplicacionesTab';
+import ServidoresTab from './tabs/ServidoresTab';
 import type {
   ConnectionStatus,
   CurrentUser,
@@ -468,6 +469,7 @@ export default function Dashboard({
           {activeTab === 'red' && <RedTab servers={serverList} isAdmin={role === 'ADMIN'} />}
           {activeTab === 'aplicaciones' && <AplicacionesTab />}
           {activeTab === 'inventario' && <InventarioTab isAdmin={role === 'ADMIN'} canWrite={role !== 'VIEWER'} />}
+          {activeTab === 'servidores' && <ServidoresTab isAdmin={role === 'ADMIN'} />}
           {activeTab === 'operaciones' && <OperacionesTab servers={serverList} isAdmin={role === 'ADMIN'} canWrite={role !== 'VIEWER'} />}
           {activeTab === 'topologia' && <TopologiaTab servers={serverList} alerts={alerts} />}
           {activeTab === 'mapa' && <MapaTab servers={serverList} alerts={alerts} />}

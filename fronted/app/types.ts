@@ -3,7 +3,7 @@ export type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
 export type BackupResult = 'SUCCESS' | 'RUNNING' | 'WARNING' | 'FAILED' | 'NOT_CONFIGURED' | 'UNKNOWN';
 export type EventStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type TabId = 'general' | 'monitoreo' | 'red' | 'aplicaciones' | 'inventario' | 'operaciones' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
+export type TabId = 'general' | 'monitoreo' | 'red' | 'aplicaciones' | 'inventario' | 'servidores' | 'operaciones' | 'topologia' | 'mapa' | 'backups' | 'logs' | 'fortinet' | 'guardia' | 'admin';
 export type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 
 export type AdminUser = {

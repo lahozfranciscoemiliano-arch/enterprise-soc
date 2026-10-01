@@ -63,6 +63,7 @@ const { processAgentExtras, summarizeNetwork } = require('./src/services/prevent
 const { getDiskForecast, scheduleDiskForecast } = require('./src/services/diskForecast');
 const registerInventoryRoutes = require('./src/routes/inventory');
 const registerOpsRoutes = require('./src/routes/ops');
+const registerAssetRoutes = require('./src/routes/assets');
 const { scheduleServiceMonitor } = require('./src/services/serviceMonitor');
 const { seedMissingPlaybooks } = require('./src/services/recommendations');
 const unifiLocal = require('./src/services/unifiLocal');
@@ -1452,6 +1453,7 @@ app.post(
 
 app.delete('/api/admin/servers/:id', authUser, requireRole('ADMIN'), async (req, res) => {
   try {
+    await prisma.serverPhoto.deleteMany({ where: { serverId: req.params.id } });
     const server = await prisma.server.delete({ where: { id: req.params.id } });
     logAudit({ userId: req.user.sub, action: 'SERVER_DELETE', targetType: 'Server', targetId: server.id, metadata: { name: server.name } });
     return res.status(204).send();
@@ -1754,6 +1756,7 @@ app.get('/api/admin/anomaly-detection', authUser, requireRole('ADMIN'), (req, re
 // servicios: ver src/routes/inventory.js.
 registerInventoryRoutes(app, { authUser, authServer, requireRole, adminWriteLimiter });
 registerOpsRoutes(app, { authUser, authServer, requireRole });
+registerAssetRoutes(app, { authUser, requireRole });
 
 // Sondeo manual de UniFi (boton "Probar conexion" en Admin -> Configuracion).
 app.post('/api/admin/unifi/sync', adminWriteLimiter, authUser, requireRole('ADMIN'), async (req, res) => {

@@ -15,6 +15,7 @@ import {
   Boxes,
   AppWindow,
   ClipboardList,
+  Server,
   type LucideIcon,
 } from 'lucide-react';
 import type { TabId } from '../types';
@@ -25,6 +26,7 @@ const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'red', label: 'Red e Internet', icon: Wifi },
   { id: 'aplicaciones', label: 'Aplicaciones', icon: AppWindow },
   { id: 'inventario', label: 'Inventario', icon: Boxes },
+  { id: 'servidores', label: 'Servidores', icon: Server },
   { id: 'operaciones', label: 'Operaciones', icon: ClipboardList },
   { id: 'topologia', label: 'Topología', icon: Network },
   { id: 'mapa', label: 'Mapa', icon: MapIcon },

@@ -310,6 +310,11 @@ model Server {
   appRoles            Json?
   hasFortinet         Boolean?
   siteNotes           String?
+  // Parque de servidores: ficha cargada a mano (marca, modelo, garantia,
+  // ubicacion, rol, notas...). Lo que detecta el agente
+  // (diagnostics.hardware) se usa como valor por defecto. La foto propia
+  // vive en server_photos (no se carga con cada consulta de servidores).
+  assetInfo           Json?
   // IP publica de salida de cada enlace, para saber por cual esta saliendo
   // el sitio (el agente reporta la IP publica actual en publicIp).
   ispPrimaryPublicIp   String?
@@ -955,4 +960,15 @@ model MacVendorCache {
   updatedAt DateTime @default(now())
 
   @@map("mac_vendor_cache")
+}
+
+// Foto propia de un servidor (Parque de servidores). Aparte para no cargarla
+// en cada consulta de la lista de servidores.
+model ServerPhoto {
+  serverId  String   @id
+  mime      String
+  data      Bytes
+  updatedAt DateTime @updatedAt
+
+  @@map("server_photos")
 }
