@@ -4,6 +4,7 @@ import { Bot, BookOpen, CircleDot, CheckCircle2, Eye, ListFilter, Regex, Sparkle
 import { EVENT_STATUS_STYLES, SEVERITY_STYLES } from '../../lib/health';
 import type { EventStatus, Playbook, SecurityAlert } from '../../types';
 import AlertOpsActions from '../ops/AlertOpsActions';
+import FailedLogonDetail from '../FailedLogonDetail';
 import AlertRepeatInfo from '../AlertRepeatInfo';
 import { AlertRecommendation, SnoozeButton } from '../AlertActionsExtra';
 
@@ -264,6 +265,7 @@ export default function LogsRegexTab({
                             <span className="whitespace-pre-line">{a.aiTriage}</span>
                           </p>
                         )}
+                        {a.details && <FailedLogonDetail detail={a.details} />}
                         {a.status !== 'RESOLVED' && <AlertRecommendation alert={a} />}
                         {a.status !== 'RESOLVED' && <AlertOpsActions alert={a} />}
                       </td>

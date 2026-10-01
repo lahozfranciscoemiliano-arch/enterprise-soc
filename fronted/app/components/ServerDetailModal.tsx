@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import WsbDetailsPanel from './WsbDetailsPanel';
 import RdpConnectButton from './RdpConnectButton';
 import RemediationModal from './ops/RemediationModal';
+import FailedLogonDetail from './FailedLogonDetail';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
@@ -652,7 +653,10 @@ export default function ServerDetailModal({
                         {activeAlerts.map((a) => (
                           <li key={a.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
                             <div className="flex items-start justify-between gap-3">
-                              <span className="text-slate-700">{a.description}</span>
+                              <span className="text-slate-700">
+                                {a.description}
+                                {a.details && <FailedLogonDetail detail={a.details} />}
+                              </span>
                               <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] ${SEVERITY_STYLES[a.severity]}`}>{a.severity}</span>
                             </div>
                             <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">

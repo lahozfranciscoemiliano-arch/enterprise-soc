@@ -52,6 +52,9 @@ function toClientEvent(event, serverName) {
     snoozedUntil: event.snoozedUntil ?? null,
     silent: event.silent ?? false,
     recommendation: getRecommendation(event.type),
+    // Detalle estructurado para mostrar en la alerta (origen de los intentos
+    // de inicio de sesion fallidos).
+    details: event.type === 'LOGIN_FAILURE' ? event.metadata?.failedLogonDetail ?? null : null,
     createdAt: event.createdAt,
     resolvedAt: event.resolvedAt,
   };

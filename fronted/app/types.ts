@@ -54,6 +54,8 @@ export type SecurityAlert = {
   snoozedUntil?: string | null;
   /** Alerta silenciosa (monitoreo de aplicaciones): visible, sin notificar. */
   silent?: boolean;
+  /** Detalle estructurado (origen de los inicios de sesion fallidos). */
+  details?: import('./components/FailedLogonDetail').FailedLogonDetailData | null;
   /** Recomendacion experta por tipo de alerta (pasos y prevencion). */
   recommendation?: { title: string; steps: string[]; prevention: string } | null;
   createdAt: string;

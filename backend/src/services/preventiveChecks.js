@@ -12,6 +12,7 @@ const { getSettings } = require('./settings');
 const { isInMaintenance, resolveThresholds, getEffectiveDefaultThresholds } = require('./alertEngine');
 const { createAndDispatchEvent, autoResolveEvents, resolveCleared } = require('./eventPipeline');
 const { broadcast } = require('../websocket/socketServer');
+const { enrichFailedLogons, summarizeFailedLogons } = require('./failedLogons');
 
 const DEFAULT_CRITICAL_SERVICES = [
   'MSSQLSERVER',
@@ -154,12 +155,17 @@ function evaluateDiagnostics(server, diag, cfg, defaults) {
   }
 
   managed.push('LOGIN_FAILURE:bruteforce');
-  if (signals.failedLogons >= FAILED_LOGONS_HIGH) {
+  const failedDetail = diag.failedLogonDetail ?? null;
+  const failedTotal = Math.max(signals.failedLogons ?? 0, failedDetail?.total ?? 0);
+  if (failedTotal >= FAILED_LOGONS_HIGH) {
+    // Con agente >= 1.17: de donde vienen los intentos (IP, equipo, usuario,
+    // via y motivo), no solo cuantos son.
+    const { description, fromInternet } = summarizeFailedLogons(server.name, failedTotal, failedDetail);
     alerts.push({
       type: 'LOGIN_FAILURE',
-      severity: signals.failedLogons >= FAILED_LOGONS_HIGH * 10 ? 'CRITICAL' : 'HIGH',
-      description: `${server.name}: ${signals.failedLogons} inicios de sesión fallidos en 24 hs — posible fuerza bruta (RDP) o una credencial vieja guardada en algún servicio.`,
-      metadata: { failedLogons: signals.failedLogons },
+      severity: fromInternet || failedTotal >= FAILED_LOGONS_HIGH * 10 ? 'CRITICAL' : 'HIGH',
+      description: description.slice(0, 1500),
+      metadata: { failedLogons: failedTotal, failedLogonDetail: failedDetail },
       dedupKey: 'LOGIN_FAILURE:bruteforce',
     });
   }
@@ -313,6 +319,13 @@ async function processAgentExtras(server, metadata) {
   if (!network && !diagnostics) return;
 
   const now = new Date();
+  if (diagnostics?.failedLogonDetail) {
+    try {
+      diagnostics.failedLogonDetail = await enrichFailedLogons(diagnostics.failedLogonDetail);
+    } catch (err) {
+      console.error('No se pudo completar el detalle de inicios de sesión fallidos', err.message);
+    }
+  }
   await prisma.server.update({
     where: { id: server.id },
     data: {

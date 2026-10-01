@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.16.1"
+AGENT_VERSION = "1.17.0"
 
 
 def get_base_dir() -> Path:
@@ -898,6 +898,101 @@ def collect_event_signals() -> dict[str, int]:
     return signals
 
 
+# Detalle de los inicios de sesion fallidos (evento 4625) de las ultimas 24 h:
+# desde que IP y equipo, con que usuario, por que via (RDP, red, servicio...)
+# y por que fallo. Agrupado por origen para ver de donde vienen los intentos.
+FAILED_LOGON_XPATH = "*[System[EventID=4625 and TimeCreated[timediff(@SystemTime) <= 86400000]]]"
+
+
+def _is_public_ip(ip: str | None) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip or "")
+    except ValueError:
+        return False
+    return addr.is_global
+
+
+def collect_failed_logon_detail(max_events: int = 5000) -> dict[str, Any] | None:
+    events = _evt_query_any("Security", FAILED_LOGON_XPATH, max_events)
+    if not events:
+        return None
+    sources: dict[tuple[str, str], dict[str, Any]] = {}
+    users: dict[str, dict[str, Any]] = {}
+    by_hour = [0] * 24
+    logon_types: dict[str, int] = {}
+    now = datetime.now(timezone.utc)
+    for xml in events:
+        when = _evt_time_iso(xml)
+        d = _event_data(xml)
+        ip = _clean_ip(d.get("IpAddress")) or ""
+        ws = (d.get("WorkstationName") or "").strip()
+        ws = "" if ws in ("-", "") else ws.upper()
+        user = (d.get("TargetUserName") or "").strip() or "(vacío)"
+        domain = (d.get("TargetDomainName") or "").strip()
+        if domain and domain not in ("-", ".") and "\\" not in user:
+            user_full = f"{domain}\\{user}"
+        else:
+            user_full = user
+        ltype = str(d.get("LogonType") or "?")
+        reason = (d.get("SubStatus") if d.get("SubStatus") not in (None, "", "0x0") else d.get("Status")) or "?"
+        process = (d.get("ProcessName") or "").strip()
+        process = "" if process == "-" else process.split("\\")[-1]
+        package = (d.get("AuthenticationPackageName") or d.get("LmPackageName") or "").strip()
+        logon_types[ltype] = logon_types.get(ltype, 0) + 1
+        if when:
+            try:
+                age = now - datetime.strptime(when, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+                hours_ago = int(age.total_seconds() // 3600)
+                if 0 <= hours_ago < 24:
+                    by_hour[23 - hours_ago] += 1
+            except ValueError:
+                pass
+        key = (ip or "-", ws or "-")
+        s = sources.setdefault(
+            key,
+            {"ip": ip or None, "workstation": ws or None, "count": 0, "users": {}, "logonTypes": {}, "reasons": {}, "processes": {}, "packages": {}, "first": when, "last": when, "public": _is_public_ip(ip)},
+        )
+        s["count"] += 1
+        s["users"][user_full] = s["users"].get(user_full, 0) + 1
+        s["logonTypes"][ltype] = s["logonTypes"].get(ltype, 0) + 1
+        s["reasons"][reason.lower()] = s["reasons"].get(reason.lower(), 0) + 1
+        if process:
+            s["processes"][process] = s["processes"].get(process, 0) + 1
+        if package:
+            s["packages"][package] = s["packages"].get(package, 0) + 1
+        if when:
+            s["first"] = min(s["first"] or when, when)
+            s["last"] = max(s["last"] or when, when)
+        u = users.setdefault(user_full, {"user": user_full, "count": 0, "sources": set()})
+        u["count"] += 1
+        u["sources"].add(ip or ws or "-")
+
+    def top(dct: dict[str, int], n: int) -> list[dict[str, Any]]:
+        return [{"name": k, "count": v} for k, v in sorted(dct.items(), key=lambda kv: -kv[1])[:n]]
+
+    ordered = sorted(sources.values(), key=lambda x: -x["count"])
+    return {
+        "total": len(events),
+        "truncated": len(events) >= max_events,
+        "hours": 24,
+        "byHour": by_hour,
+        "logonTypes": logon_types,
+        "sourceCount": len(sources),
+        "sources": [
+            {
+                **{k: s[k] for k in ("ip", "workstation", "count", "first", "last", "public")},
+                "users": top(s["users"], 5),
+                "logonTypes": s["logonTypes"],
+                "reasons": s["reasons"],
+                "processes": top(s["processes"], 3),
+                "packages": top(s["packages"], 2),
+            }
+            for s in ordered[:20]
+        ],
+        "users": [{"user": u["user"], "count": u["count"], "sources": len(u["sources"])} for u in sorted(users.values(), key=lambda x: -x["count"])[:10]],
+    }
+
+
 def collect_top_processes(limit: int = 5) -> dict[str, list[dict[str, Any]]]:
     procs = []
     for p in psutil.process_iter(["name", "memory_info"]):
@@ -937,6 +1032,7 @@ def collect_diagnostics() -> dict[str, Any]:
         "stoppedServices": collect_stopped_services,
         "defender": collect_defender_status,
         "eventSignals": collect_event_signals,
+        "failedLogonDetail": collect_failed_logon_detail,
         "topProcesses": collect_top_processes,
     }
     for key, fn in collectors.items():
