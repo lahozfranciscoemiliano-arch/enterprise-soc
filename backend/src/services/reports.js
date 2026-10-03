@@ -18,7 +18,27 @@ const REPORTS_DIR = path.join(__dirname, '..', '..', 'reports');
 if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
 
 const MAX_STORED_REPORTS = 60;
-const FILENAME_RE = /^enterprise-soc-report-\d{4}-\d{2}-\d{2}T\d{6}Z\.pdf$/;
+// enterprise-soc-diario-... / -semanal-... (automaticos) y -report-... (a demanda).
+const FILENAME_RE = /^enterprise-soc-(report|diario|semanal)-\d{4}-\d{2}-\d{2}T\d{6}Z\.pdf$/;
+const FILE_PREFIX = { daily: 'diario', weekly: 'semanal', manual: 'report' };
+const REPORT_TITLE = { daily: 'Reporte diario NOC/SOC', weekly: 'Reporte semanal general NOC/SOC', manual: 'Reporte Ejecutivo NOC/SOC' };
+const DEFAULT_TIMEZONE = 'America/Argentina/Buenos_Aires';
+const SEVERITY_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+
+function validTimezone(tz) {
+  if (!tz) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return tz;
+  } catch {
+    return null;
+  }
+}
+
+async function reportTimezone() {
+  const { REPORT_TIMEZONE } = await getSettings(['REPORT_TIMEZONE']);
+  return validTimezone(REPORT_TIMEZONE) || validTimezone(process.env.APP_TIMEZONE) || DEFAULT_TIMEZONE;
+}
 
 function isValidReportFilename(name) {
   return typeof name === 'string' && FILENAME_RE.test(name);
@@ -40,9 +60,9 @@ function formatBytes(bytes) {
 // que ya usa el dashboard (getHealthStatus, umbrales efectivos), para que el
 // PDF nunca muestre un numero distinto al que se ve en pantalla en ese
 // momento.
-async function collectReportData(periodDays) {
+async function collectReportData(periodDays, { periodStart: startOverride } = {}) {
   const now = new Date();
-  const periodStart = new Date(now.getTime() - periodDays * 24 * 60 * 60 * 1000);
+  const periodStart = startOverride ?? new Date(now.getTime() - periodDays * 24 * 60 * 60 * 1000);
   const periodMs = now - periodStart;
   // Serie temporal: por hora en reportes de hasta 2 dias, por dia el resto.
   const hourly = periodDays <= 2;
@@ -227,10 +247,18 @@ async function collectReportData(periodDays) {
     clients: unifiSites.reduce((a, x) => a + x.wifiClients, 0),
   };
 
+  // Alertas del periodo, las mas graves primero (detalle del reporte diario).
+  const recentEvents = [...eventsInPeriod]
+    .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0) || b.createdAt - a.createdAt)
+    .slice(0, 40)
+    .map((e) => ({ createdAt: e.createdAt, server: e.server?.name ?? '—', type: e.type, severity: e.severity, status: e.status, description: e.description }));
+
   return {
     generatedAt: now,
     periodDays,
     periodStart,
+    timezone: await reportTimezone(),
+    recentEvents,
     hourly,
     totalServers: servers.length,
     onlineServers: servers.filter((s) => s.status === 'ONLINE').length,
@@ -316,10 +344,10 @@ function buildPdfBuffer(data) {
   });
 }
 
-function reportFilename(date = new Date()) {
+function reportFilename(date = new Date(), kind = 'manual') {
   const datePart = date.toISOString().slice(0, 10); // YYYY-MM-DD
   const timePart = date.toISOString().slice(11, 19).replace(/:/g, ''); // HHMMSS
-  return `enterprise-soc-report-${datePart}T${timePart}Z.pdf`;
+  return `enterprise-soc-${FILE_PREFIX[kind] ?? 'report'}-${datePart}T${timePart}Z.pdf`;
 }
 
 function csvEscape(value) {
@@ -367,12 +395,23 @@ function pruneOldReports() {
   }
 }
 
-async function generateAndStoreReport({ periodDays = 7 } = {}) {
+function periodLabelFor(kind, periodDays) {
+  if (kind === 'daily') return periodDays > 1 ? 'Desde el viernes (incluye el fin de semana)' : 'Últimas 24 horas';
+  if (kind === 'weekly') return 'Últimos 7 días';
+  return periodDays === 1 ? 'Últimas 24 horas' : `Últimos ${periodDays} días`;
+}
+
+// kind: 'daily' (PDF breve: novedades del periodo), 'weekly' (general con
+// todo) o 'manual' (a demanda desde el panel, completo).
+async function generateAndStoreReport({ periodDays = 7, kind = 'manual' } = {}) {
   const data = await collectReportData(periodDays);
+  data.kind = FILE_PREFIX[kind] ? kind : 'manual';
+  data.reportTitle = REPORT_TITLE[data.kind];
+  data.periodLabel = periodLabelFor(data.kind, periodDays);
   const rules = buildRuleInsights(data);
   data.insights = (await generateReportInsights(data, rules)) ?? rules;
   const buffer = await buildPdfBuffer(data);
-  const filename = reportFilename(data.generatedAt);
+  const filename = reportFilename(data.generatedAt, data.kind);
   fs.writeFileSync(path.join(REPORTS_DIR, filename), buffer);
   pruneOldReports();
   return { filename, buffer, data };
@@ -395,44 +434,108 @@ function getReportPath(filename) {
   return fs.existsSync(full) ? full : null;
 }
 
-// Chequeo periodico (no un cron real): compara la config guardada contra
-// cuando se mando el ultimo reporte (REPORT_LAST_SENT_AT, guardado directo
-// en la tabla Setting sin pasar por el modulo settings.js porque es un dato
-// interno, no algo que el panel deba mostrar como campo editable). Correr
-// esto cada 15 minutos es mas que suficiente precision para un reporte
-// diario/semanal.
-async function maybeSendScheduledReport() {
-  const cfg = await getSettings(['REPORT_ENABLED', 'REPORT_FREQUENCY', 'REPORT_HOUR', 'REPORT_EMAIL_TO']);
+// Envio automatico: UN correo por dia habil a la hora local configurada
+// (REPORT_LOCAL_HOUR en REPORT_TIMEZONE, por defecto 09:00):
+//   - martes a viernes: reporte diario (ultimas 24 h, PDF breve);
+//   - lunes: reporte semanal general (7 dias, PDF completo, cubre el fin de
+//     semana). Si el semanal esta desactivado, el lunes va el diario desde el
+//     viernes.
+// Se chequea cada minuto. Si el backend estuvo caido a esa hora, se manda
+// apenas vuelve (hasta 3 h despues). Si el envio falla se reintenta cada 15
+// min dentro de esa ventana. El dia enviado queda en REPORT_LAST_SENT_DATE.
+const SEND_WINDOW_HOURS = 3;
+const RETRY_MS = 15 * 60 * 1000;
+let sendingNow = false;
+let retryAfter = 0;
+
+function localParts(date, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23', weekday: 'short' })
+      .formatToParts(date)
+      .map((p) => [p.type, p.value])
+  );
+  const weekday = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[parts.weekday];
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, weekday, hour: Number(parts.hour) };
+}
+
+/** Que corresponde mandar en este momento (o null). Separado para poder probarlo. */
+function scheduledKindFor(local, cfg) {
+  if (local.weekday > 5) return null;
+  const hour = Number.isFinite(cfg.REPORT_LOCAL_HOUR) ? cfg.REPORT_LOCAL_HOUR : 9;
+  if (local.hour < hour || local.hour >= hour + SEND_WINDOW_HOURS) return null;
+  const daily = cfg.REPORT_DAILY_ENABLED !== false;
+  const weekly = cfg.REPORT_WEEKLY_ENABLED !== false;
+  if (local.weekday === 1) {
+    if (weekly) return { kind: 'weekly', periodDays: 7 };
+    if (daily) return { kind: 'daily', periodDays: 3 };
+    return null;
+  }
+  return daily ? { kind: 'daily', periodDays: 1 } : null;
+}
+
+async function setInternal(key, value) {
+  await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
+}
+
+/** Genera y manda un reporte automatico (tambien lo usa "Enviar ahora"). */
+async function sendScheduledReport({ kind, periodDays, to }) {
+  const { filename, buffer, data } = await generateAndStoreReport({ periodDays, kind });
+  const sentTo = await sendReportEmail({ to, filename, buffer, data });
+  return { filename, sentTo };
+}
+
+async function maybeSendScheduledReport(now = new Date()) {
+  if (sendingNow || Date.now() < retryAfter) return;
+  const cfg = await getSettings(['REPORT_ENABLED', 'REPORT_EMAIL_TO', 'REPORT_DAILY_ENABLED', 'REPORT_WEEKLY_ENABLED', 'REPORT_LOCAL_HOUR']);
   if (!cfg.REPORT_ENABLED || !cfg.REPORT_EMAIL_TO) return;
 
-  const frequency = cfg.REPORT_FREQUENCY === 'weekly' ? 'weekly' : 'daily';
-  const targetHour = cfg.REPORT_HOUR ?? 8;
+  const local = localParts(now, await reportTimezone());
+  const plan = scheduledKindFor(local, cfg);
+  if (!plan) return;
+  const last = await prisma.setting.findUnique({ where: { key: 'REPORT_LAST_SENT_DATE' } });
+  if (last?.value === local.date) return;
 
-  const now = new Date();
-  if (now.getUTCHours() !== targetHour) return;
-  if (frequency === 'weekly' && now.getUTCDay() !== 1) return; // lunes
-
-  const lastSentRow = await prisma.setting.findUnique({ where: { key: 'REPORT_LAST_SENT_AT' } });
-  const lastSent = lastSentRow ? new Date(lastSentRow.value) : null;
-  const minGapMs = (frequency === 'weekly' ? 6 : 1) * 24 * 60 * 60 * 1000; // evita reenviar dentro de la misma ventana
-  if (lastSent && now.getTime() - lastSent.getTime() < minGapMs) return;
-
+  sendingNow = true;
   try {
-    const periodDays = frequency === 'weekly' ? 7 : 1;
-    const { filename, buffer, data } = await generateAndStoreReport({ periodDays });
-    await sendReportEmail({ to: cfg.REPORT_EMAIL_TO, filename, buffer, summary: { periodDays, slaPercentage: data.slaPercentage } });
-    await prisma.setting.upsert({
-      where: { key: 'REPORT_LAST_SENT_AT' },
-      update: { value: now.toISOString() },
-      create: { key: 'REPORT_LAST_SENT_AT', value: now.toISOString() },
-    });
-    console.log(`Reporte ejecutivo (${frequency}) enviado a ${cfg.REPORT_EMAIL_TO}: ${filename}`);
+    const { filename, sentTo } = await sendScheduledReport({ ...plan, to: cfg.REPORT_EMAIL_TO });
+    await setInternal('REPORT_LAST_SENT_DATE', local.date);
+    await setInternal('REPORT_LAST_RESULT', JSON.stringify({ at: new Date().toISOString(), kind: plan.kind, ok: true, to: sentTo, filename }));
+    console.log(`Reporte ${plan.kind} enviado a ${sentTo.join(', ')}: ${filename}`);
   } catch (err) {
-    console.error('Error generando/enviando el reporte ejecutivo programado', err);
+    retryAfter = Date.now() + RETRY_MS;
+    await setInternal('REPORT_LAST_RESULT', JSON.stringify({ at: new Date().toISOString(), kind: plan.kind, ok: false, error: err.message })).catch(() => {});
+    console.error('Error generando/enviando el reporte programado', err.message);
+  } finally {
+    sendingNow = false;
   }
 }
 
-const REPORT_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+async function scheduleStatus() {
+  const cfg = await getSettings(['REPORT_ENABLED', 'REPORT_EMAIL_TO', 'REPORT_DAILY_ENABLED', 'REPORT_WEEKLY_ENABLED', 'REPORT_LOCAL_HOUR']);
+  const tz = await reportTimezone();
+  const last = await prisma.setting.findUnique({ where: { key: 'REPORT_LAST_RESULT' } });
+  let lastResult = null;
+  try {
+    lastResult = last ? JSON.parse(last.value) : null;
+  } catch {
+    lastResult = null;
+  }
+  // Proximo envio: el proximo dia habil (hoy si todavia no paso la hora).
+  let next = null;
+  if (cfg.REPORT_ENABLED && cfg.REPORT_EMAIL_TO) {
+    const hour = Number.isFinite(cfg.REPORT_LOCAL_HOUR) ? cfg.REPORT_LOCAL_HOUR : 9;
+    const sentDate = (await prisma.setting.findUnique({ where: { key: 'REPORT_LAST_SENT_DATE' } }))?.value;
+    for (let d = 0; d < 8 && !next; d += 1) {
+      const probe = localParts(new Date(Date.now() + d * 86400000), tz);
+      if (d === 0 && (probe.date === sentDate || probe.hour >= hour + SEND_WINDOW_HOURS)) continue;
+      const plan = scheduledKindFor({ ...probe, hour }, cfg);
+      if (plan) next = { date: probe.date, hour, kind: plan.kind };
+    }
+  }
+  return { timezone: tz, lastResult, next };
+}
+
+const REPORT_CHECK_INTERVAL_MS = 60 * 1000;
 
 function scheduleReports() {
   setInterval(() => {
@@ -447,4 +550,8 @@ module.exports = {
   getReportPath,
   maybeSendScheduledReport,
   scheduleReports,
+  sendScheduledReport,
+  scheduleStatus,
+  scheduledKindFor,
+  localParts,
 };

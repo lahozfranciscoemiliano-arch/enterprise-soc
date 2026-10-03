@@ -1,4 +1,5 @@
 import PinSetup from './ops/PinSetup';
+import AntiPhishingSetup from './AntiPhishingSetup';
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Check, ShieldCheck, X } from 'lucide-react';
@@ -232,6 +233,8 @@ export default function AccountSettingsModal({
         )}
 
         <PinSetup />
+
+        <AntiPhishingSetup />
 
         {error && <p className="mb-4 text-xs text-red-700">{error}</p>}
 

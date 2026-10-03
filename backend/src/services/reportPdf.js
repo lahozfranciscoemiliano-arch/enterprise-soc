@@ -154,7 +154,8 @@ class Report {
   pageHeader(title) {
     const { doc } = this;
     doc.rect(0, 0, PAGE.w, 34).fill(C.brand);
-    doc.font('Helvetica-Bold').fontSize(10).fillColor(C.white).text('Enterprise SOC · Reporte ejecutivo', PAGE.m, 12, { width: CW / 2, lineBreak: false });
+    const kindLabel = { daily: 'Reporte diario', weekly: 'Reporte semanal general' }[this.data.kind] ?? 'Reporte ejecutivo';
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(C.white).text(`Enterprise SOC · ${kindLabel}`, PAGE.m, 12, { width: CW / 2, lineBreak: false });
     doc.font('Helvetica').fontSize(9).fillColor(C.white).text(safe(title), PAGE.m + CW / 2, 13, { width: CW / 2, align: 'right', lineBreak: false });
     this.y = 52;
   }
@@ -464,9 +465,14 @@ function drawCover(r) {
     doc.roundedRect(PAGE.m, 30, 128, 50, 6).fill(C.white);
     doc.image(LOGO, PAGE.m + 8, 36, { fit: [112, 38], align: 'center', valign: 'center' });
   }
-  doc.font('Helvetica-Bold').fontSize(22).fillColor(C.white).text('Reporte Ejecutivo NOC/SOC', PAGE.m + 146, 34, { width: CW - 146 });
+  // El titulo entra en una linea: se achica si es largo (ej. "Reporte semanal general NOC/SOC").
+  const title = safe(data.reportTitle ?? 'Reporte Ejecutivo NOC/SOC');
+  let titleSize = 22;
+  doc.font('Helvetica-Bold');
+  while (titleSize > 14 && doc.fontSize(titleSize).widthOfString(title) > CW - 146) titleSize -= 1;
+  doc.fontSize(titleSize).fillColor(C.white).text(title, PAGE.m + 146, 34 + (22 - titleSize) / 2, { width: CW - 146, lineBreak: false });
   doc.font('Helvetica').fontSize(10.5).fillColor(C.brandSoft).text('Grupo Bistro · Infraestructura, backups, red y seguridad', PAGE.m + 146, 62, { width: CW - 146 });
-  const periodLabel = data.periodDays === 1 ? 'Últimas 24 horas' : `Últimos ${data.periodDays} días`;
+  const periodLabel = data.periodLabel ?? (data.periodDays === 1 ? 'Últimas 24 horas' : `Últimos ${data.periodDays} días`);
   doc
     .font('Helvetica')
     .fontSize(9)
@@ -737,6 +743,77 @@ function drawNetwork(r) {
   }
 }
 
+// Reporte diario: despues de la portada, solo lo que paso en el periodo
+// (alertas, servidores con novedades, backups con problemas, discos). Breve:
+// el panorama completo va en el semanal de los lunes.
+const SEVERITY_LABEL = { LOW: 'Baja', MEDIUM: 'Media', HIGH: 'Alta', CRITICAL: 'Crítica' };
+const SEVERITY_COLOR = { LOW: C.s1, MEDIUM: C.warning, HIGH: C.serious, CRITICAL: C.critical };
+const STATUS_LABEL = { OPEN: 'Abierta', ACKNOWLEDGED: 'En curso', RESOLVED: 'Resuelta' };
+
+function drawDailyDetail(r) {
+  const { data, doc } = r;
+  r.newPage('Novedades del período');
+  r.section('Alertas del período', data.eventsOpenedInPeriod ? `${data.eventsOpenedInPeriod} alerta(s); las más graves primero.` : 'Sin alertas en el período.');
+  if (data.recentEvents?.length) {
+    r.table(
+      [
+        { label: 'Hora', w: 62, value: (e) => fmtDate(e.createdAt) },
+        { label: 'Servidor', w: 76, bold: true, value: (e) => e.server },
+        { label: 'Tipo', w: 88, value: (e) => TYPE_LABEL[e.type] ?? e.type },
+        { label: 'Severidad', w: 58, render: r.statusCell((e) => SEVERITY_COLOR[e.severity] ?? C.none, (e) => SEVERITY_LABEL[e.severity] ?? e.severity) },
+        { label: 'Estado', w: 50, value: (e) => STATUS_LABEL[e.status] ?? e.status },
+        { label: 'Descripción', w: 181, multiline: true, value: (e) => e.description },
+      ],
+      data.recentEvents.slice(0, 30),
+      { rowH: 26 }
+    );
+  }
+
+  const attention = data.serverRows.filter((s) => s.status === 'OFFLINE' || s.health === 'CRITICAL' || s.health === 'WARNING' || s.backupResult === 'FAILED' || s.backupResult === 'WARNING' || s.availability < 99.5);
+  r.section('Servidores con novedades', attention.length ? 'Sin reportar, con salud degradada, backup con problemas o caídas en el período.' : 'Todos los servidores funcionaron normalmente.');
+  if (attention.length) {
+    r.table(
+      [
+        { label: 'Servidor', w: 92, bold: true, value: (s) => s.name },
+        { label: 'Salud', w: 72, render: r.statusCell((s) => HEALTH_COLOR[s.health], (s) => (s.status === 'OFFLINE' ? 'Sin reportar' : HEALTH_LABEL[s.health])) },
+        { label: 'CPU', w: 52, render: (s, x, y, w) => r.meter(x, y, w, s.cpuUsage, [70, 90]) },
+        { label: 'RAM', w: 52, render: (s, x, y, w) => r.meter(x, y, w, s.memoryUsage, [80, 92]) },
+        { label: 'Disco', w: 52, render: (s, x, y, w) => r.meter(x, y, w, s.diskUsage, [85, 95]) },
+        { label: 'Backup', w: 76, render: r.statusCell((s) => BACKUP_COLOR[s.backupResult], (s) => BACKUP_LABEL[s.backupResult]) },
+        { label: 'Últ. backup', w: 60, value: (s) => (s.backupResult === 'EXCLUDED' ? '—' : fmtDate(s.backupLastAt, false)) },
+        { label: 'Disp.', w: 39, align: 'right', value: (s) => pct(s.availability, 1) },
+      ],
+      attention
+    );
+  }
+
+  if (data.disksAtRisk.length) {
+    r.section('Discos en riesgo', 'Al 85% o más, o que llegan al 95% en menos de 30 días.');
+    r.table(
+      [
+        { label: 'Servidor', w: 130, bold: true, value: (d) => d.server },
+        { label: 'Unidad', w: 60, value: (d) => d.mount },
+        { label: 'Uso', w: 120, render: (d, x, y, w) => r.meter(x, y, w, d.percent, [85, 95]) },
+        { label: 'Libre', w: 80, value: (d) => fmtBytes(d.freeBytes) },
+        { label: 'Llega al 95% en', w: 125, value: (d) => (d.daysTo95 ? `~${d.daysTo95} día(s)` : '—') },
+      ],
+      data.disksAtRisk.slice(0, 10)
+    );
+  }
+
+  r.section('Red y seguridad');
+  r.kpiRow(
+    [
+      { label: 'Cortes de internet', value: String(data.outages), sub: data.outages ? `${fmtMinutes(data.outageMinutes)} sin servicio` : 'sin cortes', status: data.outages === 0 ? C.good : data.outageMinutes > 60 ? C.critical : C.warning },
+      { label: 'Logins fallidos (24 h)', value: String(data.failedLogons), sub: 'suma de todos los servidores', status: data.failedLogons >= 200 ? C.serious : C.good },
+      { label: 'Malware', value: String(data.malwareDetections), sub: 'detecciones de Defender', status: data.malwareDetections ? C.critical : C.good },
+      { label: 'Eventos Fortinet', value: String(data.fortiEventsInPeriod), sub: `${data.fortiCriticalInPeriod} crítico(s)`, status: data.fortiCriticalInPeriod ? C.serious : C.good },
+    ],
+    64
+  );
+  doc.fillColor(C.ink);
+}
+
 function drawFooters(doc) {
   const range = doc.bufferedPageRange();
   for (let i = range.start; i < range.start + range.count; i += 1) {
@@ -754,6 +831,11 @@ function drawFooters(doc) {
 function drawReportPdf(doc, data) {
   const r = new Report(doc, data);
   drawCover(r);
+  if (data.kind === 'daily') {
+    drawDailyDetail(r);
+    drawFooters(doc);
+    return;
+  }
   drawCharts(r);
   drawServers(r);
   drawNetwork(r);

@@ -172,6 +172,48 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
     })
   );
 
+  // --- Codigo anti-phishing ------------------------------------------------------
+  // Aparece en cada correo del NOC que recibe el usuario (services/mailer.js).
+  // Solo lo ve su duenio; cambiarlo pide la contrasena.
+  app.get(
+    '/api/account/anti-phishing',
+    authUser,
+    wrap(async (req, res) => {
+      const u = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { antiPhishingCode: true } });
+      return res.json({ code: u?.antiPhishingCode ?? null });
+    })
+  );
+
+  app.post(
+    '/api/account/anti-phishing',
+    pinLimiter,
+    authUser,
+    wrap(async (req, res) => {
+      const parsed = z
+        .object({
+          password: z.string().min(1).max(200),
+          code: z
+            .string()
+            .trim()
+            .max(24)
+            .refine((v) => v === '' || /^[\p{L}\p{N} _.\-!¡¿?#*]{4,24}$/u.test(v), 'Usá de 4 a 24 letras, números o espacios'),
+        })
+        .strict()
+        .safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Datos inválidos' });
+      const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
+      if (!user || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) return res.status(401).json({ error: 'Contraseña incorrecta' });
+      const code = parsed.data.code || null;
+      // El codigo viaja en cada correo: nunca la contrasena ni el PIN.
+      if (code && ((await bcrypt.compare(code, user.passwordHash)) || (user.pinHash && (await bcrypt.compare(code, user.pinHash))))) {
+        return res.status(400).json({ error: 'No uses tu contraseña ni tu PIN como código: aparece escrito en cada correo.' });
+      }
+      await prisma.user.update({ where: { id: user.id }, data: { antiPhishingCode: code } });
+      logAudit({ userId: user.id, action: code ? 'ANTI_PHISHING_SET' : 'ANTI_PHISHING_CLEAR', targetType: 'User', targetId: user.id });
+      return res.json({ ok: true, code });
+    })
+  );
+
   app.get(
     '/api/users/assignable',
     authUser,

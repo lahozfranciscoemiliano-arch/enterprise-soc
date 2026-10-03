@@ -6,6 +6,25 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 type FormState = Record<string, string | boolean>;
 
+type ReportSchedule = {
+  timezone: string;
+  lastResult: { at: string; kind: 'daily' | 'weekly'; ok: boolean; to?: string[]; filename?: string; error?: string } | null;
+  next: { date: string; hour: number; kind: 'daily' | 'weekly' } | null;
+};
+
+const TIMEZONES = [
+  ['America/Argentina/Buenos_Aires', 'Argentina (UTC−3)'],
+  ['America/Asuncion', 'Paraguay'],
+  ['America/Montevideo', 'Uruguay (UTC−3)'],
+  ['America/Santiago', 'Chile'],
+  ['America/La_Paz', 'Bolivia (UTC−4)'],
+  ['America/Lima', 'Perú (UTC−5)'],
+  ['America/Bogota', 'Colombia (UTC−5)'],
+  ['America/Mexico_City', 'México (UTC−6)'],
+  ['America/Sao_Paulo', 'Brasil (UTC−3)'],
+  ['Europe/Madrid', 'España'],
+];
+
 function plainField(settings: SystemSettings | null, key: keyof SystemSettings): string {
   if (!settings) return '';
   const s = settings[key] as { value: unknown } | undefined;
@@ -30,6 +49,37 @@ export default function SettingsPanel() {
   const [testTo, setTestTo] = useState('');
   const [notifyTest, setNotifyTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
+  const [schedule, setSchedule] = useState<ReportSchedule | null>(null);
+  const [sendingKind, setSendingKind] = useState<'daily' | 'weekly' | null>(null);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const fetchSchedule = useCallback(async () => {
+    const res = await fetch(`${API_URL}/api/admin/reports/schedule`, { credentials: 'include' }).catch(() => null);
+    if (res?.ok) setSchedule(await res.json());
+  }, []);
+  useEffect(() => {
+    fetchSchedule();
+  }, [fetchSchedule]);
+
+  // Manda ya el diario o el semanal tal cual sale automaticamente (config guardada).
+  const sendNow = async (kind: 'daily' | 'weekly') => {
+    setSendingKind(kind);
+    setSendResult(null);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/reports/send-now`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind }),
+      });
+      const body = await res.json().catch(() => ({}));
+      setSendResult(res.ok ? { ok: true, text: `${kind === 'weekly' ? 'Semanal' : 'Diario'} enviado a ${body.to.join(', ')} (${body.filename})` } : { ok: false, text: body.error ?? 'No se pudo enviar' });
+    } catch {
+      setSendResult({ ok: false, text: 'No se pudo contactar al backend' });
+    } finally {
+      setSendingKind(null);
+    }
+  };
 
   // Usa la configuracion GUARDADA (no lo que se esta escribiendo sin guardar).
   const testChannel = async (channel: 'email' | 'telegram' | 'slack' | 'webhook') => {
@@ -92,6 +142,13 @@ export default function SettingsPanel() {
         REPORT_FREQUENCY: plainField(data, 'REPORT_FREQUENCY') || 'daily',
         REPORT_HOUR: plainField(data, 'REPORT_HOUR') || '8',
         REPORT_EMAIL_TO: plainField(data, 'REPORT_EMAIL_TO'),
+        // Sin valor guardado = activado (comportamiento por defecto del backend).
+        REPORT_DAILY_ENABLED: data?.REPORT_DAILY_ENABLED?.value !== false,
+        REPORT_WEEKLY_ENABLED: data?.REPORT_WEEKLY_ENABLED?.value !== false,
+        REPORT_LOCAL_HOUR: plainField(data, 'REPORT_LOCAL_HOUR') || '9',
+        REPORT_TIMEZONE: plainField(data, 'REPORT_TIMEZONE') || 'America/Argentina/Buenos_Aires',
+        EMAIL_ALERTS_MODE: plainField(data, 'EMAIL_ALERTS_MODE') || 'none',
+        MAIL_SUPPORT_EMAIL: plainField(data, 'MAIL_SUPPORT_EMAIL'),
         AGENT_STALE_THRESHOLD_SECONDS: plainField(data, 'AGENT_STALE_THRESHOLD_SECONDS') || '240',
         TELEGRAM_BOT_TOKEN: '',
         TELEGRAM_CHAT_ID: plainField(data, 'TELEGRAM_CHAT_ID'),
@@ -148,6 +205,7 @@ export default function SettingsPanel() {
             'FORTI_EVENT_RETENTION_DAYS',
             'AUDIT_LOG_RETENTION_DAYS',
             'REPORT_HOUR',
+            'REPORT_LOCAL_HOUR',
             'AGENT_STALE_THRESHOLD_SECONDS',
             'PATCH_MAX_AGE_DAYS',
             'NOTIFY_BATCH_MINUTES',
@@ -167,6 +225,7 @@ export default function SettingsPanel() {
         if (!res.ok) throw new Error(body.error || 'No se pudo guardar');
         setSettings(body);
         setSavedMessage(`Guardado: ${section}`);
+        if (section === 'reportes') fetchSchedule();
         setTimeout(() => setSavedMessage(null), 3000);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Error desconocido');
@@ -174,7 +233,7 @@ export default function SettingsPanel() {
         setSaving(null);
       }
     },
-    [form]
+    [form, fetchSchedule]
   );
 
   const set = (key: string, value: string | boolean) => setForm((p) => ({ ...p, [key]: value }));
@@ -272,6 +331,16 @@ export default function SettingsPanel() {
             <option value="HIGH">Notificar desde: HIGH</option>
             <option value="CRITICAL">Notificar desde: CRITICAL</option>
           </select>
+          <select
+            value={form.EMAIL_ALERTS_MODE as string}
+            onChange={(e) => set('EMAIL_ALERTS_MODE', e.target.value)}
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
+            title="Telegram, Slack y la app siguen recibiendo las alertas según 'Notificar desde'"
+          >
+            <option value="none">Alertas por correo: no (solo los reportes)</option>
+            <option value="critical">Alertas por correo: solo CRÍTICAS al instante</option>
+            <option value="all">Alertas por correo: todas (según &quot;Notificar desde&quot;)</option>
+          </select>
         </div>
         <div className="mt-2 flex items-center gap-1 checkbox">{checkbox('SMTP_SECURE', 'SMTP con TLS implícito (puerto 465)')}</div>
         <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -299,6 +368,7 @@ export default function SettingsPanel() {
             'TELEGRAM_BOT_TOKEN',
             'TELEGRAM_CHAT_ID',
             'NOTIFY_MIN_SEVERITY',
+            'EMAIL_ALERTS_MODE',
             'NOTIFY_QUIET_HOURS',
             'NOTIFY_BATCH_MINUTES',
           ])}
@@ -540,25 +610,83 @@ export default function SettingsPanel() {
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
-        <h3 className="mb-3 text-sm font-semibold text-slate-800"><FileText className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Reportes ejecutivos</h3>
-        <div className="flex flex-wrap items-center gap-4">
-          {checkbox('REPORT_ENABLED', 'Enviar automáticamente por email')}
+        <h3 className="mb-1 text-sm font-semibold text-slate-800"><FileText className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Reportes automáticos por correo</h3>
+        <p className="mb-3 text-[11px] text-slate-500">
+          Un solo correo por día hábil, con un resumen breve en el cuerpo y el PDF adjunto: <b>martes a viernes</b> el reporte diario (últimas 24 h) y{' '}
+          <b>los lunes</b> el reporte semanal general, que ya incluye el fin de semana.
+        </p>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          {checkbox('REPORT_ENABLED', 'Enviar automáticamente')}
+          {checkbox('REPORT_DAILY_ENABLED', 'Diario (martes a viernes)')}
+          {checkbox('REPORT_WEEKLY_ENABLED', 'Semanal general (lunes)')}
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
           <select
-            value={form.REPORT_FREQUENCY as string}
-            onChange={(e) => set('REPORT_FREQUENCY', e.target.value)}
+            value={form.REPORT_LOCAL_HOUR as string}
+            onChange={(e) => set('REPORT_LOCAL_HOUR', e.target.value)}
             className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
           >
-            <option value="daily">Frecuencia: diaria</option>
-            <option value="weekly">Frecuencia: semanal (lunes)</option>
+            {Array.from({ length: 24 }, (_, h) => (
+              <option key={h} value={String(h)}>
+                Hora de envío: {String(h).padStart(2, '0')}:00
+              </option>
+            ))}
           </select>
-          <div className="w-36">{input('REPORT_HOUR', 'Hora UTC (0-23)', 'number')}</div>
+          <select
+            value={form.REPORT_TIMEZONE as string}
+            onChange={(e) => set('REPORT_TIMEZONE', e.target.value)}
+            className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-800"
+          >
+            {TIMEZONES.map(([tz, label]) => (
+              <option key={tz} value={tz}>
+                Zona horaria: {label}
+              </option>
+            ))}
+          </select>
+          {input('MAIL_SUPPORT_EMAIL', 'Contacto en la firma (soc@grupobistro.com)')}
         </div>
-        <div className="mt-2">{input('REPORT_EMAIL_TO', 'Destinatario(s) del reporte')}</div>
+        <div className="mt-2">{input('REPORT_EMAIL_TO', 'Destinatario(s) de los reportes, separados por coma')}</div>
+        {schedule && (
+          <div className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-600">
+              <span className="font-semibold text-slate-700">Próximo envío: </span>
+              {schedule.next
+                ? `${schedule.next.kind === 'weekly' ? 'semanal general' : 'diario'} el ${new Date(`${schedule.next.date}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long' })} ${Number(schedule.next.date.slice(8, 10))}/${Number(schedule.next.date.slice(5, 7))} a las ${String(schedule.next.hour).padStart(2, '0')}:00`
+                : 'desactivado (falta activarlo o cargar destinatarios)'}
+            </div>
+            <div className={`rounded-lg border px-3 py-2 ${schedule.lastResult && !schedule.lastResult.ok ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+              <span className="font-semibold">Último envío automático: </span>
+              {schedule.lastResult
+                ? `${schedule.lastResult.kind === 'weekly' ? 'semanal' : 'diario'} ${new Date(schedule.lastResult.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })} — ${schedule.lastResult.ok ? `enviado a ${schedule.lastResult.to?.join(', ')}` : `falló: ${schedule.lastResult.error}`}`
+                : 'todavía no hubo'}
+            </div>
+          </div>
+        )}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {saveBtn('reportes', ['REPORT_ENABLED', 'REPORT_DAILY_ENABLED', 'REPORT_WEEKLY_ENABLED', 'REPORT_LOCAL_HOUR', 'REPORT_TIMEZONE', 'REPORT_EMAIL_TO', 'MAIL_SUPPORT_EMAIL'])}
+          <button
+            type="button"
+            onClick={() => sendNow('daily')}
+            disabled={sendingKind !== null}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            <Send className="h-3.5 w-3.5" /> {sendingKind === 'daily' ? 'Generando y enviando…' : 'Enviar el diario ahora'}
+          </button>
+          <button
+            type="button"
+            onClick={() => sendNow('weekly')}
+            disabled={sendingKind !== null}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            <Send className="h-3.5 w-3.5" /> {sendingKind === 'weekly' ? 'Generando y enviando…' : 'Enviar el semanal ahora'}
+          </button>
+        </div>
+        {sendResult && (
+          <p className={`mt-2 rounded-lg px-3 py-2 text-xs ${sendResult.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>{sendResult.text}</p>
+        )}
         <p className="mt-2 text-[11px] text-slate-400">
-          Requiere SMTP configurado (sección de Notificaciones externas, arriba). Los reportes generados quedan
-          disponibles también en Admin → Reportes, con descarga bajo demanda.
+          &quot;Enviar ahora&quot; usa la configuración guardada y no cambia el envío automático. Los PDF quedan también en Admin → Reportes.
         </p>
-        <div className="mt-3">{saveBtn('reportes', ['REPORT_ENABLED', 'REPORT_FREQUENCY', 'REPORT_HOUR', 'REPORT_EMAIL_TO'])}</div>
       </div>
 
     </div>

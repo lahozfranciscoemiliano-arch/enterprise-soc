@@ -570,6 +570,12 @@ export type SystemSettings = {
   REPORT_FREQUENCY: PlainSetting<'daily' | 'weekly'>;
   REPORT_HOUR: PlainSetting<number>;
   REPORT_EMAIL_TO: PlainSetting<string>;
+  REPORT_DAILY_ENABLED: PlainSetting<boolean>;
+  REPORT_WEEKLY_ENABLED: PlainSetting<boolean>;
+  REPORT_LOCAL_HOUR: PlainSetting<number>;
+  REPORT_TIMEZONE: PlainSetting<string>;
+  EMAIL_ALERTS_MODE: PlainSetting<'none' | 'critical' | 'all'>;
+  MAIL_SUPPORT_EMAIL: PlainSetting<string>;
   AGENT_STALE_THRESHOLD_SECONDS: PlainSetting<number>;
   TELEGRAM_BOT_TOKEN: SensitiveSetting;
   TELEGRAM_CHAT_ID: PlainSetting<string>;

@@ -374,6 +374,28 @@ En Admin → Reportes: "Generar y enviar por mail" y, en cada PDF ya generado,
 Gmail / Microsoft 365: usar una contraseña de aplicación; puerto 587 sin "TLS
 implícito" o 465 con él.
 
+**Envío automático (desde octubre 2026).** Un solo correo por día hábil, a la
+hora local elegida (por defecto 09:00, zona horaria configurable): martes a
+viernes el **reporte diario** (últimas 24 h, PDF breve con las alertas del
+período, servidores con novedades, backups con problemas y discos) y los
+**lunes el reporte semanal general** (7 días, PDF completo, incluye el fin de
+semana). El cuerpo del correo trae un resumen breve: indicadores, lo que
+requiere atención y las novedades. Si el backend estaba caído a esa hora, se
+manda apenas vuelve (hasta 3 h después). Admin → Configuración → Reportes
+automáticos muestra el próximo envío y el último, y tiene "Enviar el diario /
+el semanal ahora" para probar.
+
+**Alertas por correo.** Por defecto el correo queda solo para los reportes
+(las alertas siguen llegando por Telegram, la app y el panel). En
+Notificaciones externas se puede elegir "solo CRÍTICAS al instante" o "todas".
+
+**Diseño, firma y anti-phishing.** Todos los correos usan la plantilla del NOC
+(cobre / naranja) con la firma institucional (`docs/firma-email.html`, para
+usarla también en Outlook/Gmail) y el contacto configurable. Cada usuario
+puede definir su **código anti-phishing** en Mi cuenta: aparece arriba de cada
+correo del NOC que recibe (los correos se mandan una copia por destinatario).
+Un correo "del NOC" sin el código no es legítimo.
+
 ## 21. Playbooks de resolución
 
 **Admin → Playbooks** tiene un procedimiento sugerido por cada tipo de alerta (interno:

@@ -99,7 +99,7 @@ const { runHousekeeping, getLastRun: getHousekeepingLastRun, scheduleHousekeepin
 const { runHeartbeatCheck, getLastRun: getHeartbeatLastRun, scheduleHeartbeat } = require('./src/services/heartbeat');
 const { scheduleProactiveDigest } = require('./src/services/proactiveDigest');
 const { evaluateAnomalies, getBaselineStatus, scheduleAnomalyBaselineRefresh } = require('./src/services/anomalyDetection');
-const { generateAndStoreReport, generateReportCsv, listReports, getReportPath, scheduleReports } = require('./src/services/reports');
+const { generateAndStoreReport, generateReportCsv, listReports, getReportPath, scheduleReports, sendScheduledReport, scheduleStatus } = require('./src/services/reports');
 const {
   runSyntheticChecks,
   getLastRun: getSyntheticMonitorLastRun,
@@ -1824,7 +1824,7 @@ app.post('/api/admin/reports/generate', reportGenerateLimiter, authUser, require
     if (req.body?.email || req.body?.emailTo) {
       try {
         if (!emailTo) throw new Error('No hay destinatarios: cargalos acá o en Admin → Configuración → Reportes ejecutivos');
-        emailedTo = await sendReportEmail({ to: emailTo, filename, buffer, summary: { periodDays, slaPercentage: data.slaPercentage } });
+        emailedTo = await sendReportEmail({ to: emailTo, filename, buffer, data });
         logAudit({ userId: req.user.sub, action: 'REPORT_EMAIL', targetType: 'Report', targetId: filename, metadata: { to: emailedTo } });
       } catch (err) {
         emailError = err.message;
@@ -1874,6 +1874,31 @@ app.post('/api/admin/reports/:filename/email', emailSendLimiter, authUser, requi
     logAudit({ userId: req.user.sub, action: 'REPORT_EMAIL', targetType: 'Report', targetId: req.params.filename, metadata: { to: sentTo } });
     return res.json({ ok: true, to: sentTo });
   } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+// Envio automatico: estado (ultimo envio, proximo) y "enviar ahora" el
+// diario o el semanal tal cual sale a las 09:00 (para probarlo).
+app.get('/api/admin/reports/schedule', authUser, requireRole('ADMIN'), async (req, res) => {
+  try {
+    return res.json(await scheduleStatus());
+  } catch (err) {
+    console.error('Error leyendo el estado de reportes', err);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/admin/reports/send-now', reportGenerateLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const kind = req.body?.kind === 'weekly' ? 'weekly' : 'daily';
+  try {
+    const to = req.body?.to || (await getSetting('REPORT_EMAIL_TO'));
+    if (!to) return res.status(400).json({ error: 'No hay destinatarios: cargalos en Reportes automáticos' });
+    const { filename, sentTo } = await sendScheduledReport({ kind, periodDays: kind === 'weekly' ? 7 : 1, to });
+    logAudit({ userId: req.user.sub, action: 'REPORT_EMAIL', targetType: 'Report', targetId: filename, metadata: { to: sentTo, kind } });
+    return res.json({ ok: true, filename, to: sentTo });
+  } catch (err) {
+    console.error('Error enviando reporte', err.message);
     return res.status(400).json({ error: err.message });
   }
 });

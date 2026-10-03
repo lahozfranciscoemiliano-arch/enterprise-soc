@@ -143,6 +143,9 @@ model User {
   pinHash              String?
   pinFailedCount       Int             @default(0)
   pinLockedUntil       DateTime?
+  // Palabra/codigo que el usuario elige y que aparece en cada correo del NOC
+  // que recibe: si un mail no lo trae, no lo mando el NOC (phishing).
+  antiPhishingCode     String?
 
   @@map("users")
 }

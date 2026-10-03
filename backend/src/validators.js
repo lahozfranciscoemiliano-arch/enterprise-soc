@@ -156,6 +156,23 @@ const settingsSchema = z
     REPORT_FREQUENCY: z.enum(['daily', 'weekly']).optional(),
     REPORT_HOUR: z.coerce.number().int().min(0).max(23).optional(),
     REPORT_EMAIL_TO: z.string().max(1000).optional(),
+    REPORT_DAILY_ENABLED: z.boolean().optional(),
+    REPORT_WEEKLY_ENABLED: z.boolean().optional(),
+    REPORT_LOCAL_HOUR: z.coerce.number().int().min(0).max(23).optional(),
+    REPORT_TIMEZONE: z
+      .string()
+      .max(64)
+      .refine((tz) => {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: tz });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Zona horaria inválida')
+      .optional(),
+    EMAIL_ALERTS_MODE: z.enum(['none', 'critical', 'all']).optional(),
+    MAIL_SUPPORT_EMAIL: z.string().max(200).regex(/^$|^[^@\s]+@[^@\s]+\.[^@\s]+$/, 'Correo inválido').optional(),
     AGENT_STALE_THRESHOLD_SECONDS: z.coerce.number().int().min(60).max(86400).optional(),
     TELEGRAM_BOT_TOKEN: z.string().max(200).optional(),
     TELEGRAM_CHAT_ID: z.string().max(100).optional(),

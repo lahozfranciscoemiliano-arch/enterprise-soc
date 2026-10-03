@@ -105,6 +105,19 @@ const SETTING_DEFS = {
   REPORT_FREQUENCY: { envFallback: null, type: 'string', sensitive: false }, // 'daily' | 'weekly'
   REPORT_HOUR: { envFallback: null, type: 'number', sensitive: false }, // 0-23, hora local del servidor (UTC)
   REPORT_EMAIL_TO: { envFallback: null, type: 'string', sensitive: false },
+  // Envio automatico (services/reports.js): diario de martes a viernes y
+  // semanal general los lunes (un solo correo por dia habil), a la hora
+  // LOCAL de REPORT_TIMEZONE.
+  REPORT_DAILY_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
+  REPORT_WEEKLY_ENABLED: { envFallback: null, type: 'boolean', sensitive: false },
+  REPORT_LOCAL_HOUR: { envFallback: null, type: 'number', sensitive: false },
+  REPORT_TIMEZONE: { envFallback: 'APP_TIMEZONE', type: 'string', sensitive: false },
+
+  // Correo (services/mailer.js): alertas por mail ('none' = solo reportes,
+  // 'critical' = solo CRITICAL al instante, 'all' = segun NOTIFY_MIN_SEVERITY)
+  // y el contacto que aparece en la firma.
+  EMAIL_ALERTS_MODE: { envFallback: null, type: 'string', sensitive: false },
+  MAIL_SUPPORT_EMAIL: { envFallback: null, type: 'string', sensitive: false },
 };
 
 function cast(rawValue, type) {

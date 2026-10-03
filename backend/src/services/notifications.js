@@ -1,102 +1,57 @@
-const nodemailer = require('nodemailer');
 const { getSettings } = require('./settings');
 const { shortRecommendation } = require('./recommendations');
 
 const SEVERITY_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
 const SEVERITY_EMOJI = { LOW: '🔵', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴' };
 
-const SMTP_KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'];
+const { sendBrandedMail, smtpTransport, smtpErrorMessage, parseRecipients, panelUrl } = require('./mailer');
+const { buildReportEmailParts } = require('./reportEmail');
 
-function smtpTransport(cfg) {
-  const port = Number(cfg.SMTP_PORT) || 587;
-  return nodemailer.createTransport({
-    host: cfg.SMTP_HOST,
-    port,
-    // 465 siempre es TLS implicito: con secure=false la conexion se cuelga.
-    secure: Boolean(cfg.SMTP_SECURE) || port === 465,
-    auth: cfg.SMTP_USER ? { user: cfg.SMTP_USER, pass: cfg.SMTP_PASS } : undefined,
-    connectionTimeout: 15_000,
-    greetingTimeout: 15_000,
-    socketTimeout: 30_000,
-  });
-}
+const SEVERITY_TONE = { LOW: 'info', MEDIUM: 'warn', HIGH: 'warn', CRITICAL: 'bad' };
+const SEVERITY_LABEL = { LOW: 'BAJA', MEDIUM: 'MEDIA', HIGH: 'ALTA', CRITICAL: 'CRÍTICA' };
 
-// Gmail / Microsoft 365 rechazan un remitente que no es la cuenta autenticada.
-function smtpFrom(cfg) {
-  return cfg.SMTP_FROM || cfg.SMTP_USER || 'noc@enterprise-soc.local';
-}
-
-/** "a@x.com, b@y.com; c@z.com" -> lista validada (max 10). */
-function parseRecipients(raw) {
-  const list = String(raw ?? '')
-    .split(/[,;\s]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const bad = list.filter((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
-  if (!list.length) throw new Error('Falta el destinatario');
-  if (bad.length) throw new Error(`Dirección inválida: ${bad.join(', ')}`);
-  if (list.length > 10) throw new Error('Máximo 10 destinatarios');
-  return list;
-}
-
-// Traduce los errores de nodemailer a algo accionable.
-function smtpErrorMessage(err, cfg) {
-  const code = err?.code || '';
-  const port = Number(cfg.SMTP_PORT) || 587;
-  if (code === 'EAUTH') return 'El servidor de correo rechazó usuario/contraseña. Con Gmail o Microsoft 365 hay que usar una "contraseña de aplicación" (requiere verificación en 2 pasos).';
-  const msg = err?.message || '';
-  if (['ETIMEDOUT', 'ECONNECTION', 'ECONNREFUSED'].includes(code) || /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|timeout/i.test(msg)) return `No se pudo conectar a ${cfg.SMTP_HOST}:${port}. Revisá host y puerto (587 con STARTTLS o 465 con TLS implícito); algunos proveedores de VPS bloquean el puerto 25.`;
-  if (code === 'EDNS' || code === 'ENOTFOUND') return `No existe el servidor ${cfg.SMTP_HOST}. Revisá el nombre.`;
-  if (code === 'ESOCKET' || /wrong version number|ssl/i.test(msg)) return `Error de TLS con ${cfg.SMTP_HOST}:${port}: si usás 587 destildá "TLS implícito"; si usás 465, tildalo.`;
-  if (code === 'EENVELOPE') return `El servidor rechazó el remitente o el destinatario: ${err.response || err.message}`;
-  return err?.response || err?.message || 'Error desconocido al enviar el correo';
-}
-
+// Alertas por correo segun EMAIL_ALERTS_MODE (Admin -> Configuracion):
+//   'none' (por defecto): el correo queda para los reportes (1 por dia habil);
+//                         las alertas llegan por Telegram / la app / el panel.
+//   'critical': solo las CRITICAL, al instante.
+//   'all': todas las que pasan el umbral NOTIFY_MIN_SEVERITY.
 async function sendEmailAlert(cfg, notif) {
   if (!cfg.SMTP_HOST || !cfg.ALERT_EMAIL_TO) return;
+  const mode = cfg.EMAIL_ALERTS_MODE || 'none';
+  if (mode === 'none') return;
+  if (mode === 'critical' && notif.severity !== 'CRITICAL') return;
 
+  const tz = process.env.APP_TIMEZONE || undefined;
   try {
-    await smtpTransport(cfg).sendMail({
-      from: smtpFrom(cfg),
+    await sendBrandedMail({
       to: cfg.ALERT_EMAIL_TO,
-      subject: `[${notif.severity}] ${notif.subject}`,
-      text: notif.text,
+      subject: `[${SEVERITY_LABEL[notif.severity] ?? notif.severity}] ${notif.subject}`,
+      parts: {
+        kicker: `Alerta · ${new Date().toLocaleString('es-AR', { timeZone: tz, dateStyle: 'short', timeStyle: 'short' })}`,
+        title: notif.subject,
+        subtitle: `Severidad ${SEVERITY_LABEL[notif.severity] ?? notif.severity}`,
+        sections: [{ title: 'Detalle', items: [{ chip: SEVERITY_LABEL[notif.severity] ?? notif.severity, tone: SEVERITY_TONE[notif.severity] ?? 'muted', text: notif.text }] }],
+        cta: { url: panelUrl(), label: 'Ver en el NOC/SOC' },
+      },
     });
   } catch (err) {
-    console.error('Error enviando alerta por email', err);
+    console.error('Error enviando alerta por email', err.message);
   }
 }
 
-// Reusa la config SMTP de notificaciones de alertas (Admin -> Configuracion
-// -> Notificaciones externas): no hay un SMTP separado solo para reportes.
-// No pasa por el umbral de severidad de dispatch(): un reporte no es una alerta.
-// Devuelve la lista de destinatarios; si falla lanza un Error con un mensaje
-// que se puede mostrar en el panel.
-async function sendReportEmail({ to, filename, buffer, summary }) {
-  const cfg = await getSettings(SMTP_KEYS);
-  if (!cfg.SMTP_HOST) {
-    throw new Error('No se puede enviar el reporte por email: falta configurar SMTP (Admin -> Configuración)');
-  }
-  const recipients = parseRecipients(to);
-  const lines = [
-    'Se adjunta el reporte ejecutivo del NOC/SOC.',
-    summary?.periodDays ? `Período: últimos ${summary.periodDays} día(s).` : null,
-    typeof summary?.slaPercentage === 'number' ? `Disponibilidad (SLA): ${summary.slaPercentage.toFixed(2)} %.` : null,
-    '',
-    'Enviado automáticamente por Enterprise SOC.',
-  ].filter((l) => l !== null);
-  try {
-    await smtpTransport(cfg).sendMail({
-      from: smtpFrom(cfg),
-      to: recipients.join(', '),
-      subject: `Reporte Ejecutivo NOC/SOC — ${new Date().toLocaleDateString('es-AR')}`,
-      text: lines.join('\n'),
-      attachments: [{ filename, content: buffer, contentType: 'application/pdf' }],
-    });
-  } catch (err) {
-    throw new Error(smtpErrorMessage(err, cfg));
-  }
-  return recipients;
+// Reporte PDF por correo (reusa la config SMTP de notificaciones). Con
+// "data" (recien generado) el cuerpo trae el resumen del periodo; sin data
+// (reenvio de un PDF viejo) un texto generico. No pasa por el umbral de
+// severidad: un reporte no es una alerta. Devuelve los destinatarios; si
+// falla lanza un Error con un mensaje para mostrar en el panel.
+async function sendReportEmail({ to, filename, buffer, data }) {
+  const { subject, parts } = buildReportEmailParts(data, filename);
+  return sendBrandedMail({
+    to,
+    subject,
+    parts,
+    attachments: [{ filename, content: buffer, contentType: 'application/pdf' }],
+  });
 }
 
 // Prueba de un canal desde Admin -> Configuracion. A diferencia de los envios
@@ -112,10 +67,28 @@ async function sendTestNotification(channel, { to } = {}) {
     const transport = smtpTransport(cfg);
     try {
       await transport.verify();
-      await transport.sendMail({ from: smtpFrom(cfg), to: recipients.join(', '), subject: 'Prueba de correo — NOC/SOC', text });
     } catch (err) {
       throw new Error(smtpErrorMessage(err, cfg));
+    } finally {
+      transport.close();
     }
+    await sendBrandedMail({
+      to: recipients.join(','),
+      subject: 'Prueba de correo — NOC/SOC',
+      parts: {
+        kicker: `Prueba · ${stamp}`,
+        title: 'Prueba de correo',
+        subtitle: 'El envío de correos del NOC/SOC funciona',
+        intro:
+          'Si estás leyendo esto, el servidor de correo está bien configurado. Así se ven los correos del NOC: los reportes diarios y semanales llegan con este mismo diseño y el PDF adjunto.',
+        sections: [
+          {
+            title: 'Código anti-phishing',
+            text: 'Si configuraste tu código en el panel (Mi cuenta → Código anti-phishing), aparece arriba de todo. Un correo "del NOC" sin tu código no es nuestro.',
+          },
+        ],
+      },
+    });
     return `Correo enviado a ${recipients.join(', ')}. Si no llega en unos minutos, revisá la carpeta de spam.`;
   }
 
@@ -223,6 +196,7 @@ const NOTIFICATION_SETTING_KEYS = [
   'TELEGRAM_CHAT_ID',
   'NOTIFY_QUIET_HOURS',
   'NOTIFY_BATCH_MINUTES',
+  'EMAIL_ALERTS_MODE',
 ];
 
 async function sendToAllChannels(cfg, notif) {
@@ -334,4 +308,4 @@ async function notifyGeneric({ severity, subject, text, source, metadata }) {
   });
 }
 
-module.exports = { notifyAlert, notifyGeneric, sendReportEmail, sendTestNotification, parseRecipients, inQuietHours, buildDigest };
+module.exports = { notifyAlert, notifyGeneric, sendReportEmail, sendTestNotification, inQuietHours, buildDigest };
