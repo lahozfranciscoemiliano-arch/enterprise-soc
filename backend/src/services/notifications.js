@@ -5,19 +5,59 @@ const { shortRecommendation } = require('./recommendations');
 const SEVERITY_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
 const SEVERITY_EMOJI = { LOW: '🔵', MEDIUM: '🟡', HIGH: '🟠', CRITICAL: '🔴' };
 
+const SMTP_KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'];
+
+function smtpTransport(cfg) {
+  const port = Number(cfg.SMTP_PORT) || 587;
+  return nodemailer.createTransport({
+    host: cfg.SMTP_HOST,
+    port,
+    // 465 siempre es TLS implicito: con secure=false la conexion se cuelga.
+    secure: Boolean(cfg.SMTP_SECURE) || port === 465,
+    auth: cfg.SMTP_USER ? { user: cfg.SMTP_USER, pass: cfg.SMTP_PASS } : undefined,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 30_000,
+  });
+}
+
+// Gmail / Microsoft 365 rechazan un remitente que no es la cuenta autenticada.
+function smtpFrom(cfg) {
+  return cfg.SMTP_FROM || cfg.SMTP_USER || 'noc@enterprise-soc.local';
+}
+
+/** "a@x.com, b@y.com; c@z.com" -> lista validada (max 10). */
+function parseRecipients(raw) {
+  const list = String(raw ?? '')
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const bad = list.filter((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+  if (!list.length) throw new Error('Falta el destinatario');
+  if (bad.length) throw new Error(`Dirección inválida: ${bad.join(', ')}`);
+  if (list.length > 10) throw new Error('Máximo 10 destinatarios');
+  return list;
+}
+
+// Traduce los errores de nodemailer a algo accionable.
+function smtpErrorMessage(err, cfg) {
+  const code = err?.code || '';
+  const port = Number(cfg.SMTP_PORT) || 587;
+  if (code === 'EAUTH') return 'El servidor de correo rechazó usuario/contraseña. Con Gmail o Microsoft 365 hay que usar una "contraseña de aplicación" (requiere verificación en 2 pasos).';
+  const msg = err?.message || '';
+  if (['ETIMEDOUT', 'ECONNECTION', 'ECONNREFUSED'].includes(code) || /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|timeout/i.test(msg)) return `No se pudo conectar a ${cfg.SMTP_HOST}:${port}. Revisá host y puerto (587 con STARTTLS o 465 con TLS implícito); algunos proveedores de VPS bloquean el puerto 25.`;
+  if (code === 'EDNS' || code === 'ENOTFOUND') return `No existe el servidor ${cfg.SMTP_HOST}. Revisá el nombre.`;
+  if (code === 'ESOCKET' || /wrong version number|ssl/i.test(msg)) return `Error de TLS con ${cfg.SMTP_HOST}:${port}: si usás 587 destildá "TLS implícito"; si usás 465, tildalo.`;
+  if (code === 'EENVELOPE') return `El servidor rechazó el remitente o el destinatario: ${err.response || err.message}`;
+  return err?.response || err?.message || 'Error desconocido al enviar el correo';
+}
+
 async function sendEmailAlert(cfg, notif) {
   if (!cfg.SMTP_HOST || !cfg.ALERT_EMAIL_TO) return;
 
   try {
-    const transporter = nodemailer.createTransport({
-      host: cfg.SMTP_HOST,
-      port: cfg.SMTP_PORT || 587,
-      secure: Boolean(cfg.SMTP_SECURE),
-      auth: cfg.SMTP_USER ? { user: cfg.SMTP_USER, pass: cfg.SMTP_PASS } : undefined,
-    });
-
-    await transporter.sendMail({
-      from: cfg.SMTP_FROM || 'noc@enterprise-soc.local',
+    await smtpTransport(cfg).sendMail({
+      from: smtpFrom(cfg),
       to: cfg.ALERT_EMAIL_TO,
       subject: `[${notif.severity}] ${notif.subject}`,
       text: notif.text,
@@ -29,29 +69,87 @@ async function sendEmailAlert(cfg, notif) {
 
 // Reusa la config SMTP de notificaciones de alertas (Admin -> Configuracion
 // -> Notificaciones externas): no hay un SMTP separado solo para reportes.
-// A diferencia de sendEmailAlert, el destinatario lo elige quien llama (el
-// campo REPORT_EMAIL_TO puede ser distinto de ALERT_EMAIL_TO), y no pasa por
-// el umbral de severidad de dispatch() porque un reporte no es una alerta.
-async function sendReportEmail({ to, filename, buffer }) {
-  const cfg = await getSettings(['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);
+// No pasa por el umbral de severidad de dispatch(): un reporte no es una alerta.
+// Devuelve la lista de destinatarios; si falla lanza un Error con un mensaje
+// que se puede mostrar en el panel.
+async function sendReportEmail({ to, filename, buffer, summary }) {
+  const cfg = await getSettings(SMTP_KEYS);
   if (!cfg.SMTP_HOST) {
     throw new Error('No se puede enviar el reporte por email: falta configurar SMTP (Admin -> Configuración)');
   }
+  const recipients = parseRecipients(to);
+  const lines = [
+    'Se adjunta el reporte ejecutivo del NOC/SOC.',
+    summary?.periodDays ? `Período: últimos ${summary.periodDays} día(s).` : null,
+    typeof summary?.slaPercentage === 'number' ? `Disponibilidad (SLA): ${summary.slaPercentage.toFixed(2)} %.` : null,
+    '',
+    'Enviado automáticamente por Enterprise SOC.',
+  ].filter((l) => l !== null);
+  try {
+    await smtpTransport(cfg).sendMail({
+      from: smtpFrom(cfg),
+      to: recipients.join(', '),
+      subject: `Reporte Ejecutivo NOC/SOC — ${new Date().toLocaleDateString('es-AR')}`,
+      text: lines.join('\n'),
+      attachments: [{ filename, content: buffer, contentType: 'application/pdf' }],
+    });
+  } catch (err) {
+    throw new Error(smtpErrorMessage(err, cfg));
+  }
+  return recipients;
+}
 
-  const transporter = nodemailer.createTransport({
-    host: cfg.SMTP_HOST,
-    port: cfg.SMTP_PORT || 587,
-    secure: Boolean(cfg.SMTP_SECURE),
-    auth: cfg.SMTP_USER ? { user: cfg.SMTP_USER, pass: cfg.SMTP_PASS } : undefined,
-  });
+// Prueba de un canal desde Admin -> Configuracion. A diferencia de los envios
+// reales (que nunca lanzan), devuelve el error exacto del proveedor.
+async function sendTestNotification(channel, { to } = {}) {
+  const cfg = await getSettings(NOTIFICATION_SETTING_KEYS);
+  const stamp = new Date().toLocaleString('es-AR');
+  const text = `Prueba de notificaciones del NOC/SOC (${stamp}). Si ves este mensaje, el canal funciona.`;
 
-  await transporter.sendMail({
-    from: cfg.SMTP_FROM || 'noc@enterprise-soc.local',
-    to,
-    subject: `Reporte Ejecutivo Enterprise SOC — ${new Date().toLocaleDateString('es-AR')}`,
-    text: 'Se adjunta el reporte ejecutivo generado automáticamente por Enterprise SOC.',
-    attachments: [{ filename, content: buffer, contentType: 'application/pdf' }],
-  });
+  if (channel === 'email') {
+    if (!cfg.SMTP_HOST) throw new Error('Falta configurar el servidor SMTP (y guardar).');
+    const recipients = parseRecipients(to || cfg.ALERT_EMAIL_TO);
+    const transport = smtpTransport(cfg);
+    try {
+      await transport.verify();
+      await transport.sendMail({ from: smtpFrom(cfg), to: recipients.join(', '), subject: 'Prueba de correo — NOC/SOC', text });
+    } catch (err) {
+      throw new Error(smtpErrorMessage(err, cfg));
+    }
+    return `Correo enviado a ${recipients.join(', ')}. Si no llega en unos minutos, revisá la carpeta de spam.`;
+  }
+
+  if (channel === 'telegram') {
+    if (!cfg.TELEGRAM_BOT_TOKEN || !cfg.TELEGRAM_CHAT_ID) throw new Error('Faltan el token del bot y/o el chat ID (y guardar).');
+    const res = await fetch(`https://api.telegram.org/bot${cfg.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: cfg.TELEGRAM_CHAT_ID, text: `✅ ${text}` }),
+    }).catch((err) => {
+      throw new Error(`No se pudo conectar con Telegram: ${err.message}`);
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.ok === false) {
+      const why = body.description || `HTTP ${res.status}`;
+      if (res.status === 401) throw new Error('Telegram rechazó el token del bot (revisalo en @BotFather).');
+      if (/chat not found/i.test(why)) throw new Error('Telegram no encuentra el chat: agregá el bot al grupo y mandale un mensaje primero, y revisá el chat ID (los grupos empiezan con -).');
+      throw new Error(`Telegram respondió: ${why}`);
+    }
+    return 'Mensaje enviado a Telegram.';
+  }
+
+  if (channel === 'slack' || channel === 'webhook') {
+    const url = channel === 'slack' ? cfg.SLACK_WEBHOOK_URL : cfg.WEBHOOK_URL;
+    if (!url) throw new Error(`Falta configurar el ${channel === 'slack' ? 'webhook de Slack' : 'webhook genérico'} (y guardar).`);
+    const payload = channel === 'slack' ? { text: `✅ ${text}` } : { source: 'test', severity: 'LOW', subject: 'Prueba de notificaciones', text, createdAt: new Date().toISOString() };
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch((err) => {
+      throw new Error(`No se pudo conectar: ${err.message}`);
+    });
+    if (!res.ok) throw new Error(`El webhook respondió HTTP ${res.status}`);
+    return 'Mensaje enviado.';
+  }
+
+  throw new Error('Canal desconocido');
 }
 
 async function sendSlackAlert(cfg, notif) {
@@ -236,4 +334,4 @@ async function notifyGeneric({ severity, subject, text, source, metadata }) {
   });
 }
 
-module.exports = { notifyAlert, notifyGeneric, sendReportEmail, inQuietHours, buildDigest };
+module.exports = { notifyAlert, notifyGeneric, sendReportEmail, sendTestNotification, parseRecipients, inQuietHours, buildDigest };

@@ -419,8 +419,8 @@ async function maybeSendScheduledReport() {
 
   try {
     const periodDays = frequency === 'weekly' ? 7 : 1;
-    const { filename, buffer } = await generateAndStoreReport({ periodDays });
-    await sendReportEmail({ to: cfg.REPORT_EMAIL_TO, filename, buffer });
+    const { filename, buffer, data } = await generateAndStoreReport({ periodDays });
+    await sendReportEmail({ to: cfg.REPORT_EMAIL_TO, filename, buffer, summary: { periodDays, slaPercentage: data.slaPercentage } });
     await prisma.setting.upsert({
       where: { key: 'REPORT_LAST_SENT_AT' },
       update: { value: now.toISOString() },

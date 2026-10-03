@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { FileText, HeartPulse, Radio, Trash2, TrendingUp } from 'lucide-react';
+import { FileText, HeartPulse, Mail, Radio, Trash2, TrendingUp } from 'lucide-react';
 import type { AnomalyBaselineStatus, HeartbeatRun, HousekeepingRun, ReportMeta, SyntheticMonitorRun } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -19,6 +19,34 @@ export default function ReportsPanel() {
   const [runningHeartbeat, setRunningHeartbeat] = useState(false);
   const [runningSynthetic, setRunningSynthetic] = useState(false);
   const [periodDays, setPeriodDays] = useState('7');
+  const [emailTo, setEmailTo] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [mailRow, setMailRow] = useState<string | null>(null);
+  const [rowTo, setRowTo] = useState('');
+  const [sendingRow, setSendingRow] = useState(false);
+
+  const sendExisting = useCallback(async (filename: string) => {
+    setSendingRow(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/reports/${encodeURIComponent(filename)}/email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(rowTo.trim() ? { to: rowTo.trim() } : {}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || 'No se pudo enviar el reporte');
+      setNotice(`${filename} enviado a ${body.to.join(', ')}`);
+      setMailRow(null);
+      setRowTo('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setSendingRow(false);
+    }
+  }, [rowTo]);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -47,25 +75,28 @@ export default function ReportsPanel() {
     fetchAll();
   }, [fetchAll]);
 
-  const handleGenerate = useCallback(async () => {
+  const handleGenerate = useCallback(async (send = false) => {
     setGenerating(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await fetch(`${API_URL}/api/admin/reports/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ periodDays: Number(periodDays) || 7 }),
+        body: JSON.stringify({ periodDays: Number(periodDays) || 7, ...(send ? (emailTo.trim() ? { emailTo: emailTo.trim() } : { email: true }) : {}) }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || 'No se pudo generar el reporte');
+      if (body.emailError) setError(`El PDF se generó, pero no se pudo enviar: ${body.emailError}`);
+      else if (body.emailedTo) setNotice(`Reporte generado y enviado a ${body.emailedTo.join(', ')}`);
       await fetchAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error desconocido');
     } finally {
       setGenerating(false);
     }
-  }, [periodDays, fetchAll]);
+  }, [periodDays, emailTo, fetchAll]);
 
   const handleRunHousekeeping = useCallback(async () => {
     setRunningHousekeeping(true);
@@ -119,6 +150,7 @@ export default function ReportsPanel() {
   return (
     <div className="space-y-4">
       {error && <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{error}</p>}
+      {notice && <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">{notice}</p>}
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-card">
         <h2 className="mb-1 text-sm font-semibold text-slate-800"><FileText className="inline h-4 w-4 -mt-0.5 mr-1.5 text-slate-400" />Reportes ejecutivos</h2>
@@ -139,11 +171,24 @@ export default function ReportsPanel() {
             className="w-20 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 transition-colors"
           />
           <button
-            onClick={handleGenerate}
+            onClick={() => handleGenerate(false)}
             disabled={generating}
             className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
           >
             {generating ? 'Generando...' : '+ Generar PDF'}
+          </button>
+          <input
+            value={emailTo}
+            onChange={(e) => setEmailTo(e.target.value)}
+            placeholder="Enviar a (vacío = los de Configuración)"
+            className="w-80 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-brand-500"
+          />
+          <button
+            onClick={() => handleGenerate(true)}
+            disabled={generating}
+            className="flex items-center gap-1 rounded-lg border border-brand-300 px-3 py-1.5 text-xs font-medium text-brand-700 transition-colors hover:bg-brand-50 disabled:opacity-50"
+          >
+            <Mail className="h-3.5 w-3.5" /> Generar y enviar por mail
           </button>
           <a
             href={`${API_URL}/api/admin/reports/export.csv?periodDays=${Number(periodDays) || 7}`}
@@ -173,6 +218,34 @@ export default function ReportsPanel() {
               >
                 Descargar
               </a>
+              <button
+                onClick={() => {
+                  setMailRow(mailRow === r.filename ? null : r.filename);
+                  setRowTo('');
+                }}
+                className="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 text-slate-600 transition-colors hover:bg-slate-100"
+              >
+                <Mail className="h-3 w-3" /> Enviar por mail
+              </button>
+              {mailRow === r.filename && (
+                <div className="flex w-full flex-wrap items-center gap-2 pt-1">
+                  <input
+                    autoFocus
+                    value={rowTo}
+                    onChange={(e) => setRowTo(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && sendExisting(r.filename)}
+                    placeholder="a@empresa.com, b@empresa.com (vacío = destinatarios de Configuración)"
+                    className="min-w-[280px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-brand-500"
+                  />
+                  <button
+                    onClick={() => sendExisting(r.filename)}
+                    disabled={sendingRow}
+                    className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                  >
+                    {sendingRow ? 'Enviando…' : 'Enviar'}
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -364,6 +364,16 @@ semanal, los lunes), hora UTC de envío, y el/los destinatario(s). Requiere SMTP
 Los últimos 60 reportes generados quedan disponibles para descarga en el propio panel
 (persisten en el volumen `report_files`, sobreviven a un rebuild).
 
+**Probar el correo y enviar reportes a mano.** En Admin → Configuración →
+Notificaciones externas, "Probar notificaciones" manda un mensaje de prueba por
+correo (a los destinatarios de alertas o a la dirección que se escriba),
+Telegram, Slack o webhook, usando la configuración guardada, y muestra el error
+exacto si falla (contraseña rechazada, puerto bloqueado, TLS mal elegido...).
+En Admin → Reportes: "Generar y enviar por mail" y, en cada PDF ya generado,
+"Enviar por mail" a cualquier destinatario (varios separados por coma).
+Gmail / Microsoft 365: usar una contraseña de aplicación; puerto 587 sin "TLS
+implícito" o 465 con él.
+
 ## 21. Playbooks de resolución
 
 **Admin → Playbooks** tiene un procedimiento sugerido por cada tipo de alerta (interno:

@@ -56,7 +56,7 @@ const {
   BACKUP_MANAGED_KEYS,
 } = require('./src/services/alertEngine');
 const { logAudit } = require('./src/services/auditLog');
-const { notifyGeneric, sendReportEmail } = require('./src/services/notifications');
+const { notifyGeneric, sendReportEmail, sendTestNotification } = require('./src/services/notifications');
 const { buildBackupHistory } = require('./src/services/backupHistory');
 const { loadBackupPolicy, backupMode, normalizeBackupReport, sanitizeBackupReport } = require('./src/services/backupPolicy');
 const { processAgentExtras, summarizeNetwork } = require('./src/services/preventiveChecks');
@@ -1809,13 +1809,6 @@ app.post('/api/admin/reports/generate', reportGenerateLimiter, authUser, require
   try {
     const { filename, buffer, data } = await generateAndStoreReport({ periodDays });
 
-    if (req.body?.email) {
-      const emailTo = await getSetting('REPORT_EMAIL_TO');
-      if (emailTo) {
-        await sendReportEmail({ to: emailTo, filename, buffer });
-      }
-    }
-
     logAudit({
       userId: req.user.sub,
       action: 'REPORT_GENERATE',
@@ -1824,7 +1817,21 @@ app.post('/api/admin/reports/generate', reportGenerateLimiter, authUser, require
       metadata: { periodDays, slaPercentage: data.slaPercentage },
     });
 
-    return res.status(201).json({ filename, periodDays, generatedAt: data.generatedAt });
+    // "Generar y enviar": emailTo explicito o, con email=true, los destinatarios de Configuracion.
+    let emailedTo = null;
+    let emailError = null;
+    const emailTo = req.body?.emailTo || (req.body?.email ? await getSetting('REPORT_EMAIL_TO') : null);
+    if (req.body?.email || req.body?.emailTo) {
+      try {
+        if (!emailTo) throw new Error('No hay destinatarios: cargalos acá o en Admin → Configuración → Reportes ejecutivos');
+        emailedTo = await sendReportEmail({ to: emailTo, filename, buffer, summary: { periodDays, slaPercentage: data.slaPercentage } });
+        logAudit({ userId: req.user.sub, action: 'REPORT_EMAIL', targetType: 'Report', targetId: filename, metadata: { to: emailedTo } });
+      } catch (err) {
+        emailError = err.message;
+      }
+    }
+
+    return res.status(201).json({ filename, periodDays, generatedAt: data.generatedAt, emailedTo, emailError });
   } catch (err) {
     console.error('Error generando reporte', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -1845,6 +1852,43 @@ app.get('/api/admin/reports/export.csv', authUser, requireRole('ADMIN'), async (
   } catch (err) {
     console.error('Error generando CSV del reporte', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+const emailSendLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados envíos de prueba, intentá más tarde' },
+});
+
+// Reenviar por mail un PDF ya generado (a los destinatarios que se elijan).
+app.post('/api/admin/reports/:filename/email', emailSendLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const filePath = getReportPath(req.params.filename);
+  if (!filePath) return res.status(404).json({ error: 'Reporte no encontrado' });
+  try {
+    const to = req.body?.to || (await getSetting('REPORT_EMAIL_TO'));
+    if (!to) return res.status(400).json({ error: 'Indicá a quién enviarlo' });
+    const sentTo = await sendReportEmail({ to, filename: req.params.filename, buffer: fs.readFileSync(filePath) });
+    logAudit({ userId: req.user.sub, action: 'REPORT_EMAIL', targetType: 'Report', targetId: req.params.filename, metadata: { to: sentTo } });
+    return res.json({ ok: true, to: sentTo });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+// Prueba de un canal de notificacion (correo, Telegram, Slack, webhook).
+app.post('/api/admin/notifications/test', emailSendLimiter, authUser, requireRole('ADMIN'), async (req, res) => {
+  const channel = String(req.body?.channel ?? '');
+  if (!['email', 'telegram', 'slack', 'webhook'].includes(channel)) return res.status(400).json({ error: 'Canal inválido' });
+  try {
+    const message = await sendTestNotification(channel, { to: req.body?.to });
+    logAudit({ userId: req.user.sub, action: 'NOTIFICATION_TEST', targetType: 'Setting', targetId: channel, metadata: { ok: true } });
+    return res.json({ ok: true, message });
+  } catch (err) {
+    logAudit({ userId: req.user.sub, action: 'NOTIFICATION_TEST', targetType: 'Setting', targetId: channel, metadata: { ok: false } });
+    return res.status(400).json({ error: err.message });
   }
 });
 

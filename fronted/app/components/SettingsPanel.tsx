@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BarChart3, Bot, Check, FileText, Lock, Mail, ShieldCheck, ShieldHalf, Trash2, Wifi } from 'lucide-react';
+import { BarChart3, Bot, Check, FileText, Lock, Mail, Send, ShieldCheck, ShieldHalf, Trash2, Wifi } from 'lucide-react';
 import type { SystemSettings } from '../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
@@ -27,6 +27,29 @@ export default function SettingsPanel() {
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [unifiTest, setUnifiTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [testingUnifi, setTestingUnifi] = useState(false);
+  const [testTo, setTestTo] = useState('');
+  const [notifyTest, setNotifyTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testingChannel, setTestingChannel] = useState<string | null>(null);
+
+  // Usa la configuracion GUARDADA (no lo que se esta escribiendo sin guardar).
+  const testChannel = async (channel: 'email' | 'telegram' | 'slack' | 'webhook') => {
+    setTestingChannel(channel);
+    setNotifyTest(null);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/notifications/test`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, ...(channel === 'email' && testTo.trim() ? { to: testTo.trim() } : {}) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      setNotifyTest(res.ok ? { ok: true, text: body.message } : { ok: false, text: body.error ?? 'No se pudo enviar la prueba' });
+    } catch {
+      setNotifyTest({ ok: false, text: 'No se pudo contactar al backend' });
+    } finally {
+      setTestingChannel(null);
+    }
+  };
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -279,6 +302,41 @@ export default function SettingsPanel() {
             'NOTIFY_QUIET_HOURS',
             'NOTIFY_BATCH_MINUTES',
           ])}
+        </div>
+        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+            <Send className="h-3.5 w-3.5 text-slate-400" /> Probar notificaciones
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={testTo}
+              onChange={(e) => setTestTo(e.target.value)}
+              placeholder={`Correo de prueba a (vacío = ${plainField(settings, 'ALERT_EMAIL_TO') || 'destinatarios de alertas'})`}
+              className="min-w-[260px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800"
+            />
+            {(
+              [
+                ['email', 'Probar correo'],
+                ['telegram', 'Probar Telegram'],
+                ['slack', 'Probar Slack'],
+                ['webhook', 'Probar webhook'],
+              ] as const
+            ).map(([ch, label]) => (
+              <button
+                key={ch}
+                type="button"
+                onClick={() => testChannel(ch)}
+                disabled={testingChannel !== null}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                {testingChannel === ch ? 'Enviando…' : label}
+              </button>
+            ))}
+          </div>
+          {notifyTest && (
+            <p className={`mt-2 rounded-lg px-3 py-2 text-xs ${notifyTest.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>{notifyTest.text}</p>
+          )}
+          <p className="mt-2 text-[11px] text-slate-400">Usa la configuración guardada: guardá los cambios antes de probar.</p>
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
           Telegram: creá un bot con @BotFather (gratis, sin aprobación) y agregalo al grupo/chat a notificar para
