@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowRightLeft, CheckCircle2, ChevronDown, Loader2, XCircle } from 'lucide-react';
 import PinInput from './ops/PinInput';
 import { useToast } from './Toast';
@@ -38,21 +38,21 @@ const TONE: Record<Tone, string> = {
 };
 
 function agentState(a: MoveAgent, move: MoveStatus['move'], minVersion: string): { label: string; tone: Tone } {
-  if (a.hostMonitor) return { label: 'Se muda junto con la VPS', tone: 'muted' };
+  if (a.hostMonitor) return { label: 'Monitor del propio VPS (usa 127.0.0.1)', tone: 'muted' };
   if (!a.supported) return { label: `Necesita agente ${minVersion}${a.agentVersion ? ` (tiene ${a.agentVersion})` : ''}`, tone: 'warn' };
-  if (!move || move.expired) return { label: 'Listo para una mudanza', tone: 'ok' };
+  if (!move || move.expired) return { label: 'Compatible', tone: 'ok' };
   if (a.via && a.via === move.url) return { label: 'Ya usa la dirección nueva', tone: 'ok' };
   switch (a.state) {
     case 'ready':
-      return { label: 'Listo: se muda solo en el corte', tone: 'ok' };
+      return { label: 'Listo: se cambia si la dirección actual deja de responder', tone: 'info' };
     case 'unknown-agent':
-      return { label: 'La VPS nueva responde; falta restaurar la base', tone: 'info' };
+      return { label: 'La dirección nueva no reconoce a este agente', tone: 'bad' };
     case 'unreachable':
-      return { label: 'No llega a la VPS nueva', tone: 'bad' };
+      return { label: 'No llega a la dirección nueva', tone: 'bad' };
     case 'not-soc':
       return { label: 'La dirección responde pero no es el NOC', tone: 'bad' };
     case 'error':
-      return { label: 'Error al probar la VPS nueva', tone: 'bad' };
+      return { label: 'Error al probar la dirección nueva', tone: 'bad' };
     default:
       if (a.moveTo === move.url) return { label: 'Recibió la dirección, probando…', tone: 'muted' };
       return { label: a.status === 'OFFLINE' ? 'Sin conexión: la recibe al volver' : 'Esperando al agente…', tone: 'muted' };
@@ -66,6 +66,11 @@ export default function AgentMovePanel() {
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+
+  // Lo normal es pasar los agentes a la direccion con la que se abrio el panel (el dominio con HTTPS).
+  useEffect(() => {
+    if (window.location.protocol === 'https:') setUrl(window.location.origin);
+  }, []);
 
   const move = data?.move && !data.move.expired ? data.move : null;
   const agents = (data?.agents ?? []).filter((a) => !a.hostMonitor);
@@ -83,25 +88,25 @@ export default function AgentMovePanel() {
         body: JSON.stringify({ url: url.trim(), pin }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error ?? 'No se pudo programar la mudanza');
-      toast.success(`Mudanza programada a ${body.url}`);
+      if (!res.ok) throw new Error(body.error ?? 'No se pudo programar el cambio');
+      toast.success(`Cambio de dirección programado: ${body.url}`);
       setPin('');
       setOpen(true);
       reload();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'No se pudo programar la mudanza');
+      toast.error(err instanceof Error ? err.message : 'No se pudo programar el cambio');
     } finally {
       setBusy(false);
     }
   };
 
   const cancel = async () => {
-    if (!window.confirm('¿Cancelar la mudanza? Los agentes que todavía no se mudaron siguen con la dirección actual.')) return;
+    if (!window.confirm('¿Cancelar el cambio? Los agentes que todavía no se cambiaron siguen con la dirección actual.')) return;
     const res = await fetch(`${API_URL}/api/admin/agent-move`, { method: 'DELETE', credentials: 'include' });
     if (res.ok) {
-      toast.success('Mudanza cancelada');
+      toast.success('Cambio cancelado');
       reload();
-    } else toast.error('No se pudo cancelar la mudanza');
+    } else toast.error('No se pudo cancelar el cambio');
   };
 
   return (
@@ -110,12 +115,12 @@ export default function AgentMovePanel() {
         <div className="min-w-0">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800">
             <ArrowRightLeft className="h-4 w-4 text-slate-400" />
-            Mudar el NOC a otra VPS
+            Dirección del NOC en los agentes
           </h2>
           <p className="mt-1 max-w-3xl text-xs text-slate-500">
-            Cambia la dirección del NOC en todos los agentes sin entrar a cada servidor. Cada agente prueba la dirección nueva desde su red y se muda solo cuando
-            esa VPS ya lo reconoce (base restaurada) y la actual se apaga, o cuando las dos direcciones llegan al mismo NOC. Si la nueva no está lista, no
-            cambia nada.
+            Cambia la dirección que usan los agentes para hablar con el NOC (por ejemplo, de http://IP al dominio con HTTPS) sin entrar a cada servidor. Cada
+            agente prueba la dirección nueva desde su red y se cambia solo si llega a este mismo NOC. Si no llega (DNS, firewall, inspección SSL del FortiGate),
+            sigue con la actual y lo muestra acá.
           </p>
         </div>
         <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ${supported === agents.length ? TONE.ok : TONE.warn}`}>
@@ -128,19 +133,19 @@ export default function AgentMovePanel() {
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-brand-200 bg-brand-50/60 px-4 py-3">
             <div className="min-w-0 text-sm">
               <p className="font-medium text-slate-800">
-                Mudanza programada a <span className="font-mono">{move.url}</span>
+                Cambio programado a <span className="font-mono">{move.url}</span>
               </p>
               <p className="text-xs text-slate-500">
                 Por {move.setBy} {timeAgo(move.setAt)} · vence el {new Date(move.expiresAt).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })}
               </p>
             </div>
             <button onClick={cancel} className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">
-              <XCircle className="h-3.5 w-3.5" /> Cancelar mudanza
+              <XCircle className="h-3.5 w-3.5" /> Cancelar cambio
             </button>
           </div>
           <div className="flex flex-wrap gap-2 text-[11px]">
-            <span className={`rounded-full px-2.5 py-1 font-medium ring-1 ${TONE.ok}`}>Listos o ya mudados: {count('ok')}</span>
-            <span className={`rounded-full px-2.5 py-1 font-medium ring-1 ${TONE.info}`}>Falta restaurar la base: {count('info')}</span>
+            <span className={`rounded-full px-2.5 py-1 font-medium ring-1 ${TONE.ok}`}>Ya usan la dirección nueva: {count('ok')}</span>
+            <span className={`rounded-full px-2.5 py-1 font-medium ring-1 ${TONE.info}`}>Listos: {count('info')}</span>
             <span className={`rounded-full px-2.5 py-1 font-medium ring-1 ${TONE.bad}`}>Con problemas: {count('bad')}</span>
             <span className={`rounded-full px-2.5 py-1 font-medium ring-1 ${TONE.warn}`}>Agente viejo: {count('warn')}</span>
             <span className={`rounded-full px-2.5 py-1 font-medium ring-1 ${TONE.muted}`}>Esperando: {count('muted')}</span>
@@ -149,11 +154,11 @@ export default function AgentMovePanel() {
       ) : (
         <div className="mt-4 flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
           <label className="flex min-w-[260px] flex-1 flex-col gap-1 text-[11px] font-medium text-slate-600">
-            Dirección de la VPS nueva
+            Dirección nueva del NOC
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="http://IP-NUEVA  o  https://noc.tudominio.com"
+              placeholder="https://bistro.enterprisesoc.lat"
               className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-800 placeholder:font-sans placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
             />
           </label>
@@ -163,7 +168,7 @@ export default function AgentMovePanel() {
             disabled={busy || !url.trim() || pin.length !== 6}
             className="mb-5 flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
           >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightLeft className="h-4 w-4" />} Programar mudanza
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightLeft className="h-4 w-4" />} Cambiar dirección
           </button>
         </div>
       )}
@@ -194,7 +199,7 @@ export default function AgentMovePanel() {
                       {s.tone === 'ok' && <CheckCircle2 className="h-3 w-3" />}
                       {s.label}
                     </span>
-                    {a.detail && s.tone !== 'ok' && <p className="mt-1 max-w-md text-[11px] text-slate-500">{a.detail}</p>}
+                    {a.detail && ['unreachable', 'not-soc', 'error'].includes(a.state ?? '') && s.tone === 'bad' && <p className="mt-1 max-w-md text-[11px] text-slate-500">{a.detail}</p>}
                   </td>
                   <td className="px-3 py-2 font-mono text-[11px] text-slate-500">{a.via ?? '—'}</td>
                   <td className="px-3 py-2 text-slate-500">{a.reportedAt ? timeAgo(a.reportedAt) : timeAgo(a.lastSeenAt)}</td>

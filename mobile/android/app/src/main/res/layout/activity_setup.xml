@@ -54,7 +54,7 @@
             android:layout_height="52dp"
             android:layout_marginTop="8dp"
             android:background="@drawable/input_bg"
-            android:hint="http://203.161.39.123"
+            android:hint="https://bistro.enterprisesoc.lat"
             android:inputType="textUri"
             android:paddingHorizontal="14dp"
             android:textColor="@color/text"

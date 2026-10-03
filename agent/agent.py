@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - solo disponible en Windows con pywin32
 # del backend) para el auto-update -- ver check_and_apply_update(). Subir este
 # numero (y el valor guardado en el backend) cada vez que se publique un
 # nuevo build del .exe.
-AGENT_VERSION = "1.19.0"
+AGENT_VERSION = "1.20.0"
 
 
 def get_base_dir() -> Path:
@@ -4738,15 +4738,17 @@ def run_cloudflare_speedtest(seconds: int = 10) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Mudanza del NOC a otra VPS. Un ADMIN programa la direccion nueva en el panel
-# (con su PIN) y llega con las tareas. El agente la guarda en su .env
-# (MOVE_TO_URL, sobrevive reinicios y el apagado de la VPS vieja) y la prueba
-# desde su propia red cada 2 min. Se muda (reescribe BACKEND_URL y se
-# reinicia) SOLO si la direccion nueva es un NOC que ya lo reconoce con sus
-# credenciales (base restaurada) y ademas:
-#   - las dos direcciones llegan al mismo backend (puente / DNS cambiado), o
-#   - la VPS actual dejo de responder (corte) varias veces seguidas.
-# Si la nueva todavia no esta lista, no hace nada y lo informa al panel.
+# Cambio de direccion del NOC (por ejemplo, de http://IP al dominio con
+# HTTPS). Un ADMIN la programa en el panel (con su PIN) y llega con las
+# tareas. El agente la guarda en su .env (MOVE_TO_URL, sobrevive reinicios) y
+# la prueba desde su propia red cada 2 min. Se cambia (reescribe BACKEND_URL y
+# se reinicia) SOLO si la direccion nueva es un NOC que ya lo reconoce con sus
+# credenciales y ademas:
+#   - las dos direcciones llegan al mismo backend (IP y dominio de la misma
+#     VPS), o
+#   - la direccion actual dejo de responder varias veces seguidas.
+# Si la nueva no responde (DNS, firewall, inspeccion SSL), no hace nada y lo
+# informa al panel.
 # ---------------------------------------------------------------------------
 MOVE_PROBE_SECONDS = 120
 MOVE_FAILURES_TO_SWITCH = 3
@@ -4791,23 +4793,26 @@ def _move_from_plan(plan: dict[str, Any]) -> None:
         return
     _write_env({"MOVE_TO_URL": url})
     if url:
-        logger.warning("Mudanza del NOC programada: este agente pasara de %s a %s cuando la VPS nueva este lista", BACKEND_URL, url)
+        logger.warning("Cambio de direccion del NOC programado: este agente pasara de %s a %s cuando la nueva responda", BACKEND_URL, url)
     else:
-        logger.warning("Mudanza del NOC cancelada: el agente sigue con %s", BACKEND_URL)
+        logger.warning("Cambio de direccion del NOC cancelado: el agente sigue con %s", BACKEND_URL)
     _move.update(to=url, state=None, detail=None, lastProbe=float("-inf"))
 
 
 def _move_probe(current_instance: str | None) -> bool:
-    """Prueba la direccion nueva desde esta red. True = mudarse ya."""
+    """Prueba la direccion nueva desde esta red. True = cambiarse ya."""
     to = _move["to"]
     try:
         r = requests.get(f"{to}/api/agent/hello", timeout=REQUEST_TIMEOUT_SECONDS)
         hello = r.json() if r.ok else {}
+    except requests.exceptions.SSLError:
+        _move.update(state="unreachable", detail=f"No se pudo verificar el certificado HTTPS de {to} desde este servidor (¿inspeccion SSL del FortiGate o reloj desfasado?)")
+        return False
     except Exception as exc:
         _move.update(state="unreachable", detail=f"No se llega a {to} desde este servidor ({type(exc).__name__}): revisar firewall / IP")
         return False
     if not isinstance(hello, dict) or hello.get("app") != "enterprise-soc":
-        _move.update(state="not-soc", detail=f"{to} responde (HTTP {r.status_code}) pero no es el NOC (¿falta levantar el stack?)")
+        _move.update(state="not-soc", detail=f"{to} responde (HTTP {r.status_code}) pero no es el NOC")
         return False
     try:
         w = requests.get(f"{to}/api/agent/whoami", headers={"X-Server-Id": SERVER_ID, "X-Api-Key": API_KEY}, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -4815,14 +4820,14 @@ def _move_probe(current_instance: str | None) -> bool:
         _move.update(state="unreachable", detail=f"{to} dejo de responder ({type(exc).__name__})")
         return False
     if w.status_code == 401:
-        _move.update(state="unknown-agent", detail="La VPS nueva responde pero todavia no reconoce a este agente (falta restaurar la base)")
+        _move.update(state="unknown-agent", detail="La direccion nueva responde pero no reconoce a este agente (¿es otro NOC?)")
         return False
     if not w.ok:
-        _move.update(state="error", detail=f"La VPS nueva respondio HTTP {w.status_code}")
+        _move.update(state="error", detail=f"La direccion nueva respondio HTTP {w.status_code}")
         return False
     if (current_instance and hello.get("instanceId") == current_instance) or _move["failures"] >= MOVE_FAILURES_TO_SWITCH:
         return True
-    _move.update(state="ready", detail="Lista: la VPS nueva ya reconoce a este agente; se muda sola cuando se apague la actual")
+    _move.update(state="ready", detail="La direccion nueva reconoce a este agente; se cambia si la actual deja de responder")
     return False
 
 
@@ -4831,7 +4836,7 @@ def _move_switch() -> None:
         return
     _move["switching"] = True
     to = _move["to"]
-    logger.warning("Mudanza del NOC: el agente pasa de %s a %s y se reinicia", BACKEND_URL, to)
+    logger.warning("Cambio de direccion del NOC: el agente pasa de %s a %s y se reinicia", BACKEND_URL, to)
     _write_env({"BACKEND_URL": to, "MOVE_TO_URL": None})
     # Lo relanza la tarea programada (igual que restart_agent) con el .env nuevo.
     threading.Timer(2, lambda: os._exit(0)).start()
@@ -4845,8 +4850,8 @@ def _current_backend_down(exc: Exception) -> bool:
 
 
 def _move_after_failure(exc: Exception) -> None:
-    """La VPS actual no responde: si hay una mudanza programada y la nueva ya
-    reconoce a este agente, despues de varios intentos se pasa a la nueva."""
+    """La direccion actual no responde: si hay un cambio programado y la nueva
+    ya reconoce a este agente, despues de varios intentos se pasa a la nueva."""
     if not _move["to"] or not _current_backend_down(exc):
         return
     _move["failures"] += 1
@@ -4856,7 +4861,7 @@ def _move_after_failure(exc: Exception) -> None:
         if _move_probe(None):
             _move_switch()
     except Exception as move_exc:
-        logger.warning("Mudanza del NOC: %s", move_exc)
+        logger.warning("Cambio de direccion del NOC: %s", move_exc)
 
 
 def tasks_cycle() -> int:
@@ -4876,7 +4881,7 @@ def tasks_cycle() -> int:
                 _move_switch()
                 return 60
     except Exception as exc:
-        logger.warning("Mudanza del NOC: %s", exc)
+        logger.warning("Cambio de direccion del NOC: %s", exc)
     for task in plan.get("actions") or []:
         action = str(task.get("action"))
         logger.warning("Accion aprobada desde el NOC por %s: %s %s", task.get("approvedBy"), action, task.get("params") or {})

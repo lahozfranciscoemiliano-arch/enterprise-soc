@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- El NOC hoy se sirve por HTTP en la IP de la VPS: se permite trafico sin
-     TLS. Cuando se agregue un dominio con HTTPS (certbot), la app lo usa igual. -->
+<!-- El NOC se usa por su dominio con HTTPS (https://bistro.enterprisesoc.lat).
+     Se sigue permitiendo http solo para poder entrar por la IP de la VPS en
+     una emergencia (por ejemplo, un problema de DNS). -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>

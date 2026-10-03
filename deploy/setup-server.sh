@@ -53,5 +53,5 @@ echo "  2. Copia .env.example a .env en la raiz del repo y completa con credenci
 echo "     de PRODUCCION (nunca reuses las de desarrollo)."
 echo "  3. Corre 'docker compose up -d --build' para levantar Postgres + backend + frontend."
 echo "  4. Corre el seed para crear el primer usuario ADMIN."
-echo "  5. Copia deploy/nginx.conf a /etc/nginx/sites-available/enterprise-soc, ajusta el dominio,"
-echo "     activalo con 'ln -s' en sites-enabled, y corre 'certbot --nginx' para el TLS."
+echo "  5. Con el DNS del dominio apuntando a la VPS: bash deploy/setup-domain.sh --domain tu.dominio"
+echo "     (Nginx + certificado HTTPS + .env, ver deploy/DEPLOY.md seccion 43)."

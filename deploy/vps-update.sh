@@ -198,6 +198,6 @@ echo ""
 echo "Queda a mano (fuera de la VPS):"
 echo "  1. Volver el repo a PRIVADO en GitHub (Settings -> General -> Danger Zone)."
 echo "  2. Cargar la API key de Gemini: Admin -> Configuracion -> Asistente (Gemini)."
-echo "  3. En el navegador, recargar forzado (Ctrl+Shift+R) para ver la version nueva."
+echo "  3. En el navegador, recargar forzado (Ctrl+Shift+R) para ver la version nueva: $(env_value CORS_ORIGIN)"
 
 exit "$FAILED"

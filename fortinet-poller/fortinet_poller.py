@@ -77,7 +77,7 @@ FORTIGATE_API_TOKEN = os.environ["FORTIGATE_API_TOKEN"]
 FORTIGATE_VDOM = os.environ.get("FORTIGATE_VDOM", "root")
 FORTIGATE_VERIFY_TLS = os.environ.get("FORTIGATE_VERIFY_TLS", "false").lower() == "true"
 
-SOC_BACKEND_URL = os.environ["SOC_BACKEND_URL"].rstrip("/")  # ej. http://203.161.39.123
+SOC_BACKEND_URL = os.environ["SOC_BACKEND_URL"].rstrip("/")  # ej. https://bistro.enterprisesoc.lat
 FORTI_DEVICE_ID = os.environ["FORTI_DEVICE_ID"]
 FORTI_API_KEY = os.environ["FORTI_API_KEY"]
 

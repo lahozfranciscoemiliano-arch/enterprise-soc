@@ -19,7 +19,7 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         // Servidor por defecto (se puede cambiar desde la app).
-        buildConfigField("String", "DEFAULT_SERVER_URL", "\"${System.getenv("NOC_DEFAULT_URL") ?: "http://203.161.39.123"}\"")
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"${System.getenv("NOC_DEFAULT_URL") ?: "https://bistro.enterprisesoc.lat"}\"")
     }
 
     signingConfigs {

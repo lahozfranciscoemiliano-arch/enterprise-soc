@@ -1,13 +1,13 @@
-// Mudanza del NOC a otra VPS: un ADMIN (con su PIN) programa la direccion
-// nueva y cada agente (1.19.0+) la recibe con sus tareas. El agente NO se
-// cambia a ciegas: primero comprueba desde su propia red que la direccion
-// nueva es este NOC y que ya lo reconoce (misma base restaurada), y recien
-// se muda cuando:
-//   - la direccion actual y la nueva llegan al MISMO backend (puente Nginx o
-//     DNS ya cambiado), o
-//   - la VPS actual dejo de responder (corte) y la nueva lo reconoce.
-// Mientras tanto informa en que estado esta (no llega, falta restaurar la
-// base, lista...), y eso se ve en Admin -> Servidores antes del corte.
+// Direccion del NOC en los agentes (por ejemplo, pasar de http://IP al
+// dominio con HTTPS): un ADMIN (con su PIN) programa la direccion nueva y
+// cada agente (1.19.0+) la recibe con sus tareas. El agente NO se cambia a
+// ciegas: primero comprueba desde su propia red que la direccion nueva es
+// este NOC y que lo reconoce con sus credenciales, y recien se cambia cuando:
+//   - la direccion actual y la nueva llegan al MISMO backend (IP y dominio de
+//     la misma VPS), o
+//   - la direccion actual dejo de responder y la nueva lo reconoce.
+// Mientras tanto informa en que estado esta (no llega, certificado
+// rechazado...), y eso se ve en Admin -> Servidores.
 const crypto = require('crypto');
 const prisma = require('../prismaClient');
 
@@ -120,7 +120,7 @@ async function status() {
         lastSeenAt: s.lastSeenAt,
         agentVersion: version,
         supported: versionAtLeast(version, MIN_AGENT_VERSION),
-        // La propia VPS se muda con el stack (su monitor usa 127.0.0.1).
+        // El monitor del propio VPS habla con 127.0.0.1: no aplica.
         hostMonitor,
         via: r?.backendUrl ?? null,
         moveTo: r?.moveTo ?? null,

@@ -18,7 +18,11 @@ object NocApi {
 
     fun normalizeUrl(raw: String): String {
         var url = raw.trim().trimEnd('/')
-        if (!url.startsWith("http://") && !url.startsWith("https://")) url = "http://$url"
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            // Un dominio va por HTTPS; una IP sola (sin certificado), por http.
+            val isIp = Regex("""^\d{1,3}(\.\d{1,3}){3}(:\d+)?$""").matches(url)
+            url = (if (isIp) "http://" else "https://") + url
+        }
         return url
     }
 

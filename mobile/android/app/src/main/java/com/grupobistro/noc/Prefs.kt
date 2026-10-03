@@ -8,7 +8,17 @@ class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("noc_prefs", Context.MODE_PRIVATE)
 
     var serverUrl: String?
-        get() = sp.getString("server_url", null)
+        get() {
+            val stored = sp.getString("server_url", null)
+            // El NOC paso de la IP de la VPS a su dominio con HTTPS: las
+            // instalaciones viejas se actualizan solas (hay que iniciar sesion
+            // de nuevo, la sesion es por direccion).
+            if (stored != null && stored.trimEnd('/') in LEGACY_SERVER_URLS) {
+                sp.edit().putString("server_url", BuildConfig.DEFAULT_SERVER_URL).apply()
+                return BuildConfig.DEFAULT_SERVER_URL
+            }
+            return stored
+        }
         set(value) = sp.edit().putString("server_url", value).apply()
 
     /** Conexion permanente (servicio en primer plano) para alertas al instante. */
@@ -54,6 +64,8 @@ class Prefs(context: Context) {
     fun severityAllowed(severity: String): Boolean = rank(severity) >= rank(minSeverity)
 
     companion object {
+        private val LEGACY_SERVER_URLS = setOf("http://203.161.39.123", "http://203.161.39.123:80")
+
         fun rank(severity: String?): Int = when (severity?.uppercase()) {
             "LOW" -> 0
             "MEDIUM" -> 1

@@ -1,4 +1,4 @@
-// Mudanza del NOC a otra VPS (ver services/agentMove.js).
+// Direccion del NOC en los agentes (ver services/agentMove.js).
 const rateLimit = require('express-rate-limit');
 const { z } = require('zod');
 const agentMove = require('../services/agentMove');
@@ -62,8 +62,8 @@ module.exports = function registerAgentMoveRoutes(app, { authUser, authServer, r
       // Aviso por todos los canales: si no lo programo alguien del equipo, se cancela en el momento.
       notifyGeneric({
         severity: 'CRITICAL',
-        subject: 'Mudanza de agentes programada',
-        text: `${move.setBy} programó que todos los agentes se muden a ${url} (vence en 7 días). Si no fue alguien del equipo, cancelala ya en Admin → Servidores.`,
+        subject: 'Cambio de dirección de los agentes programado',
+        text: `${move.setBy} programó que todos los agentes pasen a usar ${url} (vence en 7 días). Si no fue alguien del equipo, cancelalo ya en Admin → Servidores.`,
         source: 'agent-move',
         metadata: { url },
       }).catch(() => {});
@@ -82,8 +82,8 @@ module.exports = function registerAgentMoveRoutes(app, { authUser, authServer, r
       if (move) {
         notifyGeneric({
           severity: 'HIGH',
-          subject: 'Mudanza de agentes cancelada',
-          text: `Se canceló la mudanza de los agentes a ${move.url}. Los agentes que todavía no se mudaron siguen con la dirección actual.`,
+          subject: 'Cambio de dirección de los agentes cancelado',
+          text: `Se canceló el cambio de los agentes a ${move.url}. Los que todavía no se cambiaron siguen con la dirección actual.`,
           source: 'agent-move',
           metadata: { url: move.url },
         }).catch(() => {});

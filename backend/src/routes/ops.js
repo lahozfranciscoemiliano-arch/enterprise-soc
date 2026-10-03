@@ -578,7 +578,7 @@ module.exports = function registerOpsRoutes(app, { authUser, authServer, require
     agentLimiter,
     authServer,
     wrap(async (req, res) => {
-      // Estado de la mudanza que informa el agente + direccion nueva, si hay una programada.
+      // Estado del cambio de direccion que informa el agente + direccion nueva, si hay una programada.
       agentMove.recordReport(req.server, req.body);
       return res.json({ ...(await ops.agentTasks(req.server)), ...(await agentMove.planFor()) });
     })

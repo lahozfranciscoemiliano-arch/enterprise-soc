@@ -81,20 +81,18 @@ docker exec enterprise-soc-backend node prisma/seed.js
 
 Guardá el email/password que imprime — no se pueden recuperar después.
 
-## 6. Nginx + TLS
+## 6. Nginx + TLS (dominio con HTTPS)
+
+Con el registro DNS del dominio ya apuntando a la VPS (ver sección 43):
 
 ```bash
-sudo cp deploy/nginx.conf /etc/nginx/sites-available/enterprise-soc
-sudo nano /etc/nginx/sites-available/enterprise-soc   # reemplazar noc.tudominio.com
-sudo ln -s /etc/nginx/sites-available/enterprise-soc /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d noc.tudominio.com
+sudo bash deploy/setup-domain.sh --domain noc.tudominio.com [--email tu@correo]
 ```
 
-Certbot reescribe el archivo agregando el bloque HTTPS y el redirect automático desde
-HTTP. Se renueva solo (revisa `systemctl status certbot.timer`).
-
-A partir de acá, `https://noc.tudominio.com` debería servir el dashboard.
+Configura Nginx a partir de `deploy/nginx.conf`, pide el certificado de Let's
+Encrypt (se renueva solo, ver `systemctl status certbot.timer`), actualiza el
+`.env` y recompila el frontend. A partir de acá, `https://noc.tudominio.com`
+sirve el panel.
 
 ## 7. Deploys posteriores
 
@@ -596,7 +594,7 @@ de caída (confirmada con 2 fallos) y de vencimiento del certificado SSL
 servidor Windows, en **PowerShell como Administrador**:
 
 ```powershell
-$noc='http://203.161.39.123'; $s="$env:TEMP\install-agent.ps1"; Invoke-WebRequest "$noc/downloads/install-agent.ps1" -OutFile $s -UseBasicParsing; Unblock-File $s; powershell -NoProfile -ExecutionPolicy Bypass -File $s -BackendUrl $noc -EnrollmentSecret 'EL_SECRETO'
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $noc='https://bistro.enterprisesoc.lat'; $s="$env:TEMP\install-agent.ps1"; Invoke-WebRequest "$noc/downloads/install-agent.ps1" -OutFile $s -UseBasicParsing; Unblock-File $s; powershell -NoProfile -ExecutionPolicy Bypass -File $s -BackendUrl $noc -EnrollmentSecret 'EL_SECRETO'
 ```
 
 Descarga el instalador y la última versión del agente desde el NOC, registra
@@ -824,50 +822,42 @@ nuevos que un backend viejo rechaza).
   media 24 h, baja 72 h), filtros, exportación a CSV, servidor al crear un
   ticket y nota automática cuando la alerta vinculada se normaliza sola.
 
-## 43. Mudar el NOC a otra VPS (agente 1.19.0)
+## 43. Dominio con HTTPS: bistro.enterprisesoc.lat (agente 1.20.0)
 
-**Admin → Servidores → "Mudar el NOC a otra VPS"** cambia la dirección del NOC en
-todos los agentes sin entrar a cada servidor. Cada agente guarda la dirección
-nueva en su `.env` (`MOVE_TO_URL`), la prueba desde su propia red cada 2 min y
-se muda (reescribe `BACKEND_URL` y se reinicia) **solo** si la VPS nueva es el
-NOC y ya lo reconoce con sus credenciales (base restaurada), y además:
+El NOC se publica en **https://bistro.enterprisesoc.lat** (dominio comprado en
+Spaceship, misma VPS).
 
-- la VPS actual dejó de responder 3 veces seguidas (el corte), o
-- las dos direcciones llegan al mismo backend (puente Nginx o DNS ya cambiado).
+1. **DNS (Spaceship):** en el dominio `enterprisesoc.lat` → registros DNS →
+   nuevo registro **A**, host `bistro`, valor `203.161.39.123` (la IP de la
+   VPS), TTL 5 min. Sin registro AAAA. Comprobar:
+   `nslookup bistro.enterprisesoc.lat 1.1.1.1` → `203.161.39.123`.
+2. **VPS** (con el repo público un momento, como en cada actualización):
+   ```bash
+   cd /home/socapp/enterprise-soc && git pull && bash deploy/vps-update.sh
+   bash deploy/setup-domain.sh --domain bistro.enterprisesoc.lat --email tu@correo
+   ```
+   `setup-domain.sh` verifica el DNS, configura Nginx, pide el certificado
+   (Let's Encrypt, se renueva solo), cambia `CORS_ORIGIN` y
+   `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL` en el `.env`, recompila el
+   frontend y comprueba todo. Es idempotente: se puede volver a correr.
+3. **Panel:** entrar a https://bistro.enterprisesoc.lat (la sesión es por
+   dominio: hay que iniciarla de nuevo). Por la IP, un navegador se redirige
+   solo al dominio.
+4. **Agentes:** Admin → Servidores → **"Dirección del NOC en los agentes"** →
+   `https://bistro.enterprisesoc.lat` + PIN. Cada agente comprueba desde su red
+   que el dominio llega a este mismo NOC (con certificado válido) y se cambia
+   solo en ~2 min. Los que no llegan quedan con la IP y el panel dice por qué
+   (DNS, firewall, inspección SSL del FortiGate). Mientras tanto, por la IP
+   (`http://203.161.39.123`) la API y la descarga del agente siguen
+   funcionando. Cuando estén todos en el dominio, **Cancelar cambio** para
+   limpiar (o vence solo a los 7 días).
+5. **Resto:** poller de Fortinet → `SOC_BACKEND_URL=https://bistro.enterprisesoc.lat`
+   en su `.env` y reiniciarlo. App del celular → la versión nueva pasa sola
+   al dominio (o Menú → Cambiar servidor). Instalar agentes nuevos: comando de
+   la sección 36 (ya usa el dominio y TLS 1.2).
 
-Si la nueva no está lista no cambia nada, y el panel muestra el estado de cada
-agente: *no llega a la VPS nueva* (firewall / FortiGate), *falta restaurar la
-base*, *listo: se muda solo en el corte*, *ya usa la dirección nueva*.
-Programarla pide rol ADMIN + PIN, queda en la auditoría, avisa por todos los
-canales (CRÍTICA) y vence sola a los 7 días.
-
-Pasos:
-
-1. **Antes (días u horas):** actualizar la VPS actual (`bash deploy/vps-update.sh`)
-   para que los agentes pasen a 1.19.0. El panel muestra "Agentes compatibles: N/N".
-2. **Preparar la VPS nueva:** `deploy/setup-server.sh`, clonar el repo, copiar el
-   `.env` de la vieja (mismo `JWT_SECRET`, `POSTGRES_*` y secreto de
-   enrolamiento) cambiando la IP en `CORS_ORIGIN` / `NEXT_PUBLIC_*`, copiar el
-   sitio de Nginx y `/etc/enterprise-soc/host-monitor.env`, y
-   `docker compose up -d --build` (arranca con la base vacía).
-3. **Programar la mudanza** en el panel de la VPS actual con la dirección nueva.
-   En un par de minutos cada agente informa si llega: corregir el firewall de
-   las sedes que digan "No llega a la VPS nueva" **antes** del corte. Lo normal
-   es "La VPS nueva responde; falta restaurar la base".
-4. **Corte.** En la vieja:
-   `docker compose stop backend frontend` y
-   `docker exec enterprise-soc-postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > /root/nocsoc.dump`.
-   En la nueva, con el dump copiado:
-   `docker compose stop backend frontend`,
-   `docker exec -i enterprise-soc-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean --if-exists' < nocsoc.dump`
-   y `bash deploy/vps-update.sh`. Unos 6 minutos después los agentes se mudan
-   solos; el panel de la VPS nueva los muestra como "Ya usa la dirección nueva".
-5. Los servidores apagados durante el corte se mudan cuando vuelven (tienen la
-   dirección guardada). Para agentes que no llegaron a 1.19.0, dejar en la VPS
-   vieja un Nginx que reenvíe todo a la nueva (puente) hasta cambiarlos a mano.
-6. Cuando están todos, **Cancelar mudanza** en el panel nuevo para limpiar (o
-   vence sola). Aparte quedan el poller de Fortinet (`SOC_BACKEND_URL`), el
-   syslog del FortiGate y la dirección en la app del celular.
+Con HTTPS, además, los agentes reciben la cuenta de solo lectura de UniFi
+(sección 38), que por seguridad nunca se manda por http.
 
 ## Checklist de seguridad antes de anunciar la URL
 

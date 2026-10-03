@@ -50,6 +50,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# El NOC se publica con HTTPS: Windows PowerShell 5.1 en servidores viejos
+# (2012 R2 / 2016) negocia TLS 1.0 por defecto y la conexion falla con
+# "No se puede crear un canal seguro SSL/TLS". Se habilita TLS 1.2.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 if (-not $AgentExePath) {
     $scriptDir = $PSScriptRoot
     if (-not $scriptDir -and $MyInvocation.MyCommand.Path) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }

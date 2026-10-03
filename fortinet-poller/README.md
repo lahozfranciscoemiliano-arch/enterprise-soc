@@ -36,7 +36,7 @@ python3 fortinet_poller.py   # probalo en primer plano, Ctrl+C para cortar
 Si arrancó bien vas a ver en la consola algo como:
 
 ```
-fortinet_poller arrancando: FortiGate=192.168.10.1 vdom=root -> SOC=http://203.161.39.123
+fortinet_poller arrancando: FortiGate=192.168.10.1 vdom=root -> SOC=https://bistro.enterprisesoc.lat
 Endpoints a consultar: event/vpn, event/system, event/admin, event/ha, ips, virus, anomaly
 Primer poll de event/vpn: 40 filas, arranco el watermark sin reenviar historico
 ...
